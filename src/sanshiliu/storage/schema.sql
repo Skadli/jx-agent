@@ -1,15 +1,10 @@
--- ════════════════════════════════════════════════════════════════
--- 三十六贱笑 · sqlite schema（v1.0）
--- 与 prd.md §Phase 1 数据 schema 一致
--- 启动时执行：CREATE TABLE IF NOT EXISTS，幂等
--- ════════════════════════════════════════════════════════════════
+-- sqlite schema v1.0；Phase 1 数据结构，启动时幂等执行
 
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 
--- ── 1. LLM 调用记账（核心审计） ──
--- 每次 chat.completions 调用一行，含 base_url 字段（验收 1-V5）
+-- LLM 调用记账；每次 chat.completions 一行，含 base_url
 CREATE TABLE IF NOT EXISTS llm_calls (
     id            INTEGER PRIMARY KEY,
     ts            INTEGER NOT NULL,           -- unix ms
@@ -28,7 +23,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
 CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(ts);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id);
 
--- ── 2. 会话表 ──
+-- 会话表
 CREATE TABLE IF NOT EXISTS sessions (
     id              TEXT PRIMARY KEY,
     channel         TEXT    NOT NULL,
@@ -38,7 +33,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_channel_user ON sessions(channel, user_id);
 
--- ── 3. 通道消息表（Phase 4 大量使用） ──
+-- 通道消息表，Phase 4 使用
 CREATE TABLE IF NOT EXISTS channel_messages (
     id           INTEGER PRIMARY KEY,
     ts           INTEGER NOT NULL,
@@ -55,7 +50,7 @@ CREATE TABLE IF NOT EXISTS channel_messages (
 CREATE INDEX IF NOT EXISTS idx_channel_messages_session ON channel_messages(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_channel_messages_unproc ON channel_messages(processed, ts);
 
--- ── 4. 限流计数器（Phase 4 用） ──
+-- 限流计数器，Phase 4 用
 CREATE TABLE IF NOT EXISTS rate_limit_counters (
     scope         TEXT    NOT NULL,           -- user:<wxid> / global / channel:wechat
     window_start  INTEGER NOT NULL,           -- 时间窗起点 unix sec
@@ -63,7 +58,7 @@ CREATE TABLE IF NOT EXISTS rate_limit_counters (
     PRIMARY KEY (scope, window_start)
 );
 
--- ── 5. 权限决策（Phase 8 用） ──
+-- 权限决策，Phase 8 用
 CREATE TABLE IF NOT EXISTS permission_decisions (
     id           INTEGER PRIMARY KEY,
     ts           INTEGER NOT NULL,

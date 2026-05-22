@@ -1,12 +1,4 @@
-"""会话快照 JSONL writer。
-
-用途：把每轮对话的 user/assistant 消息按 JSON 行追加到磁盘，便于：
-- 事后回放（debug / 翻车标注）
-- Phase 7 自动记忆提取的数据源
-- 与 sqlite llm_calls 表互为冗余审计
-
-文件路径：``data_dir/logs/sessions/<session_id>.jsonl``
-"""
+"""会话快照 JSONL writer；用于回放、记忆提取和冗余审计。"""
 
 from __future__ import annotations
 
@@ -29,7 +21,7 @@ class JsonlWriter:
         self._lock = asyncio.Lock()  # 同一会话并发 append 时串行化
 
     def _path_for(self, session_id: str) -> Path:
-        # 防路径穿越：只取非空字母数字_-
+        # 防路径穿越，只保留安全字符
         safe = "".join(c for c in session_id if c.isalnum() or c in "-_")[:120] or "default"
         return self._base_dir / f"{safe}.jsonl"
 

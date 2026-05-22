@@ -1,0 +1,7 @@
+# Runtime dependencies from pyproject.toml; requires Python >=3.13
+openai
+pydantic
+pydantic-settings
+structlog
+httpx
+pyyaml

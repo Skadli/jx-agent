@@ -1,15 +1,4 @@
-"""异步指数退避重试装饰器。
-
-设计：
-- 只对**白名单异常**（默认 :class:`LLMRetryableError`）重试，避免无谓重跑。
-- 指数退避：``delay = min(base * 2**(attempt-1) + jitter, cap)``。
-- 验收 1-V6：mock 429 → 自动重试 3 次 → 第 4 次成功。
-
-用法::
-
-    @async_retry(max_attempts=4, base=0.5, cap=8.0)
-    async def call_llm(...): ...
-"""
+"""异步指数退避重试装饰器；仅对白名单异常重试。"""
 
 from __future__ import annotations
 
@@ -35,14 +24,7 @@ def async_retry(
     jitter: float = 0.2,
     retry_on: type[Exception] | tuple[type[Exception], ...] = LLMRetryableError,
 ) -> Callable[[Callable[..., Awaitable[T]]], Callable[..., Awaitable[T]]]:
-    """指数退避装饰器（async only）。
-
-    :param max_attempts: 最大尝试次数（含首次）。≥1
-    :param base: 退避基数（秒）；首次失败后等 base 秒
-    :param cap: 退避上限，避免疯狂飙升
-    :param jitter: 随机抖动幅度（0~jitter 秒）；防雪崩
-    :param retry_on: 触发重试的异常类（元组也行）；其他异常透传
-    """
+    """async 指数退避装饰器；其他异常直接透传。"""
     if max_attempts < 1:
         raise ValueError("max_attempts 必须 >= 1")
 
@@ -67,8 +49,8 @@ def async_retry(
                         error=str(exc),
                     )
                     await asyncio.sleep(delay)
-            # 走到这里说明所有尝试都失败
-            assert last_exc is not None  # for mypy
+            # 所有尝试均失败
+            assert last_exc is not None  # mypy
             _logger.error(
                 "重试耗尽",
                 func=func.__qualname__,

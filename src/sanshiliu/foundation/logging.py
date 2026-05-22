@@ -1,15 +1,4 @@
-"""structlog 初始化：控制台彩色 + JSONL 文件双输出。
-
-设计目标：
-- 第三方库（openai/httpx 等）的 stdlib logging 也走同一通道，避免双轨。
-- 文件输出 JSONL，按 RotatingFileHandler 切分；落盘位置在 ``data_dir/logs/``。
-- 控制台用人类友好的 dev renderer；CI / 生产可后续切 JSON。
-
-约定：
-- 业务代码用 ``logger = get_logger(__name__)``，不要 ``logging.getLogger``。
-- 关键决策点（LLM 调用、权限拒绝、compact 触发）必须打 INFO 及以上。
-- 调试 trace 用 ``logger.debug``，默认级别 INFO 不输出。
-"""
+"""structlog 初始化；统一 stdlib/structlog 到控制台和可选 JSONL 文件。"""
 
 from __future__ import annotations
 
@@ -36,21 +25,14 @@ def configure_logging(
     log_dir: Path | None = None,
     json_console: bool = False,
 ) -> None:
-    """初始化 structlog + stdlib logging。
-
-    幂等：重复调用只生效一次。测试中需要重置：调用 :func:`reset_logging`。
-
-    :param log_level: DEBUG / INFO / WARNING / ERROR / CRITICAL
-    :param log_dir: JSONL 日志目录；None 表示不写文件，仅控制台
-    :param json_console: True 时控制台也输出 JSON（适合 CI / 容器）
-    """
+    """初始化 logging；幂等，测试可调用 reset_logging 重置。"""
     global _INITIALIZED
     if _INITIALIZED:
         return
 
     level = getattr(logging, log_level.upper(), logging.INFO)
 
-    # ── structlog 处理链 ──
+    # structlog 处理链
     shared_processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
@@ -71,10 +53,10 @@ def configure_logging(
         cache_logger_on_first_use=True,
     )
 
-    # ── stdlib root logger ──
+    # stdlib root logger
     root = logging.getLogger()
     root.setLevel(level)
-    # 清掉默认 handler 避免双输出
+    # 清掉默认 handler，避免双输出
     for h in list(root.handlers):
         root.removeHandler(h)
 
@@ -97,7 +79,7 @@ def configure_logging(
     )
     root.addHandler(console_handler)
 
-    # JSONL 文件 handler（可选）
+    # 可选 JSONL 文件 handler
     if log_dir is not None:
         log_dir = Path(log_dir).expanduser().resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +101,7 @@ def configure_logging(
         )
         root.addHandler(file_handler)
 
-    # 嘈杂第三方库降级，避免 INFO 级别被 httpx 心跳刷屏
+    # 嘈杂第三方库降级，避免 INFO 被 httpx 心跳刷屏
     for noisy in ("httpx", "httpcore", "openai._base_client"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 

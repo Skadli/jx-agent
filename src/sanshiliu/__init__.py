@@ -1,8 +1,4 @@
-"""三十六贱笑 Agent 顶层包。
-
-设计原则：协议尽量对齐 Claude Code。
-版本号同时被 cli `--version`、bootstrap banner 和 pyproject.toml 引用，修改时三处同步。
-"""
+"""三十六贱笑 Agent 顶层包；版本号需同步 cli、banner 和 pyproject。"""
 
 from __future__ import annotations
 

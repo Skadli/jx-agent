@@ -1,4 +1,7 @@
-"""L3 身份层 — Phase 2 实施。
+"""L3 身份层；读 persona/*.md 拼装 PersonaSnapshot，支持热重载。"""
 
-读取 persona/*.md 拼装为 PersonaSnapshot，支持热重载。
-"""
+from sanshiliu.identity.loader import PersonaLoader
+from sanshiliu.identity.types import PERSONA_FILES, PersonaSnapshot
+from sanshiliu.identity.watcher import PersonaWatcher
+
+__all__ = ["PERSONA_FILES", "PersonaLoader", "PersonaSnapshot", "PersonaWatcher"]

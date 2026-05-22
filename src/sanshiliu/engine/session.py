@@ -1,7 +1,4 @@
-"""会话状态：消息历史 + 元数据。
-
-Phase 1：纯内存历史；Phase 3 接入 context.manager 时会改造为持久化版本。
-"""
+"""会话状态；Phase 2 起 system 由 PersonaLoader 决定，Phase 3 起加 compact_summary 字段。"""
 
 from __future__ import annotations
 
@@ -12,29 +9,33 @@ from typing import Any
 
 from sanshiliu.engine.prompt_builder import build_system_prompt
 from sanshiliu.engine.types import ChatMessage
+from sanshiliu.identity.types import PersonaSnapshot
+
+# 注入 compact 摘要时与 persona 之间的结构性分隔；纯胶水非 prompt 内容
+_SUMMARY_JOINER = "\n\n---\n\n"
 
 
 @dataclass
 class Session:
-    """单个会话。
-
-    通常由 channel 创建并维持生命周期；多 channel 共享同一 engine，但 session 各自独立。
-    """
+    """由 channel 创建并维护的独立会话；system 消息位置在 [0]。"""
 
     session_id: str
     channel: str
     user_id: str | None = None
     created_at: float = field(default_factory=time.time)
     messages: list[ChatMessage] = field(default_factory=list)
+    # Phase 3 起：上下文压缩摘要；非空时会拼到 system 后段
+    compact_summary: str = ""
+    # Phase 6 起：本轮活跃 skills 拼成的段落；engine 在每轮 LLM 调用前刷新
+    active_skills_text: str = ""
 
     def __post_init__(self) -> None:
-        # 启动即注入 system prompt；Phase 2 之后 system 会随 persona 热重载而更新
+        # 占位 system 行；真实内容由 engine 在每轮前调 refresh_system_prompt 注入
         if not self.messages:
-            self.messages.append(ChatMessage(role="system", content=build_system_prompt()))
+            self.messages.append(ChatMessage(role="system", content=""))
 
     @classmethod
     def new(cls, channel: str, user_id: str | None = None) -> Session:
-        """新建会话，session_id 自动用 uuid4。"""
         return cls(
             session_id=str(uuid.uuid4()),
             channel=channel,
@@ -51,13 +52,26 @@ class Session:
         self.messages.append(msg)
         return msg
 
-    def to_openai_messages(self) -> list[dict[str, Any]]:
-        """导出供 LLMClient 使用的 messages。"""
-        return [m.to_openai() for m in self.messages]
+    def _effective_system(self) -> str:
+        """合并 persona system + active skills + compact_summary；空段跳过。"""
+        persona = self.messages[0].content if self.messages and self.messages[0].role == "system" else ""
+        parts = [p for p in (persona, self.active_skills_text, self.compact_summary) if p]
+        return _SUMMARY_JOINER.join(parts)
 
-    def refresh_system_prompt(self) -> None:
-        """重新生成 system 消息（Phase 2 热重载时调用）。"""
+    def to_openai_messages(self) -> list[dict[str, Any]]:
+        """OpenAI 入参；空 system 被过滤，compact_summary 拼到 system 末尾。"""
+        out: list[dict[str, Any]] = []
+        sys_text = self._effective_system()
+        if sys_text:
+            out.append({"role": "system", "content": sys_text})
+        for m in self.messages[1:] if self.messages and self.messages[0].role == "system" else self.messages:
+            out.append(m.to_openai())
+        return out
+
+    def refresh_system_prompt(self, persona: PersonaSnapshot) -> None:
+        """用最新人设快照替换 system；不动 compact_summary。"""
+        text = build_system_prompt(persona)
         if self.messages and self.messages[0].role == "system":
-            self.messages[0] = ChatMessage(role="system", content=build_system_prompt())
+            self.messages[0] = ChatMessage(role="system", content=text)
         else:
-            self.messages.insert(0, ChatMessage(role="system", content=build_system_prompt()))
+            self.messages.insert(0, ChatMessage(role="system", content=text))

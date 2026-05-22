@@ -1,4 +1,15 @@
-"""L6 技能层 — Phase 6 实施。
+"""L6 技能层；SKILL.md 协议加载 + 关键词/语义匹配 + 注入 system prompt。"""
 
-扫描 SKILL.md（与 Claude 协议一致），按关键词 / embedding 触发，注入 system prompt。
-"""
+from sanshiliu.skills.activator import SkillActivator
+from sanshiliu.skills.loader import SkillLoader
+from sanshiliu.skills.matcher import KeywordMatcher, SemanticMatcher, SkillMatcher
+from sanshiliu.skills.types import SkillDef
+
+__all__ = [
+    "KeywordMatcher",
+    "SemanticMatcher",
+    "SkillActivator",
+    "SkillDef",
+    "SkillLoader",
+    "SkillMatcher",
+]

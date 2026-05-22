@@ -1,13 +1,4 @@
-"""sqlite DAO（async 接口包 stdlib sqlite3）。
-
-设计：
-- 不引入 aiosqlite——所有 sync 调用走 ``asyncio.to_thread`` 包装。
-- 单进程内单连接 + WAL；多线程交错读写靠 sqlite3 自身串行化。
-- DAO 方法薄，参数显式；避免 ORM 隐式 join。
-
-Phase 1 实际用到：``insert_llm_call`` / ``upsert_session``。
-其他表 schema 已就位，DAO 等后续 phase 接入。
-"""
+"""sqlite DAO；async 接口通过 asyncio.to_thread 包装 stdlib sqlite3。"""
 
 from __future__ import annotations
 
@@ -26,10 +17,7 @@ _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 
 class Database:
-    """sqlite DAO 封装。
-
-    通常通过 :func:`get_database` 获取单例，但测试可直接构造（指向临时文件）。
-    """
+    """sqlite DAO 封装；生产走单例，测试可直接构造。"""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
@@ -45,7 +33,7 @@ class Database:
 
     def _connect_sync(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False：通过 asyncio.to_thread 跨线程使用
+        # 允许 asyncio.to_thread 跨线程使用
         conn = sqlite3.connect(
             self._db_path,
             isolation_level=None,  # 自动 commit 模式，由我们显式 BEGIN
@@ -65,7 +53,7 @@ class Database:
         self._conn = None
         await asyncio.to_thread(conn.close)
 
-    # ── 内部：通用执行 ────────────────────────────────────────
+    # 内部执行
     async def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         if self._conn is None:
             raise StorageError("数据库未连接；先调用 await db.connect()")
@@ -78,7 +66,7 @@ class Database:
         async with self._lock:
             await asyncio.to_thread(self._conn.executemany, sql, seq)
 
-    # ── llm_calls ────────────────────────────────────────────
+    # llm_calls
     async def insert_llm_call(
         self,
         *,
@@ -120,7 +108,7 @@ class Database:
         )
         return int(cur.lastrowid or 0)
 
-    # ── sessions ────────────────────────────────────────────
+    # sessions
     async def upsert_session(
         self,
         *,
@@ -144,7 +132,7 @@ class Database:
         row = await asyncio.to_thread(cur.fetchone)
         return dict(row) if row else None
 
-    # ── 统计：用于 REPL /stats 命令 ──────────────────────────
+    # REPL /stats 统计
     async def get_session_stats(self, session_id: str) -> dict[str, int | float]:
         """返回该会话的 token 用量、调用次数等汇总。"""
         cur = await self._execute(
@@ -167,10 +155,7 @@ _db_singleton: Database | None = None
 
 
 async def get_database(db_path: Path) -> Database:
-    """单例获取；首次调用会建表。
-
-    测试中可通过传入临时路径绕过单例（直接 ``Database(tmp_path)``）。
-    """
+    """获取数据库单例；首次调用会建表。"""
     global _db_singleton
     if _db_singleton is None:
         _db_singleton = Database(db_path)

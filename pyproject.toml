@@ -47,7 +47,7 @@ Homepage = "https://github.com/skad/sanshiliu-jianxiao"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sanshiliu"]
 
-# ───────────────────────────── ruff ─────────────────────────────
+# ruff
 [tool.ruff]
 target-version = "py313"
 line-length = 100
@@ -82,7 +82,7 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
 
-# ───────────────────────────── mypy ─────────────────────────────
+# mypy
 [tool.mypy]
 python_version = "3.13"
 strict = true
@@ -99,7 +99,7 @@ files = ["src/sanshiliu"]
 module = ["structlog.*"]
 ignore_missing_imports = true
 
-# ───────────────────────────── pytest ─────────────────────────────
+# pytest
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]

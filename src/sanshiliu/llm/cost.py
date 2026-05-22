@@ -1,13 +1,8 @@
-"""Token 成本计算（CNY）。
-
-简化版价格表：按 1K token 折算 CNY；未知模型按保守默认价。
-Phase 1 准确度要求不高，能区分模型成本量级即可；后续可接 model_price.yaml 热更新。
-"""
+"""Token 成本估算；按 1K token CNY 计价，未知模型用保守默认价。"""
 
 from __future__ import annotations
 
-# 价格表：每 1K token 价格（CNY）
-# 数据来源：各家官网 2025 年公开价；切换汇率/降价时手动维护
+# 每 1K token 的 CNY 价格；官网 2025 公开价，汇率或降价需手动更新
 _PRICE_TABLE: dict[str, tuple[float, float]] = {
     # model_name: (input_cny_per_1k, output_cny_per_1k)
     "gpt-4o":        (0.025, 0.1),
@@ -22,10 +17,7 @@ _DEFAULT_PRICE = (0.01, 0.03)  # 未知模型保守默认
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """估算单次调用 CNY 成本。
-
-    匹配规则：完全相等 > 前缀（去掉版本号尾巴）> 默认价。
-    """
+    """估算单次调用 CNY 成本，按精确匹配、前缀匹配、默认价降级。"""
     if model in _PRICE_TABLE:
         in_price, out_price = _PRICE_TABLE[model]
     else:

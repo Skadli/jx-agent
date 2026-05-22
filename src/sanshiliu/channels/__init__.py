@@ -1,4 +1,1 @@
-"""L9 接入层：REPL（Phase 1）/ iLink 微信 / Web HTTP（均 Phase 4）。
-
-所有 channel 实现 ChannelAdapter Protocol，对引擎暴露统一接口。
-"""
+"""L9 接入层；REPL 已接入，微信和 Web HTTP 在 Phase 4 实施。"""
