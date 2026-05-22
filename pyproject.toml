@@ -1,0 +1,133 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sanshiliu-jianxiao"
+version = "1.0.0"
+description = "三十六贱笑 Agent — 通用 agent 框架（协议对齐 Claude Code），默认人设为博主数字分身"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "skad" }]
+license = { text = "Proprietary" }
+keywords = ["agent", "llm", "openai", "claude-compatible", "wechat"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+]
+dependencies = [
+    "openai>=1.50.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "structlog>=24.4.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+eval = ["openai>=1.50.0"]
+embedding = ["numpy>=2.0.0"]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.7.0",
+    "mypy>=1.13.0",
+    "types-PyYAML>=6.0.0",
+]
+
+[project.scripts]
+sanshiliu = "sanshiliu.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/skad/sanshiliu-jianxiao"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sanshiliu"]
+
+# ───────────────────────────── ruff ─────────────────────────────
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["data", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "N",             # pep8-naming
+    "UP",            # pyupgrade
+    "B",             # flake8-bugbear
+    "SIM",           # flake8-simplify
+    "RUF",           # ruff-specific
+    "ASYNC",         # flake8-async
+]
+ignore = [
+    "E501",     # 行长留给 formatter
+    "B008",     # FastAPI/Typer 风格 Depends() 在默认参数里
+    "RUF001",   # 中文项目允许全角标点（文档串）
+    "RUF002",   # 同上（docstring）
+    "RUF003",   # 同上（comment）
+    "SIM117",   # 多个 with 平铺可读性更好
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N802", "N803"]  # 测试函数命名宽松
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# ───────────────────────────── mypy ─────────────────────────────
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+no_implicit_optional = true
+check_untyped_defs = true
+files = ["src/sanshiliu"]
+
+[[tool.mypy.overrides]]
+module = ["structlog.*"]
+ignore_missing_imports = true
+
+# ───────────────────────────── pytest ─────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=sanshiliu",
+    "--cov-report=term-missing",
+    "--cov-report=html:data/htmlcov",
+]
+asyncio_mode = "auto"
+markers = [
+    "unit: 单元测试，纯函数 + mock LLM",
+    "integration: 模块间集成测试",
+    "e2e: 端到端测试（含真实 LLM 调用）",
+    "slow: 耗时较长（>5s）的测试",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["sanshiliu"]
+omit = ["src/sanshiliu/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
