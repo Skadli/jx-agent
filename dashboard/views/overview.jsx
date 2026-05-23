@@ -38,7 +38,6 @@ function Overview({ onJump }) {
           <SessionsCard onJump={onJump} />
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <IdentityCard onJump={onJump} />
-            <HealthCard />
           </div>
         </div>
 
@@ -47,10 +46,11 @@ function Overview({ onJump }) {
           <ToolCallsCard onJump={onJump} />
         </div>
 
-        {/* ===== Skills + Memory previews ===== */}
-        <div className="grid-2" style={{ marginTop: 16 }}>
+        {/* ===== Skills + Memory + Health ===== */}
+        <div className="grid-3" style={{ marginTop: 16 }}>
           <SkillsPreview onJump={onJump} />
           <MemoryPreview onJump={onJump} />
+          <HealthCard />
         </div>
       </div>
     </div>);
