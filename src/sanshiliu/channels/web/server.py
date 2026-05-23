@@ -7,13 +7,17 @@ import contextlib
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from sanshiliu.channels.web.auth import DashboardAuth, write_auth_error
 from sanshiliu.channels.web.routes import Router
 from sanshiliu.foundation.logging import get_logger
 
 _logger = get_logger(__name__)
 
 
-def _build_request_handler(router: Router) -> type[BaseHTTPRequestHandler]:
+def _build_request_handler(
+    router: Router,
+    auth: DashboardAuth | None,
+) -> type[BaseHTTPRequestHandler]:
     """工厂：每次实例化都是一个干净的 BaseHTTPRequestHandler 子类，闭包持有 router。"""
 
     class _Handler(BaseHTTPRequestHandler):
@@ -22,6 +26,12 @@ def _build_request_handler(router: Router) -> type[BaseHTTPRequestHandler]:
             _logger.debug("http", line=format % args)
 
         def _dispatch(self) -> None:
+            clean = self.path.split("?", 1)[0]
+            protected = clean == "/chat" or clean.startswith("/api/")
+            auth_endpoint = clean.startswith("/api/auth/")
+            if protected and not auth_endpoint and auth is not None and not auth.authorized(self.headers):
+                write_auth_error(self)
+                return
             handler = router.resolve(self.command, self.path)
             if handler is None:
                 self.send_error(404, "Not Found")
@@ -52,11 +62,13 @@ class WebServer:
         port: int,
         router: Router,
         loop: asyncio.AbstractEventLoop,
+        auth: DashboardAuth | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._router = router
         self._loop = loop
+        self._auth = auth
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -68,7 +80,7 @@ class WebServer:
         """启动后台线程跑 serve_forever。"""
         if self.is_running:
             return
-        handler_cls = _build_request_handler(self._router)
+        handler_cls = _build_request_handler(self._router, self._auth)
         self._server = ThreadingHTTPServer((self._host, self._port), handler_cls)
         self._thread = threading.Thread(
             target=self._server.serve_forever,

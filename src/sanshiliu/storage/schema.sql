@@ -82,3 +82,30 @@ CREATE TABLE IF NOT EXISTS permission_decisions (
     pattern      TEXT                          -- e.g. Bash(npm test:*)
 );
 CREATE INDEX IF NOT EXISTS idx_perm_session ON permission_decisions(session_id, ts);
+
+-- 工具调用审计，dashboard 用
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id                  INTEGER PRIMARY KEY,
+    ts                  INTEGER NOT NULL,
+    session_id          TEXT    NOT NULL,
+    tool_name           TEXT    NOT NULL,
+    arguments           TEXT    NOT NULL,     -- JSON
+    result_text         TEXT,                  -- 截断到 2KB
+    is_error            INTEGER NOT NULL DEFAULT 0,
+    latency_ms          INTEGER NOT NULL DEFAULT 0,
+    permission_decision TEXT                   -- allow / deny / asked
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_ts ON tool_calls(ts);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+
+-- skill 激活审计，dashboard 用
+CREATE TABLE IF NOT EXISTS skill_activations (
+    id          INTEGER PRIMARY KEY,
+    ts          INTEGER NOT NULL,
+    session_id  TEXT    NOT NULL,
+    skill_id    TEXT    NOT NULL,
+    trigger     TEXT,
+    user_text   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_skill_act_ts ON skill_activations(ts);
+CREATE INDEX IF NOT EXISTS idx_skill_act_skill ON skill_activations(skill_id, ts);

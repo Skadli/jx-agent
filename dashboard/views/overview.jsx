@@ -1,403 +1,320 @@
 /* Overview — admin dashboard.
- * Page header + 4 stat cards + activity panels + health/budget/layers + recent tool calls.
+ * 数据全部走 /api/overview /api/sessions /api/tool_calls /api/skills /api/memory /api/health。
+ * 5s 轮询；range 切换重新拉。
  */
 
 function Overview({ onJump }) {
   const [range, setRange] = React.useState("24h");
+  const [overview, setOverview] = React.useState(null);
+  const [sessions, setSessions] = React.useState([]);
+  const [tools, setTools]       = React.useState([]);
+  const [skills, setSkills]     = React.useState([]);
+  const [memory, setMemory]     = React.useState({ entries: [], claudemd: null });
+  const [health, setHealth]     = React.useState(null);
+
+  const refresh = React.useCallback(async () => {
+    const [o, s, t, sk, m, h] = await Promise.all([
+      API.get(`/api/overview?range=${range}`),
+      API.get(`/api/sessions?limit=8`),
+      API.get(`/api/tool_calls?limit=8`),
+      API.get(`/api/skills`),
+      API.get(`/api/memory`),
+      API.get(`/api/health`),
+    ]);
+    if (!o.error) setOverview(o);
+    if (!s.error) setSessions(s.sessions || []);
+    if (!t.error) setTools(t.tool_calls || []);
+    if (!sk.error) setSkills(sk.skills || []);
+    if (!m.error) setMemory(m);
+    if (!h.error) setHealth(h);
+  }, [range]);
+
+  React.useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const stats = overview && overview.stats;
+  const ident = overview && overview.identity;
+  const chMap = (stats && stats.channels) || {};
+  const tot = stats ? (stats.input_tokens + stats.output_tokens) : 0;
+
+  const onReload = async () => {
+    const r = await API.post("/api/instance/reload");
+    if (r.error) alert("重载失败：" + r.error);
+    else { alert("重载已触发"); refresh(); }
+  };
 
   return (
     <div data-screen-label="01 总览">
       <PageHeader
         title="总览"
-        sub={`三十六贱笑 · v1.0.0 · 上次心跳 8 秒前`}
+        sub={overview
+          ? `三十六贱笑 · v${overview.version} · 运行 ${Math.floor(overview.uptime_sec/60)} 分钟`
+          : "加载中…"}
         actions={
-        <>
+          <>
             <Segmented value={range} onChange={setRange} options={[
-          { id: "1h", label: "1 小时" },
-          { id: "24h", label: "24 小时" },
-          { id: "7d", label: "7 天" },
-          { id: "30d", label: "30 天" }]
-          } />
-            <button className="btn btn-secondary"><Icon name="refresh" size={13} />刷新</button>
-            <button className="btn btn-primary" onClick={() => onJump("chat")}><Icon name="terminal" size={13} color="#fff" />打开 REPL</button>
+              { id: "1h", label: "1 小时" },
+              { id: "24h", label: "24 小时" },
+              { id: "7d", label: "7 天" },
+              { id: "30d", label: "30 天" },
+            ]} />
+            <button className="btn btn-secondary" onClick={refresh}><Icon name="refresh" size={13} />刷新</button>
+            <button className="btn btn-primary" onClick={() => onJump("chat")}><Icon name="terminal" size={13} color="#fff" />打开会话</button>
           </>
         } />
-      
 
       <div className="page-body">
-        {/* ===== 4 KPI cards ===== */}
         <div className="grid-4">
-          <StatCard label="会话总数" value="42" sub="REPL · 24  Web · 18  微信 · 0" trend={{ kind: "up", value: "+12%" }} />
-          <StatCard label="累计 tokens" value="218,402" sub="输入 142k · 输出 76k" trend={{ kind: "up", value: "+8%" }} />
-          <StatCard label="累计成本" value="0.4271" unit="￥" sub="近 14 天 · DeepSeek 折算" trend={{ kind: "up", value: "+￥0.06" }} />
-          <StatCard label="平均首字延迟" value="1.21" unit="s" sub="P50 · 流式" trend={{ kind: "down", value: "-0.08s" }} />
+          <StatCard
+            label="会话总数"
+            value={stats ? stats.total_sessions : "—"}
+            sub={Object.entries(chMap).map(([k, v]) => `${k} · ${v}`).join("  ") || "暂无活跃通道"} />
+          <StatCard
+            label="累计 tokens"
+            value={stats ? API.fmtNumber(tot) : "—"}
+            sub={stats ? `输入 ${API.fmtNumber(stats.input_tokens)} · 输出 ${API.fmtNumber(stats.output_tokens)}` : ""} />
+          <StatCard
+            label="累计成本"
+            value={stats ? API.fmtCost(stats.cost_cny) : "—"}
+            unit="￥"
+            sub={`窗口：${range}`} />
+          <StatCard
+            label="平均延迟"
+            value={stats ? (stats.avg_latency_ms / 1000).toFixed(2) : "—"}
+            unit="s"
+            sub={`${stats ? stats.calls : 0} 次调用`} />
         </div>
 
-        {/* ===== Long-range activity + heatmap ===== */}
-        <div style={{ marginTop: 16 }}>
-          <ActivityStatsCard />
-        </div>
-
-        {/* ===== Activity + identity + health ===== */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginTop: 16, alignItems: "start" }}>
-          <SessionsCard onJump={onJump} />
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <IdentityCard onJump={onJump} />
-          </div>
+          <SessionsCard sessions={sessions} onJump={onJump} />
+          <IdentityCard overview={overview} ident={ident} onJump={onJump} onReload={onReload} />
         </div>
 
-        {/* ===== Recent tool calls ===== */}
         <div style={{ marginTop: 16 }}>
-          <ToolCallsCard onJump={onJump} />
+          <ToolCallsCard tools={tools} onJump={onJump} />
         </div>
 
-        {/* ===== Skills + Memory + Health ===== */}
         <div className="grid-3" style={{ marginTop: 16 }}>
-          <SkillsPreview onJump={onJump} />
-          <MemoryPreview onJump={onJump} />
-          <HealthCard />
+          <SkillsPreview skills={skills} onJump={onJump} />
+          <MemoryPreview memory={memory} onJump={onJump} />
+          <HealthCard health={health} />
         </div>
       </div>
     </div>);
-
 }
 
 /* ===================== CARDS ===================== */
 
-const SESSIONS = [
-{ id: "repl-8f2a", ch: "REPL", status: "active", tokens: "4,210", cost: "0.0042", t: "2 分钟前", last: "标题怎么起" },
-{ id: "web-2c91", ch: "Web", status: "idle", tokens: "18,902", cost: "0.0187", t: "14 分钟前", last: "情侣吵架的视频但怕翻车" },
-{ id: "wechat-a3", ch: "微信", status: "closed", tokens: "612", cost: "0.0006", t: "1 小时前", last: "在吗" },
-{ id: "repl-71d0", ch: "REPL", status: "closed", tokens: "11,408", cost: "0.0114", t: "3 小时前", last: "把「我做了 X」改成离谱任务" },
-{ id: "web-44ce", ch: "Web", status: "closed", tokens: "2,841", cost: "0.0028", t: "昨天", last: "热梗总结怎么排梗" },
-{ id: "web-1aa9", ch: "Web", status: "closed", tokens: "5,612", cost: "0.0056", t: "昨天", last: "情景剧脚本改一下" }];
-
-
-function SessionsCard({ onJump }) {
+function SessionsCard({ sessions, onJump }) {
   return (
     <div className="card">
       <CardHeader
         title="最近会话"
-        sub="近 24 小时 · 6 / 42 条"
+        sub={`${sessions.length} 条`}
         right={
-        <>
-            <button className="btn btn-ghost btn-sm">导出</button>
+          <>
+            <button className="btn btn-ghost btn-sm" onClick={() => {
+              const csv = "id,channel,calls,input_tokens,output_tokens,cost,last_active_at,last_message\n" +
+                sessions.map(s => [s.id, s.channel, s.calls, s.input_tokens, s.output_tokens, s.cost_cny, s.last_active_at, JSON.stringify(s.last_message || "")].join(",")).join("\n");
+              API.download("sessions.csv", csv);
+            }}>导出</button>
             <button className="btn btn-secondary btn-sm" onClick={() => onJump("chat")}>查看全部</button>
           </>
         } />
-      
+      {sessions.length === 0 ? (
+        <div style={{ padding: "32px 20px", textAlign: "center", color: "var(--ink-60)" }}>暂无会话</div>
+      ) : (
       <table className="tbl">
         <thead>
           <tr>
-            <th style={{ width: 130 }}>会话 ID</th>
-            <th style={{ width: 80 }}>通道</th>
+            <th style={{ width: 200 }}>会话 ID</th>
+            <th style={{ width: 70 }}>通道</th>
             <th>最后一句</th>
-            <th style={{ width: 92, textAlign: "right" }}>tokens</th>
+            <th style={{ width: 100, textAlign: "right" }}>tokens</th>
             <th style={{ width: 80, textAlign: "right" }}>成本</th>
-            <th style={{ width: 90, textAlign: "right" }}>时间</th>
+            <th style={{ width: 100, textAlign: "right" }}>时间</th>
           </tr>
         </thead>
         <tbody>
-          {SESSIONS.map((s) =>
-          <tr key={s.id} onClick={() => onJump("chat")} style={{ cursor: "pointer" }}>
-              <td><span className="t-mono" style={{ color: "var(--ink)" }}>{s.id}</span></td>
+          {sessions.map((s) => (
+            <tr key={s.id} onClick={() => onJump("chat")} style={{ cursor: "pointer" }}>
+              <td><span className="t-mono" style={{ color: "var(--ink)" }}>{s.id.slice(0, 14)}</span></td>
               <td>
-                <span className={`chip ${s.ch === "微信" ? "" : s.ch === "Web" ? "chip-info" : ""}`} style={s.ch === "微信" ? { background: "rgba(193,60,123,0.10)", color: "#9c2f5f" } : {}}>
-                  {s.ch}
+                <span className={`chip ${s.channel === "wechat" ? "" : s.channel === "web" ? "chip-info" : "chip-success"}`}
+                  style={s.channel === "wechat" ? { background: "rgba(193,60,123,0.10)", color: "#9c2f5f" } : {}}>
+                  {s.channel}
                 </span>
               </td>
-              <td className="cell-strong" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 360, color: s.status === "active" ? "var(--ink)" : "var(--ink-80)" }}>
-                {s.status === "active" && <span className="dot dot-up" style={{ marginRight: 8 }} />}
-                {s.last}
+              <td className="cell-strong" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 360 }}>
+                {s.last_message || "—"}
               </td>
-              <td className="col-num">{s.tokens}</td>
-              <td className="col-num">￥{s.cost}</td>
-              <td className="col-num" style={{ color: "var(--ink-60)", fontFamily: "var(--font-text)" }}>{s.t}</td>
+              <td className="col-num">{API.fmtNumber(s.input_tokens + s.output_tokens)}</td>
+              <td className="col-num">￥{API.fmtCost(s.cost_cny)}</td>
+              <td className="col-num" style={{ color: "var(--ink-60)", fontFamily: "var(--font-text)" }}>{API.relTime(s.last_active_at)}</td>
             </tr>
-          )}
+          ))}
         </tbody>
       </table>
+      )}
     </div>);
-
 }
 
-function IdentityCard({ onJump }) {
+function IdentityCard({ overview, ident, onJump, onReload }) {
+  if (!overview || !ident) {
+    return <div className="card"><div className="card-body t-meta">加载中…</div></div>;
+  }
+  const lines = [
+    "╔══════════════════════════════════╗",
+    "║  三十六贱笑 v" + overview.version.padEnd(20, " ") + "║",
+    "╠══════════════════════════════════╣",
+    "║  Model    " + (overview.model || "—").slice(0, 22).padEnd(22, " ") + " ║",
+    "║  Base     " + ((overview.base_url || "—").replace(/^https?:\/\//, "")).slice(0, 22).padEnd(22, " ") + " ║",
+    "║  Persona  " + `${API.fmtNumber(ident.persona_chars)} 字 / ${ident.persona_files} 份`.padEnd(22, " ") + " ║",
+    "║  Skills   " + `${ident.skills_count} 个`.padEnd(22, " ") + " ║",
+    "║  Memory   " + `${API.fmtNumber(ident.claudemd_chars)} 字 / ${ident.memdir_count} 条`.padEnd(22, " ") + " ║",
+    "╚══════════════════════════════════╝",
+  ].join("\n");
+
   return (
     <div className="card">
-      <CardHeader
-        title="实例"
-        right={<span className="chip chip-success chip-dot">运行中</span>} />
-      
+      <CardHeader title="实例" right={<span className="chip chip-success chip-dot">运行中</span>} />
       <div className="card-body">
         <pre className="shadow-product" style={{
-          margin: 0,
-          background: "var(--tile-1)",
-          color: "var(--on-dark)",
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          lineHeight: 1.55,
-          padding: "16px 18px",
-          borderRadius: 10,
-          whiteSpace: "pre",
-          overflow: "auto"
-        }}>
-{`╔══════════════════════════════════╗
-║  三十六贱笑 v1.0.0               ║
-╠══════════════════════════════════╣
-║  Model    gpt-4o-mini            ║
-║  Base     api.deepseek.com/v1    ║
-║  Persona  28,178 字 / 5 份       ║
-║  Skills   3 个 / 2 加载          ║
-║  Memory   4,210 字 / 12 条       ║
-║  Channels repl, web              ║
-╚══════════════════════════════════╝`}
-        </pre>
+          margin: 0, background: "var(--tile-1)", color: "var(--on-dark)",
+          fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.55,
+          padding: "16px 18px", borderRadius: 10, whiteSpace: "pre", overflow: "auto",
+        }}>{lines}</pre>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
-          <KV k="启动" v="今天 09:12:04" />
-          <KV k="运行时长" v="6 小时 24 分" />
-          <KV k="PID / 端口" v="48211 / 8080" />
-          <KV k="工作目录" v="~/.sanshiliu" />
+          <KV k="运行时长" v={`${Math.floor(overview.uptime_sec / 60)} 分钟`} />
+          <KV k="模型" v={overview.model || "—"} />
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
           <button className="btn btn-secondary btn-sm grow" onClick={() => onJump("chat")}><Icon name="chat" size={13}/>打开会话</button>
-          <button className="btn btn-secondary btn-sm grow"><Icon name="refresh" size={13}/>重启实例</button>
+          <button className="btn btn-secondary btn-sm grow" onClick={onReload}><Icon name="refresh" size={13}/>重启实例</button>
         </div>
       </div>
     </div>);
-
 }
 
-function HealthCard() {
+function HealthCard({ health }) {
+  const comp = (health && health.components) || {};
   const probes = [
-  { label: "/healthz", status: "up", value: "200 · 8ms" },
-  { label: "/metrics", status: "up", value: "200 · 14ms" },
-  { label: "LLM", status: "up", value: "312ms" },
-  { label: "SQLite", status: "up", value: "1.2 MB" },
-  { label: "持久化磁盘", status: "warn", value: "82%" },
-  { label: "iLink 微信", status: "off", value: "未开启" }];
-
+    { label: "Web",     status: comp.web === "up" ? "up" : "down",       value: comp.web || "?" },
+    { label: "DB",      status: comp.db === "up" ? "up" : "down",        value: comp.db || "?" },
+    { label: "LLM",     status: comp.llm === "up" ? "up" : (comp.llm === "unknown" ? "warn" : "down"), value: comp.llm || "?" },
+    { label: "微信",     status: comp.wechat === "up" ? "up" : (comp.wechat === "disabled" ? "off" : "warn"), value: comp.wechat || "?" },
+  ];
   return (
     <div className="card">
-      <CardHeader title="组件健康" sub="探针 · 每 30s 一次" right={<span className="t-mono-sm" style={{ color: "var(--ink-60)" }}>更新于 8s 前</span>} />
+      <CardHeader title="组件健康" sub="探针 · 5s 刷新" right={<span className="t-mono-sm" style={{ color: "var(--ink-60)" }}>实时</span>} />
       <div className="card-body" style={{ paddingTop: 6 }}>
         {probes.map((p) => <StatusRow key={p.label} {...p} />)}
       </div>
     </div>);
-
 }
 
-const TOOL_CALLS = [
-{ t: "2m", tool: "web_search", arg: "情侣 吵架 视频 标题", ms: 412, status: "ok", session: "repl-8f2a" },
-{ t: "3m", tool: "file_read", arg: "./persona/style.md", ms: 8, status: "ok", session: "repl-8f2a" },
-{ t: "5m", tool: "file_read", arg: "./persona/examples.md", ms: 11, status: "ok", session: "repl-8f2a" },
-{ t: "14m", tool: "web_fetch", arg: "https://b23.tv/...", ms: 624, status: "ok", session: "web-2c91" },
-{ t: "18m", tool: "bash_exec", arg: "git status", ms: 92, status: "ok", session: "repl-71d0" },
-{ t: "32m", tool: "file_write", arg: "./scripts/v3.txt", ms: 14, status: "asked", session: "repl-71d0" },
-{ t: "1h", tool: "http_post", arg: "hooks.slack.com/...", ms: 4, status: "denied", session: "web-2c91" }];
-
-
-function ToolCallsCard({ onJump }) {
+function ToolCallsCard({ tools, onJump }) {
   return (
     <div className="card">
       <CardHeader
         title="最近工具调用"
-        sub="7 条 · 24h"
+        sub={`${tools.length} 条`}
         right={
-        <>
-            <button className="btn btn-ghost btn-sm"><Icon name="filter" size={13} />筛选</button>
-            <button className="btn btn-secondary btn-sm">完整审计</button>
+          <>
+            <button className="btn btn-ghost btn-sm" onClick={() => onJump("tools")}><Icon name="filter" size={13} />筛选</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => onJump("tools")}>完整审计</button>
           </>
         } />
-      
+      {tools.length === 0 ? (
+        <div style={{ padding: "32px 20px", textAlign: "center", color: "var(--ink-60)" }}>暂无工具调用</div>
+      ) : (
       <table className="tbl">
         <thead>
           <tr>
-            <th style={{ width: 60 }}>时间</th>
+            <th style={{ width: 100 }}>时间</th>
             <th style={{ width: 130 }}>工具</th>
             <th>参数</th>
-            <th style={{ width: 120 }}>会话</th>
-            <th style={{ width: 100 }}>处理</th>
+            <th style={{ width: 160 }}>会话</th>
+            <th style={{ width: 100 }}>结果</th>
             <th style={{ width: 70, textAlign: "right" }}>耗时</th>
           </tr>
         </thead>
         <tbody>
-          {TOOL_CALLS.map((c, i) =>
-          <tr key={i}>
-              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{c.t}</td>
-              <td><span className="t-mono" style={{ color: "var(--ink)" }}>{c.tool}</span></td>
-              <td className="t-mono" style={{ color: "var(--ink-80)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 360 }}>{c.arg}</td>
-              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{c.session}</td>
+          {tools.map((c) => (
+            <tr key={c.id}>
+              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{API.relTime(c.ts)}</td>
+              <td><span className="t-mono" style={{ color: "var(--ink)" }}>{c.tool_name}</span></td>
+              <td className="t-mono" style={{ color: "var(--ink-80)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 320 }}>{c.arguments}</td>
+              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{(c.session_id || "").slice(0, 14)}</td>
               <td>
-                {c.status === "ok" && <span className="chip chip-success"><Icon name="check" size={11} />已允许</span>}
-                {c.status === "asked" && <span className="chip chip-info">询问后允许</span>}
-                {c.status === "denied" && <span className="chip chip-danger"><Icon name="x" size={11} />已拒绝</span>}
+                {c.is_error
+                  ? <span className="chip chip-danger"><Icon name="x" size={11} />错误</span>
+                  : <span className="chip chip-success"><Icon name="check" size={11} />ok</span>}
               </td>
-              <td className="col-num">{c.ms}ms</td>
+              <td className="col-num">{c.latency_ms}ms</td>
             </tr>
-          )}
+          ))}
         </tbody>
       </table>
+      )}
     </div>);
-
 }
 
-function SkillsPreview({ onJump }) {
-  const skills = [
-  { name: "video-editor", hits: 7, desc: "视频脚本拆解 / 四拍结构改写" },
-  { name: "wechat-style", hits: 0, desc: "微信通道短回复风格调整", muted: true },
-  { name: "example-skill", hits: 0, desc: "示例 skill · SKILL.md 协议演示" }];
-
+function SkillsPreview({ skills, onJump }) {
   return (
     <div className="card">
       <CardHeader
         title="技能"
-        sub="3 个已注册 · 匹配方式: 关键词"
+        sub={`${skills.length} 个已注册`}
         right={<button className="btn btn-ghost btn-sm" onClick={() => onJump("skills")}>管理 →</button>} />
-      
       <div style={{ padding: 4 }}>
-        {skills.map((s, i) =>
-        <div key={s.name} style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderTop: i === 0 ? "none" : "1px solid var(--divider-soft)" }}>
-            <span className="dot" style={{ background: s.muted ? "var(--ink-30)" : "var(--primary)" }} />
-            <div style={{ marginLeft: 12, flex: 1 }}>
-              <div className="t-mono" style={{ color: s.muted ? "var(--ink-60)" : "var(--ink)" }}>{s.name}</div>
-              <div className="t-meta" style={{ marginTop: 2 }}>{s.desc}</div>
-            </div>
-            <span className="t-mono-sm" style={{ color: s.hits ? "var(--primary)" : "var(--ink-60)" }}>{s.hits} 命中 / 24h</span>
-          </div>
-        )}
+        {skills.length === 0
+          ? <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--ink-60)" }} className="t-meta">暂无 skill</div>
+          : skills.slice(0, 4).map((s, i) => (
+              <div key={s.id} style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderTop: i === 0 ? "none" : "1px solid var(--divider-soft)" }}>
+                <span className="dot" style={{ background: s.hits_24h ? "var(--primary)" : "var(--ink-30)" }} />
+                <div style={{ marginLeft: 12, flex: 1 }}>
+                  <div className="t-mono" style={{ color: "var(--ink)" }}>{s.name}</div>
+                  <div className="t-meta" style={{ marginTop: 2 }}>{s.description.slice(0, 60)}</div>
+                </div>
+                <span className="t-mono-sm" style={{ color: s.hits_24h ? "var(--primary)" : "var(--ink-60)" }}>{s.hits_24h} 命中</span>
+              </div>
+            ))}
       </div>
     </div>);
-
 }
 
-function MemoryPreview({ onJump }) {
-  const mem = [
-  { path: "CLAUDE.md", scope: "project", chars: "4,210", hits: 18, primary: true },
-  { path: "user/preferred_format.md", scope: "user", chars: "612", hits: 18 },
-  { path: "project/jx-style-guide.md", scope: "project", chars: "1,820", hits: 9 },
-  { path: "skill/video-editor.recipes", scope: "skill", chars: "5,108", hits: 4 }];
-
+function MemoryPreview({ memory, onJump }) {
+  const items = (memory.entries || []).slice(0, 4);
+  const claude = memory.claudemd;
   return (
     <div className="card">
       <CardHeader
         title="记忆"
-        sub="memdir · CLAUDE.md · ~/.sanshiliu/"
+        sub={`memdir + CLAUDE.md`}
         right={<button className="btn btn-ghost btn-sm" onClick={() => onJump("memory")}>浏览 →</button>} />
-      
       <div style={{ padding: 4 }}>
-        {mem.map((m, i) =>
-        <div key={m.path} style={{ display: "grid", gridTemplateColumns: "1fr 70px 60px 90px", gap: 10, alignItems: "center", padding: "12px 16px", borderTop: i === 0 ? "none" : "1px solid var(--divider-soft)" }}>
-            <div className="t-mono" style={{ color: m.primary ? "var(--primary)" : "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.path}</div>
-            <span className="chip" style={{ justifySelf: "start" }}>{m.scope}</span>
-            <span className="t-mono-sm" style={{ color: "var(--ink-60)", textAlign: "right" }}>{m.chars}</span>
-            <span className="t-mono-sm" style={{ color: m.hits ? "var(--primary)" : "var(--ink-60)", textAlign: "right" }}>{m.hits} 命中</span>
+        {claude && claude.total_chars > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 60px", gap: 10, alignItems: "center", padding: "12px 16px", borderTop: "none" }}>
+            <div className="t-mono" style={{ color: "var(--primary)" }}>CLAUDE.md</div>
+            <span className="chip" style={{ justifySelf: "start" }}>常驻</span>
+            <span className="t-mono-sm" style={{ color: "var(--ink-60)", textAlign: "right" }}>{API.fmtNumber(claude.total_chars)}</span>
           </div>
         )}
+        {items.length === 0 && (!claude || !claude.total_chars)
+          ? <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--ink-60)" }} className="t-meta">暂无记忆</div>
+          : items.map((m, i) => (
+              <div key={m.file} style={{ display: "grid", gridTemplateColumns: "1fr 70px 60px", gap: 10, alignItems: "center", padding: "12px 16px", borderTop: "1px solid var(--divider-soft)" }}>
+                <div className="t-mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.file}</div>
+                <span className="chip" style={{ justifySelf: "start" }}>{m.scope}</span>
+                <span className="t-mono-sm" style={{ color: "var(--ink-60)", textAlign: "right" }}>{API.fmtNumber(m.chars)}</span>
+              </div>
+            ))}
       </div>
     </div>);
-
-}
-
-function ActivityStatsCard() {
-  const [tab, setTab] = React.useState("overview");
-  const [range, setRange] = React.useState("all");
-
-  const kpis = [
-    { label: "会话",        value: "14" },
-    { label: "消息",        value: "2,414" },
-    { label: "累计 tokens", value: "6.0M" },
-    { label: "活跃天数",     value: "5" },
-    { label: "当前连续",     value: "3 天" },
-    { label: "最长连续",     value: "3 天" },
-    { label: "高峰时段",     value: "15 时" },
-    { label: "常用模型",     value: "Opus 4.7" }];
-
-
-  const COLS = 30,ROWS = 7;
-  const cells = [];
-  for (let c = 0; c < COLS; c++) {
-    for (let r = 0; r < ROWS; r++) {
-      let v = 0;
-      if (c >= COLS - 3) {
-        const seed = ((c + 1) * 11 + (r + 1) * 7) % 9;
-        if (seed >= 5) v = Math.min(3, seed - 4);
-      }
-      cells.push(v);
-    }
-  }
-  const heatColors = [
-  "var(--hairline)",
-  "rgba(0,102,204,0.18)",
-  "rgba(0,102,204,0.42)",
-  "var(--primary)"];
-
-
-  return (
-    <div className="card">
-      <div className="card-header">
-        <Segmented value={tab} onChange={setTab} options={[
-        { id: "overview", label: "概览" },
-        { id: "models", label: "按模型" }]
-        } />
-        <Segmented value={range} onChange={setRange} options={[
-        { id: "all", label: "全部" },
-        { id: "30d", label: "30 天" },
-        { id: "7d", label: "7 天" }]
-        } />
-      </div>
-      <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
-          {kpis.map((k, i) =>
-          <div key={i} style={{
-            background: "var(--pearl)",
-            borderRadius: 8,
-            padding: "10px 12px"
-          }}>
-              <div className="t-meta">{k.label}</div>
-              <div style={{
-              marginTop: 4,
-              fontFamily: "var(--font-text)",
-              fontSize: 18,
-              fontWeight: 600,
-              color: "var(--ink)",
-              letterSpacing: "-0.01em"
-            }}>{k.value}</div>
-            </div>
-          )}
-        </div>
-
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: `repeat(${COLS}, 1fr)`,
-          gridTemplateRows: `repeat(${ROWS}, auto)`,
-          gridAutoFlow: "column",
-          gap: 3
-        }}>
-          {cells.map((v, i) =>
-          <div key={i} style={{
-            background: heatColors[v],
-            width: "100%",
-            aspectRatio: "1 / 1",
-            borderRadius: 2
-          }} />
-          )}
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span className="t-meta" style={{ color: "var(--ink-60)" }}>
-            已消耗 tokens 约相当于《霍比特人》全文的 48 倍
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span className="t-meta" style={{ color: "var(--ink-48)" }}>少</span>
-            {heatColors.map((bg, i) =>
-            <span key={i} style={{ width: 10, height: 10, background: bg, borderRadius: 2 }} />
-            )}
-            <span className="t-meta" style={{ color: "var(--ink-48)" }}>多</span>
-          </div>
-        </div>
-      </div>
-    </div>);
-
 }
 
 Object.assign(window, { Overview });

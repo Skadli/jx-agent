@@ -2,7 +2,28 @@
  * Pure white surfaces, hairline borders, single blue accent on active rail item.
  */
 
-function TopBar({ active, onJump }) {
+function TopBar({ active, onJump, onLogout }) {
+  const [overview, setOverview] = React.useState(null);
+  const [health, setHealth] = React.useState(null);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      const [o, h] = await Promise.all([API.get("/api/overview"), API.get("/api/health")]);
+      if (!alive) return;
+      if (!o.error) setOverview(o);
+      if (!h.error) setHealth(h);
+    };
+    refresh();
+    const id = setInterval(refresh, 10000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  const comp = (health && health.components) || {};
+  const allOk = Object.values(comp).every(v => v === "up" || v === "disabled") || !health;
+  const model = (overview && overview.model) || "—";
+
   return (
     <div className="topbar">
       <div className="wordmark" onClick={() => onJump("overview")} style={{ cursor: "pointer" }}>
@@ -27,23 +48,45 @@ function TopBar({ active, onJump }) {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        <span className="dot dot-up" />
-        <span className="t-meta" style={{ color: "var(--ink-80)" }}>所有通道正常</span>
+        <span className={`dot ${allOk ? "dot-up" : "dot-warn"}`} />
+        <span className="t-meta" style={{ color: "var(--ink-80)" }}>{allOk ? "所有通道正常" : "通道需检查"}</span>
       </div>
 
       <div style={{ height: 14, width: 1, background: "var(--hairline)" }} />
 
       <span className="chip chip-mono" title="当前模型">
-        gpt-4o-mini
+        {model}
       </span>
 
-      <button className="btn-icon" title="设置"><Icon name="settings" size={16} /></button>
+      <button className="btn-icon" title="设置" onClick={() => onJump("permissions")}><Icon name="settings" size={16} /></button>
 
-      <div style={{
-        width: 28, height: 28, borderRadius: "50%", background: "var(--ink)",
-        color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center",
-        fontSize: 11, fontWeight: 600, letterSpacing: 0
-      }}>JX</div>
+      <div style={{ position: "relative" }}>
+        <button
+          title="实例"
+          onClick={() => setMenuOpen(v => !v)}
+          style={{
+            border: 0, cursor: "pointer",
+            width: 28, height: 28, borderRadius: "50%", background: "var(--ink)",
+            color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center",
+            fontSize: 11, fontWeight: 600, letterSpacing: 0
+          }}>JX</button>
+        {menuOpen && (
+          <div className="card" style={{
+            position: "absolute", right: 0, top: 36, width: 260, zIndex: 30,
+            boxShadow: "0 12px 36px rgba(0,0,0,0.14)", overflow: "hidden",
+          }}>
+            <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <KV k="模型" v={model} />
+              <KV k="Base" v={(overview && overview.base_url) || "—"} />
+              <KV k="运行" v={overview ? `${Math.floor(overview.uptime_sec / 60)} 分钟` : "—"} />
+            </div>
+            <div style={{ borderTop: "1px solid var(--hairline)", padding: 8, display: "flex", gap: 8 }}>
+              <button className="btn btn-secondary btn-sm grow" onClick={() => { setMenuOpen(false); onJump("overview"); }}>总览</button>
+              {onLogout && <button className="btn btn-danger-ghost btn-sm grow" onClick={onLogout}>退出</button>}
+            </div>
+          </div>
+        )}
+      </div>
     </div>);
 
 }
@@ -54,6 +97,7 @@ const TAB_LABEL = {
   persona: "人设",
   memory: "记忆",
   skills: "技能",
+  tools: "工具",
   channels: "通道",
   permissions: "权限"
 };
@@ -77,6 +121,7 @@ const RAIL_SECTIONS = [
 {
   label: "运行时",
   items: [
+  { id: "tools", label: "工具", icon: "terminal", count: null },
   { id: "channels", label: "通道", icon: "stack", count: "2/3" },
   { id: "permissions", label: "权限", icon: "lock", count: null }]
 

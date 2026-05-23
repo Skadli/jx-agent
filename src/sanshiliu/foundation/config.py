@@ -91,6 +91,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("web_port", "SANSHILIU_WEB_PORT"),
         description="HTTP 服务监听端口",
     )
+    dashboard_password: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("dashboard_password", "SANSHILIU_DASHBOARD_PASSWORD"),
+        description="Dashboard 首次进入密码；为空时不启用面板门禁",
+    )
 
     # iLink 微信 Bot，Phase 4 启用时必填
     ilink_base_url: str = Field(
@@ -149,7 +154,7 @@ class Settings(BaseSettings):
     wechat_whitelist: str = Field(
         default="",
         validation_alias=AliasChoices("wechat_whitelist", "SANSHILIU_WECHAT_WHITELIST"),
-        description="逗号分隔的 wxid 白名单；空集合 = 一律拒绝",
+        description="逗号分隔的 wxid 白名单；空集合 = 允许所有微信用户",
     )
     wechat_input_blacklist: str = Field(
         default="",

@@ -14,6 +14,7 @@ from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
 from sanshiliu.foundation.errors import ChannelError
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.storage.db import Database
 
 _logger = get_logger(__name__)
@@ -39,6 +40,7 @@ class WechatBot:
         rate_limiter: WechatRateLimiter,
         safety: WechatSafety,
         health: HealthState,
+        short_term: ShortTermMemory | None = None,
     ) -> None:
         self._db = db
         self._engine = engine
@@ -48,6 +50,7 @@ class WechatBot:
         self._rate_limiter = rate_limiter
         self._safety = safety
         self._health = health
+        self._short_term = short_term
         self._stop = asyncio.Event()
         self._consume_task: asyncio.Task[None] | None = None
         self._ping_task: asyncio.Task[None] | None = None
@@ -112,6 +115,11 @@ class WechatBot:
         try:
             msg = await self._engine.complete_turn(session, item.content)
             reply = msg.content or ""
+            if self._short_term is not None:
+                try:
+                    await self._short_term.snapshot(session)
+                except Exception as exc:
+                    _logger.warning("wechat 会话快照失败（不阻塞）", item_id=item.id, error=str(exc))
         except Exception as exc:
             _logger.error("引擎处理 wechat 消息失败", item_id=item.id, error=str(exc))
             await self._queue.mark_failed(item.id, str(exc))

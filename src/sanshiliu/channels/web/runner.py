@@ -7,8 +7,48 @@ import contextlib
 import signal
 import sys
 
+from sanshiliu.channels.web.api import (
+    make_channels_handler,
+    make_health_api_handler,
+    make_memory_file_handler,
+    make_memory_handler,
+    make_overview_handler,
+    make_permissions_handler,
+    make_persona_file_handler,
+    make_persona_handler,
+    make_session_messages_handler,
+    make_sessions_handler,
+    make_settings_json_handler,
+    make_skills_handler,
+    make_tool_calls_handler,
+    make_tools_handler,
+)
+from sanshiliu.channels.web.api_writes import (
+    make_instance_reload_handler,
+    make_memory_create_handler,
+    make_memory_modify_handler,
+    make_permissions_default_mode_handler,
+    make_permissions_rule_handler,
+    make_persona_write_handler,
+    make_session_delete_handler,
+    make_session_new_handler,
+    make_settings_json_write_handler,
+    make_skills_reload_handler,
+)
+from sanshiliu.channels.web.approvals import (
+    WebApprovalBroker,
+    WebApprovalConfirmer,
+    make_tool_approval_handler,
+)
+from sanshiliu.channels.web.auth import (
+    DashboardAuth,
+    make_auth_login_handler,
+    make_auth_logout_handler,
+    make_auth_status_handler,
+)
 from sanshiliu.channels.web.handlers import (
     HealthState,
+    SessionStore,
     make_chat_handler,
     make_healthz_handler,
     make_metrics_handler,
@@ -16,6 +56,10 @@ from sanshiliu.channels.web.handlers import (
 )
 from sanshiliu.channels.web.routes import Router
 from sanshiliu.channels.web.server import WebServer
+from sanshiliu.channels.web.static import (
+    make_dashboard_handler,
+    make_root_redirect_handler,
+)
 from sanshiliu.channels.wechat.bot import WechatBot
 from sanshiliu.channels.wechat.ilink_client import ILinkClient
 from sanshiliu.channels.wechat.ilink_poller import ILinkLongPoller
@@ -36,9 +80,9 @@ from sanshiliu.llm.client import LLMClient
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
+from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.security.path_guard import PathGuard
 from sanshiliu.security.permission import PermissionManager
-from sanshiliu.security.prompts import DenyAllConfirmer
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.skills.loader import SkillLoader
@@ -85,10 +129,13 @@ async def run_serve() -> int:
         max_context_tokens=settings.max_context_tokens,
         compact_threshold_ratio=settings.compact_threshold_ratio,
     )
-    # Phase 8：权限（web/wechat 走 DenyAllConfirmer，ask 模式直接拒绝）
+    approval_broker = WebApprovalBroker()
+
+    # Phase 8：权限（web chat 通过 SSE + POST 做交互式工具审批）
     from pathlib import Path as _Path
 
     permission_manager: PermissionManager | None = None
+    settings_loader: SettingsLoader | None = None
     if settings.security_enabled:
         try:
             settings_loader = SettingsLoader(
@@ -100,11 +147,12 @@ async def run_serve() -> int:
             permission_manager = PermissionManager(
                 settings_loader=settings_loader,
                 path_guard=path_guard,
-                confirmer=DenyAllConfirmer("web/wechat"),
+                confirmer=WebApprovalConfirmer(approval_broker),
                 db=db,
             )
         except Exception as exc:
             print(f"权限管理加载失败（继续无权限审批）：{exc}", file=sys.stderr)
+            settings_loader = None
 
     # Phase 5：tool 栈
     tool_registry = None
@@ -124,6 +172,7 @@ async def run_serve() -> int:
 
     # Phase 6：skills
     skill_activator: SkillActivator | None = None
+    skill_loader: SkillLoader | None = None
     if settings.skills_enabled:
         try:
             skill_loader = SkillLoader([settings.skills_dir_project, settings.skills_dir_repo])
@@ -133,6 +182,7 @@ async def run_serve() -> int:
                 _logger.info("skills 已注册", ids=[s.id for s in skills])
         except Exception as exc:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
+            skill_loader = None
 
     # Phase 7：长期记忆（CLAUDE.md + memdir + auto-extract）
     claudemd_loader: ClaudeMdLoader | None = None
@@ -192,9 +242,71 @@ async def run_serve() -> int:
 
     loop = asyncio.get_running_loop()
     router = Router()
-    router.register("POST", "/chat", make_chat_handler(engine, loop, health))
+    session_store = SessionStore()
+    # ShortTermMemory 内部会在 base_dir 下再建 sessions/；这里直接给 data_dir
+    short_term = ShortTermMemory(settings.data_dir)
+    router.register("POST", "/chat", make_chat_handler(
+        engine, loop, health, session_store, short_term, approval_broker,
+    ))
     router.register("GET", "/healthz", make_healthz_handler(db, loop, health))
     router.register("GET", "/metrics", make_metrics_handler(context_manager))
+    dashboard_auth = DashboardAuth(settings.dashboard_password)
+    router.register("GET", "/api/auth/status", make_auth_status_handler(dashboard_auth))
+    router.register("POST", "/api/auth/login", make_auth_login_handler(dashboard_auth))
+    router.register("POST", "/api/auth/logout", make_auth_logout_handler(dashboard_auth))
+    router.register_prefix("POST", "/api/tool_approvals/", make_tool_approval_handler(approval_broker))
+
+    # dashboard 静态托管：/ → /dashboard/，/dashboard/* → dashboard 目录
+    dashboard_dir = _Path(__file__).resolve().parents[3].parent / "dashboard"
+    if dashboard_dir.is_dir():
+        router.register("GET", "/", make_root_redirect_handler())
+        router.register_prefix("GET", "/dashboard", make_dashboard_handler(dashboard_dir))
+        _logger.info("dashboard 静态托管已注册", dir=str(dashboard_dir))
+    else:
+        _logger.warning("dashboard 目录不存在，跳过静态托管", path=str(dashboard_dir))
+
+    # ─── /api/* 读 endpoints ───
+    import time as _time
+    start_time = _time.time()
+    persona_for_api = loader  # PersonaLoader 一定存在（前面 load 过）
+    router.register("GET", "/api/overview", make_overview_handler(
+        db, loop, persona_for_api, memdir_loader, claudemd_loader,
+        skill_loader, start_time, settings,
+    ))
+    router.register("GET", "/api/health", make_health_api_handler(health, loop, db))
+    router.register("GET", "/api/sessions", make_sessions_handler(db, loop, settings.data_dir))
+    router.register_prefix("GET", "/api/sessions/", make_session_messages_handler(settings.data_dir))
+    router.register("GET", "/api/tools", make_tools_handler(tool_registry))
+    router.register("GET", "/api/tool_calls", make_tool_calls_handler(db, loop))
+    router.register("GET", "/api/persona", make_persona_handler(persona_for_api))
+    router.register_prefix("GET", "/api/persona/", make_persona_file_handler(persona_for_api))
+    router.register("GET", "/api/memory", make_memory_handler(memdir_loader, claudemd_loader))
+    router.register_prefix("GET", "/api/memory/", make_memory_file_handler(memdir_loader, claudemd_loader))
+    router.register("GET", "/api/skills", make_skills_handler(skill_loader, db, loop))
+    router.register("GET", "/api/channels", make_channels_handler(settings, health))
+    router.register("GET", "/api/permissions", make_permissions_handler(settings_loader, db, loop))
+    router.register("GET", "/api/settings_json", make_settings_json_handler(settings_loader))
+
+    # ─── 写 endpoints ───
+    router.register("POST", "/api/sessions/new", make_session_new_handler(session_store))
+    router.register_prefix("DELETE", "/api/sessions/", make_session_delete_handler(
+        db, loop, session_store, settings.data_dir,
+    ))
+    router.register_prefix("PUT", "/api/persona/", make_persona_write_handler(persona_for_api))
+    if memdir_loader is not None:
+        router.register("POST", "/api/memory", make_memory_create_handler(memdir_loader))
+        mem_mod = make_memory_modify_handler(memdir_loader)
+        router.register_prefix("PUT",    "/api/memory/", mem_mod)
+        router.register_prefix("DELETE", "/api/memory/", mem_mod)
+    router.register("POST", "/api/skills/reload", make_skills_reload_handler(skill_loader))
+    router.register("PUT",  "/api/settings_json", make_settings_json_write_handler(settings_loader))
+    router.register("PUT",  "/api/permissions/default_mode", make_permissions_default_mode_handler(settings_loader))
+    perm_rule = make_permissions_rule_handler(settings_loader)
+    router.register("POST",   "/api/permissions/rule", perm_rule)
+    router.register("DELETE", "/api/permissions/rule", perm_rule)
+    router.register("POST", "/api/instance/reload", make_instance_reload_handler(
+        persona_for_api, memdir_loader, claudemd_loader, skill_loader, settings_loader,
+    ))
 
     # wechat 可选启动；webhook 路径挂在同一 web server 上
     wechat_bot: WechatBot | None = None
@@ -240,6 +352,7 @@ async def run_serve() -> int:
             rate_limiter=rate_limiter,
             safety=safety,
             health=health,
+            short_term=short_term,
         )
         if official_wechat:
             wechat_poller = ILinkLongPoller(
@@ -269,6 +382,7 @@ async def run_serve() -> int:
         port=settings.web_port,
         router=router,
         loop=loop,
+        auth=dashboard_auth,
     )
 
     # 信号处理：Ctrl+C / SIGTERM 优雅退出

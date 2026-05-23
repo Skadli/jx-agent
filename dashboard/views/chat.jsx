@@ -1,81 +1,186 @@
-/* Chat / Sessions — operator view.
- * Three columns: session list (left) + conversation (center) + inspector (right).
- * Composer is embedded in the center pane, not a floating sticky bar.
- */
-
-const SEED_CHAT = [
-  { role: "user",  text: "我想拍一个'我和女朋友吵架'的视频，但怕翻车", t: "14:02:14", tokens: 38 },
-  { role: "agent", text: "先停一下。你说的'我和女朋友吵架'是想真拍现场，还是用一个荒诞设定包装？这俩天差地远。", t: "14:02:16", tokens: 42, latency_ms: 1140 },
-  { role: "user",  text: "我想真拍", t: "14:03:02", tokens: 12 },
-  { role: "agent", text: "那就别拍。真吵架拍一次毁一次关系。换个思路——做成「测评一下我和女朋友的吵架风格」，找她事先同意，把规则定好：限定话题、限定时长 3 分钟、最后两人复盘谁吵得更离谱。这样真实情绪在、节目机制也在、还有结尾把话筒扔给观众。", t: "14:03:05", tokens: 178, latency_ms: 1380, tool: "web_search", tool_ms: 412 },
-];
-const STREAM_REPLY = "避开'吵架'两个字，太直接，给一个离谱任务入口。可以是「测评一下情侣吵架谁的话术更逆天」，或者「我和我女友办了一场吵架奥运会」。第二个更野，建议你先做一期看看反馈。";
-
-const ALL_SESSIONS = [
-  { id: "repl-8f2a",  ch: "REPL",  status: "active",  tokens: 6142,  cost: "0.0073", t: "现在",       last: "标题怎么起",                          msgs: 4 },
-  { id: "web-2c91",   ch: "Web",   status: "idle",    tokens: 18902, cost: "0.0187", t: "14 分钟前",  last: "情侣吵架的视频但怕翻车",              msgs: 12 },
-  { id: "wechat-a3",  ch: "微信",  status: "closed",  tokens: 612,   cost: "0.0006", t: "1 小时前",   last: "在吗",                                msgs: 2 },
-  { id: "repl-71d0",  ch: "REPL",  status: "closed",  tokens: 11408, cost: "0.0114", t: "3 小时前",   last: "把「我做了 X」改成离谱任务",          msgs: 18 },
-  { id: "web-44ce",   ch: "Web",   status: "closed",  tokens: 2841,  cost: "0.0028", t: "昨天",       last: "热梗总结怎么排梗",                    msgs: 6 },
-  { id: "web-1aa9",   ch: "Web",   status: "closed",  tokens: 5612,  cost: "0.0056", t: "昨天",       last: "情景剧脚本改一下",                    msgs: 9 },
-  { id: "repl-3f12",  ch: "REPL",  status: "closed",  tokens: 4101,  cost: "0.0041", t: "2 天前",     last: "/persona 看一下",                     msgs: 3 },
-];
+/* Chat / Sessions — 真实接 /api/sessions + /chat SSE。 */
 
 function Chat() {
-  const [activeId, setActiveId] = React.useState("repl-8f2a");
-  const [filter, setFilter] = React.useState("all");
-  const [messages, setMessages] = React.useState(SEED_CHAT);
-  const [composer, setComposer] = React.useState("标题怎么起");
+  const [sessions, setSessions]   = React.useState([]);
+  const [activeId, setActiveId]   = React.useState(null);
+  const [messages, setMessages]   = React.useState([]);
+  const [filter, setFilter]       = React.useState("all");
+  const [composer, setComposer]   = React.useState("");
   const [streaming, setStreaming] = React.useState(false);
   const [streamText, setStreamText] = React.useState("");
+  const streamCtrl = React.useRef(null);
 
-  const sessions = ALL_SESSIONS.filter(s =>
+  // 拉会话列表（5s 轮询）
+  React.useEffect(() => {
+    let alive = true;
+    const fetchList = async () => {
+      const r = await API.get("/api/sessions?limit=50");
+      if (alive && !r.error) {
+        const list = r.sessions || [];
+        setSessions(list);
+        if (!activeId && list.length > 0) setActiveId(list[0].id);
+      }
+    };
+    fetchList();
+    const id = setInterval(fetchList, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, [activeId]);
+
+  // 拉某个会话的历史消息
+  React.useEffect(() => {
+    if (!activeId) { setMessages([]); return; }
+    let alive = true;
+    (async () => {
+      const r = await API.get(`/api/sessions/${encodeURIComponent(activeId)}/messages`);
+      if (alive && !r.error) setMessages(r.messages || []);
+    })();
+    return () => { alive = false; };
+  }, [activeId]);
+
+  const filtered = sessions.filter(s =>
     filter === "all" ||
-    (filter === "active" && s.status === "active") ||
-    (filter === "repl"   && s.ch === "REPL") ||
-    (filter === "web"    && s.ch === "Web")  ||
-    (filter === "wechat" && s.ch === "微信")
+    (filter === "repl"   && s.channel === "repl") ||
+    (filter === "web"    && s.channel === "web")  ||
+    (filter === "wechat" && s.channel === "wechat")
   );
 
-  const active = ALL_SESSIONS.find(s => s.id === activeId) || ALL_SESSIONS[0];
+  const active = sessions.find(s => s.id === activeId);
+
+  const askToolApproval = async (approval) => {
+    const toolName = approval.canonical_name || approval.tool_name || "工具";
+    setStreamText(`等待授权：${toolName}`);
+    const allow = window.confirm(formatToolApprovalPrompt(approval));
+    const r = await API.respondToolApproval(approval.id, allow ? "allow" : "deny", "once");
+    if (r.error) {
+      setMessages(m => [...m, { role: "assistant", content: `[工具审批提交失败] ${r.error}` }]);
+    }
+  };
 
   const send = () => {
-    if (!composer.trim() || streaming) return;
-    setMessages(m => [...m, { role: "user", text: composer.trim(), t: "现在", tokens: composer.length }]);
+    const text = composer.trim();
+    if (!text || streaming) return;
+    const sessionForSend = activeId && (!active || active.channel === "web") ? activeId : null;
+    setMessages(m => [...m, { role: "user", content: text }]);
     setComposer("");
     setStreaming(true);
     setStreamText("");
-    let i = 0;
-    const tick = () => {
-      if (i >= STREAM_REPLY.length) {
-        setMessages(m => [...m, { role: "agent", text: STREAM_REPLY, t: "现在", tokens: 96, latency_ms: 1080 }]);
+    let buf = "";
+    streamCtrl.current = API.chatStream({
+      q: text,
+      sessionId: sessionForSend,
+      onSession: (sid) => {
+        if (!sid) return;
+        setActiveId(sid);
+        setSessions(list => list.some(s => s.id === sid)
+          ? list
+          : [{ id: sid, channel: "web", calls: 0, input_tokens: 0, output_tokens: 0, cost_cny: 0, last_active_at: Date.now(), last_message: text }, ...list]);
+      },
+      onApproval: askToolApproval,
+      onDelta: (chunk) => { buf += chunk; setStreamText(buf); },
+      onDone:  () => {
+        if (buf) setMessages(m => [...m, { role: "assistant", content: buf }]);
         setStreamText("");
         setStreaming(false);
-        return;
-      }
-      i = Math.min(STREAM_REPLY.length, i + (2 + Math.floor(Math.random() * 4)));
-      setStreamText(STREAM_REPLY.slice(0, i));
-      setTimeout(tick, 28);
-    };
-    setTimeout(tick, 280);
+        streamCtrl.current = null;
+        // 触发会话列表刷新
+        API.get("/api/sessions?limit=50").then(r => { if (!r.error) setSessions(r.sessions || []); });
+      },
+      onError: (msg) => {
+        setMessages(m => [...m, { role: "assistant", content: `[错误] ${msg}` }]);
+        setStreamText("");
+        setStreaming(false);
+        streamCtrl.current = null;
+      },
+    });
   };
+
+  const stop = () => {
+    if (streamCtrl.current) streamCtrl.current.abort();
+    streamCtrl.current = null;
+    setStreaming(false);
+    if (streamText) setMessages(m => [...m, { role: "assistant", content: streamText + " …[已中止]" }]);
+    setStreamText("");
+  };
+
+  const newSession = async () => {
+    const r = await API.post("/api/sessions/new", { channel: "web" });
+    if (r.error) { alert("新建失败：" + r.error); return; }
+    setActiveId(r.session_id);
+    setMessages([]);
+    setSessions(list => list.some(s => s.id === r.session_id)
+      ? list
+      : [{ id: r.session_id, channel: r.channel || "web", calls: 0, input_tokens: 0, output_tokens: 0, cost_cny: 0, last_active_at: Date.now(), last_message: "" }, ...list]);
+    // 刷新列表；新建会话未发生调用前可能还未落 DB，保留本地占位
+    const lst = await API.get("/api/sessions?limit=50");
+    if (!lst.error && (lst.sessions || []).length) setSessions(lst.sessions || []);
+  };
+
+  const deleteSession = async (sessionId) => {
+    if (streaming && sessionId === activeId) {
+      alert("当前会话正在生成，先停止再删除。");
+      return;
+    }
+    const item = sessions.find(s => s.id === sessionId);
+    const name = (item && item.last_message)
+      ? `“${item.last_message.slice(0, 28)}${item.last_message.length > 28 ? "..." : ""}”`
+      : sessionId.slice(0, 16);
+    if (!window.confirm(`删除历史会话 ${name}？\n本地消息、工具调用和会话统计都会移除。`)) return;
+
+    const r = await API.del(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    if (r.error) {
+      alert("删除失败：" + r.error);
+      return;
+    }
+
+    const next = sessions.filter(s => s.id !== sessionId);
+    setSessions(next);
+    if (activeId === sessionId) {
+      setMessages([]);
+      setActiveId(next[0]?.id || null);
+    }
+
+    const fresh = await API.get("/api/sessions?limit=50");
+    if (!fresh.error) {
+      const list = fresh.sessions || [];
+      setSessions(list);
+      if (activeId === sessionId) {
+        setActiveId(list[0]?.id || null);
+        setMessages([]);
+      }
+    }
+  };
+
+  const handleComposerKeyDown = (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    if (streaming) stop();
+    else send();
+  };
+
+  const totals = sessions.reduce((acc, s) => ({
+    msgs: acc.msgs + (s.calls || 0),
+    tok:  acc.tok + (s.input_tokens || 0) + (s.output_tokens || 0),
+    cost: acc.cost + (s.cost_cny || 0),
+  }), { msgs: 0, tok: 0, cost: 0 });
 
   return (
     <div data-screen-label="02 会话" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <PageHeader
         title="会话"
-        sub="42 条 · 1 活跃 · 累计 218,402 tokens · ￥0.4271"
+        sub={`${sessions.length} 条 · 累计 ${API.fmtNumber(totals.tok)} tokens · ￥${API.fmtCost(totals.cost)}`}
         actions={
           <>
             <Segmented value={filter} onChange={setFilter} options={[
               { id: "all",    label: "全部" },
-              { id: "active", label: "活跃" },
               { id: "repl",   label: "REPL" },
               { id: "web",    label: "Web" },
               { id: "wechat", label: "微信" },
             ]} />
-            <button className="btn btn-secondary"><Icon name="download" size={13}/>导出</button>
-            <button className="btn btn-primary"><Icon name="plus" size={13} color="#fff"/>新建会话</button>
+            <button className="btn btn-secondary" onClick={() => {
+              const jsonl = sessions.map(s => JSON.stringify(s)).join("\n");
+              API.download("sessions.jsonl", jsonl);
+            }}><Icon name="download" size={13}/>导出</button>
+            <button className="btn btn-primary" onClick={newSession}><Icon name="plus" size={13} color="#fff"/>新建会话</button>
           </>
         }
       />
@@ -89,7 +194,7 @@ function Chat() {
         minHeight: 0,
         alignItems: "stretch",
       }}>
-        {/* ===== LEFT: session list ===== */}
+        {/* LEFT: session list */}
         <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div className="card-header" style={{ padding: "10px 14px" }}>
             <div className="search-wrap grow">
@@ -98,48 +203,49 @@ function Chat() {
             </div>
           </div>
           <div style={{ overflowY: "auto", flex: 1 }}>
-            {sessions.map(s => (
+            {filtered.length === 0 ? (
+              <div style={{ padding: 32, textAlign: "center", color: "var(--ink-60)" }} className="t-meta">暂无会话<br/>点击"新建会话"开始</div>
+            ) : filtered.map(s => (
               <SessionListItem
                 key={s.id}
                 s={s}
                 active={s.id === activeId}
                 onClick={() => setActiveId(s.id)}
+                onDelete={() => deleteSession(s.id)}
               />
             ))}
           </div>
         </div>
 
-        {/* ===== CENTER: conversation ===== */}
+        {/* CENTER: conversation */}
         <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {/* Session header */}
           <div className="card-header">
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span className={`chip ${active.ch === "微信" ? "" : active.ch === "Web" ? "chip-info" : "chip-success"}`}
-                    style={active.ch === "微信" ? { background: "rgba(193,60,123,0.10)", color: "#9c2f5f" } : {}}>
-                {active.ch}
-              </span>
-              <span className="t-mono-strong" style={{ color: "var(--ink)" }}>{active.id}</span>
-              <span className={`chip chip-dot ${active.status === "active" ? "chip-success" : ""}`}
-                    style={active.status !== "active" ? { color: "var(--ink-60)" } : {}}>
-                {active.status === "active" ? "活跃" : active.status === "idle" ? "闲置" : "已关闭"}
-              </span>
-              <span className="t-meta" style={{ color: "var(--ink-60)" }}>
-                {active.msgs} 消息 · {active.tokens.toLocaleString()} tokens · ￥{active.cost} · 开始于 {active.t}
-              </span>
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="btn btn-ghost btn-sm">/stats</button>
-              <button className="btn btn-ghost btn-sm">/persona</button>
-              <button className="btn btn-ghost btn-sm">/memory</button>
-              <button className="btn-icon" title="更多"><Icon name="more" size={14}/></button>
+              {active ? (
+                <>
+                  <span className={`chip ${active.channel === "wechat" ? "" : active.channel === "web" ? "chip-info" : "chip-success"}`}
+                        style={active.channel === "wechat" ? { background: "rgba(193,60,123,0.10)", color: "#9c2f5f" } : {}}>
+                    {active.channel}
+                  </span>
+                  <span className="t-mono-strong" style={{ color: "var(--ink)" }}>{active.id.slice(0, 16)}</span>
+                  <span className="t-meta" style={{ color: "var(--ink-60)" }}>
+                    {active.calls} 次调用 · {API.fmtNumber((active.input_tokens || 0) + (active.output_tokens || 0))} tok · ￥{API.fmtCost(active.cost_cny)}
+                  </span>
+                </>
+              ) : (
+                <span className="t-mono-strong" style={{ color: "var(--ink-60)" }}>未选择会话</span>
+              )}
             </div>
           </div>
 
           {/* Transcript */}
           <div style={{ flex: 1, overflowY: "auto", padding: "20px 28px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-              {messages.map((m, i) => <Bubble key={i} {...m} />)}
-              {streaming && <Bubble role="agent" text={streamText} streaming t="正在生成" />}
+              {messages.length === 0 && !streaming && (
+                <div className="t-meta" style={{ textAlign: "center", padding: 40 }}>这个会话还没有消息。下方输入框开始聊天 ↓</div>
+              )}
+              {messages.map((m, i) => <Bubble key={i} role={m.role} text={m.content} />)}
+              {streaming && <Bubble role="assistant" text={streamText} streaming t="正在生成" />}
             </div>
           </div>
 
@@ -156,42 +262,31 @@ function Chat() {
             }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                 <textarea
-                  rows={1}
+                  rows={2}
                   style={{
-                    flex: 1,
-                    resize: "none",
-                    border: "none",
-                    outline: "none",
-                    background: "transparent",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 14,
-                    lineHeight: 1.5,
-                    color: "var(--ink)",
-                    padding: "4px 0",
+                    flex: 1, resize: "none", border: "none", outline: "none",
+                    background: "transparent", fontFamily: "var(--font-mono)",
+                    fontSize: 14, lineHeight: 1.5, color: "var(--ink)", padding: "4px 0",
                   }}
-                  placeholder="说人话，或输入 / 触发命令"
+                  placeholder="说人话，Enter 发送，Shift+Enter 换行"
                   value={composer}
                   onChange={e => setComposer(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
+                  onKeyDown={handleComposerKeyDown}
                 />
                 <button
                   className="btn-icon"
-                  onClick={send}
-                  disabled={streaming || !composer.trim()}
-                  title="发送（⌘/Ctrl + Enter）"
-                  style={{ color: "var(--ink-60)", fontSize: 14, lineHeight: 1, padding: 4 }}
-                >↵</button>
+                  onClick={streaming ? stop : send}
+                  disabled={!streaming && !composer.trim()}
+                  title={streaming ? "停止生成（Enter）" : "发送（Enter）"}
+                  style={{ color: streaming ? "var(--danger)" : "var(--ink-60)", fontSize: 14, lineHeight: 1, padding: 4 }}>
+                  {streaming ? <Icon name="stop" size={13} /> : "↵"}
+                </button>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <button className="btn btn-ghost btn-sm" style={{ color: "var(--warning-fg)", padding: "2px 6px" }}>权限·全放行</button>
-                <span className="t-meta">Opus 4.7 · 上下文 69%</span>
+                <span className="t-meta" style={{ color: "var(--ink-60)" }}>web 通道</span>
+                <span className="t-meta">流式 · SSE</span>
               </div>
             </div>
-            {streaming && (
-              <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
-                <button className="btn btn-secondary btn-sm" onClick={() => setStreaming(false)}><Icon name="stop" size={11}/>停止</button>
-              </div>
-            )}
           </div>
         </div>
 
@@ -200,8 +295,9 @@ function Chat() {
   );
 }
 
-function SessionListItem({ s, active, onClick }) {
-  const chColor = s.ch === "微信" ? "#9c2f5f" : s.ch === "Web" ? "var(--primary)" : "var(--success-fg)";
+function SessionListItem({ s, active, onClick, onDelete }) {
+  const chColor = s.channel === "wechat" ? "#9c2f5f" : s.channel === "web" ? "var(--primary)" : "var(--success-fg)";
+  const tokens = (s.input_tokens || 0) + (s.output_tokens || 0);
   return (
     <div
       onClick={onClick}
@@ -211,30 +307,53 @@ function SessionListItem({ s, active, onClick }) {
         borderBottom: "1px solid var(--divider-soft)",
         background: active ? "var(--primary-soft)" : "transparent",
         cursor: "pointer",
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {s.status === "active" && <span className="dot dot-up" />}
-          <span className="t-mono-strong" style={{ color: active ? "var(--primary)" : "var(--ink)" }}>{s.id}</span>
+      }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <span className="t-mono-strong" title={s.id} style={{ color: active ? "var(--primary)" : "var(--ink)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{s.id.slice(0, 16)}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto" }}>
+          <span className="t-meta">{API.relTime(s.last_active_at)}</span>
+          <button
+            className="btn-icon"
+            title="删除会话"
+            style={{ width: 24, height: 24 }}
+            onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); }}>
+            <Icon name="trash" size={12} color="var(--danger)" />
+          </button>
         </div>
-        <span className="t-meta">{s.t}</span>
       </div>
-      <div className="t-row" style={{ color: "var(--ink)", marginTop: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.last}</div>
+      <div className="t-row" style={{ color: "var(--ink)", marginTop: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.last_message || "—"}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
-        <span className="t-meta" style={{ color: chColor, fontWeight: 500 }}>{s.ch}</span>
-        <span className="t-meta">{s.msgs} 消息</span>
+        <span className="t-meta" style={{ color: chColor, fontWeight: 500 }}>{s.channel}</span>
+        <span className="t-meta">{s.calls} 次</span>
         <span className="t-meta">·</span>
-        <span className="t-meta">{(s.tokens / 1000).toFixed(1)}k tok</span>
+        <span className="t-meta">{(tokens / 1000).toFixed(1)}k tok</span>
         <span className="t-meta">·</span>
-        <span className="t-meta">￥{s.cost}</span>
+        <span className="t-meta">￥{API.fmtCost(s.cost_cny)}</span>
       </div>
     </div>
   );
 }
 
-function Bubble({ role, text, streaming, t, tokens, latency_ms, tool, tool_ms }) {
-  const isAgent = role === "agent";
+function formatToolApprovalPrompt(approval) {
+  const toolName = approval.canonical_name || approval.tool_name || "工具";
+  const lines = [
+    `是否运行工具 ${toolName}？`,
+    "",
+    `实际调用：${approval.tool_name || toolName}`,
+  ];
+  if (approval.danger) lines.push(`风险级别：${approval.danger}`);
+  if (approval.arguments_preview) {
+    lines.push("");
+    lines.push("参数预览：");
+    lines.push(approval.arguments_preview);
+  }
+  lines.push("");
+  lines.push("确定：允许本次调用；取消：拒绝。");
+  return lines.join("\n");
+}
+
+function Bubble({ role, text, streaming, t }) {
+  const isAgent = role === "assistant" || role === "agent";
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
@@ -245,11 +364,8 @@ function Bubble({ role, text, streaming, t, tokens, latency_ms, tool, tool_ms })
           display: "inline-flex", alignItems: "center", justifyContent: "center",
           fontSize: 10, fontWeight: 600,
         }}>{isAgent ? "贱" : "你"}</span>
-        <span className="t-row-strong" style={{ color: "var(--ink)" }}>{isAgent ? "三十六贱笑" : "操作者"}</span>
-        <span className="t-meta" style={{ color: "var(--ink-60)" }}>{t}</span>
-        {tool && <span className="chip chip-info"><Icon name="spark" size={11} color="var(--primary)"/>{tool} · {tool_ms}ms</span>}
-        {latency_ms && <span className="t-meta" style={{ marginLeft: "auto", color: "var(--ink-60)" }}>{tokens} tok · {latency_ms}ms 首字</span>}
-        {!latency_ms && tokens && <span className="t-meta" style={{ marginLeft: "auto", color: "var(--ink-60)" }}>{tokens} tok</span>}
+        <span className="t-row-strong" style={{ color: "var(--ink)" }}>{isAgent ? "三十六贱笑" : "你"}</span>
+        {t && <span className="t-meta" style={{ color: "var(--ink-60)" }}>{t}</span>}
       </div>
       <div style={{
         marginLeft: 30,
@@ -260,13 +376,10 @@ function Bubble({ role, text, streaming, t, tokens, latency_ms, tool, tool_ms })
       }}>
         <div style={{
           fontFamily: "var(--font-text)",
-          fontSize: 14,
-          lineHeight: 1.55,
-          letterSpacing: "-0.012em",
-          color: "var(--ink)",
-          whiteSpace: "pre-wrap",
+          fontSize: 14, lineHeight: 1.55, letterSpacing: "-0.012em",
+          color: "var(--ink)", whiteSpace: "pre-wrap",
         }}>
-          {text}
+          {text || "—"}
           {streaming && <span className="blink-cursor" style={{ color: "var(--primary)", marginLeft: 2 }}>▮</span>}
         </div>
       </div>

@@ -194,6 +194,229 @@ class Database:
         row = await asyncio.to_thread(cur.fetchone)
         return dict(row) if row else {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_cny": 0.0}
 
+    async def delete_session(self, session_id: str) -> dict[str, int]:
+        """删除一个会话及其 dashboard 可见历史记录；返回每张表删除行数。"""
+        if self._conn is None:
+            raise StorageError("数据库未连接；先调用 await db.connect()")
+        async with self._lock:
+            return await asyncio.to_thread(self._delete_session_sync, session_id)
+
+    def _delete_session_sync(self, session_id: str) -> dict[str, int]:
+        if self._conn is None:
+            raise StorageError("数据库未连接；先调用 await db.connect()")
+
+        counts: dict[str, int] = {}
+        conn = self._conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table in (
+                "channel_messages",
+                "permission_decisions",
+                "tool_calls",
+                "skill_activations",
+                "llm_calls",
+            ):
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE session_id = ?",
+                    (session_id,),
+                )
+                counts[table] = int(cur.rowcount if cur.rowcount >= 0 else 0)
+
+            cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            counts["sessions"] = int(cur.rowcount if cur.rowcount >= 0 else 0)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return counts
+
+    # ──────────── dashboard 聚合查询 ────────────
+
+    async def list_recent_sessions(
+        self,
+        *,
+        limit: int = 50,
+        channel: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """聚合 sessions + llm_calls；返回最近活跃排序。"""
+        where = ""
+        params: tuple[Any, ...] = ()
+        if channel:
+            where = "WHERE s.channel = ?"
+            params = (channel,)
+        sql = f"""
+            SELECT
+              s.id, s.channel, s.user_id, s.created_at, s.last_active_at,
+              COALESCE(SUM(c.input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(c.output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(c.cost_cny), 0)       AS cost_cny,
+              COUNT(c.id) AS calls
+            FROM sessions s
+            LEFT JOIN llm_calls c
+              ON c.session_id = s.id AND c.channel != 'compact-internal'
+            {where}
+            GROUP BY s.id
+            ORDER BY s.last_active_at DESC
+            LIMIT ?
+        """
+        cur = await self._execute(sql, (*params, int(limit)))
+        rows = await asyncio.to_thread(cur.fetchall)
+        return [dict(r) for r in rows]
+
+    async def list_recent_tool_calls(
+        self,
+        *,
+        limit: int = 50,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if session_id:
+            cur = await self._execute(
+                "SELECT * FROM tool_calls WHERE session_id = ? ORDER BY ts DESC LIMIT ?",
+                (session_id, int(limit)),
+            )
+        else:
+            cur = await self._execute(
+                "SELECT * FROM tool_calls ORDER BY ts DESC LIMIT ?",
+                (int(limit),),
+            )
+        rows = await asyncio.to_thread(cur.fetchall)
+        return [dict(r) for r in rows]
+
+    async def list_recent_permissions(
+        self, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        cur = await self._execute(
+            "SELECT * FROM permission_decisions ORDER BY ts DESC LIMIT ?",
+            (int(limit),),
+        )
+        rows = await asyncio.to_thread(cur.fetchall)
+        return [dict(r) for r in rows]
+
+    async def list_skill_activations(
+        self,
+        *,
+        limit: int = 50,
+        skill_id: str | None = None,
+        since_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if skill_id:
+            where.append("skill_id = ?")
+            params.append(skill_id)
+        if since_ms is not None:
+            where.append("ts >= ?")
+            params.append(since_ms)
+        wsql = ("WHERE " + " AND ".join(where)) if where else ""
+        params.append(int(limit))
+        cur = await self._execute(
+            f"SELECT * FROM skill_activations {wsql} ORDER BY ts DESC LIMIT ?",
+            tuple(params),
+        )
+        rows = await asyncio.to_thread(cur.fetchall)
+        return [dict(r) for r in rows]
+
+    async def count_skill_hits(self, *, since_ms: int) -> dict[str, int]:
+        """按 skill_id 聚合命中次数；用于 dashboard 24h/7d 数字。"""
+        cur = await self._execute(
+            "SELECT skill_id, COUNT(*) AS n FROM skill_activations WHERE ts >= ? GROUP BY skill_id",
+            (int(since_ms),),
+        )
+        rows = await asyncio.to_thread(cur.fetchall)
+        return {r["skill_id"]: int(r["n"]) for r in rows}
+
+    async def aggregate_overview(self, *, since_ms: int) -> dict[str, Any]:
+        """单次聚合：总 tokens / cost / 平均延迟 / 通道分布。"""
+        cur = await self._execute(
+            """
+            SELECT
+              COUNT(*) AS calls,
+              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(cost_cny), 0)       AS cost_cny,
+              COALESCE(AVG(latency_ms), 0)     AS avg_latency_ms
+            FROM llm_calls
+            WHERE ts >= ? AND channel != 'compact-internal'
+            """,
+            (int(since_ms),),
+        )
+        row = await asyncio.to_thread(cur.fetchone)
+        agg = dict(row) if row else {}
+
+        cur2 = await self._execute(
+            """
+            SELECT channel, COUNT(DISTINCT session_id) AS n
+            FROM llm_calls
+            WHERE ts >= ? AND channel != 'compact-internal'
+            GROUP BY channel
+            """,
+            (int(since_ms),),
+        )
+        ch_rows = await asyncio.to_thread(cur2.fetchall)
+        agg["channels"] = {r["channel"]: int(r["n"]) for r in ch_rows}
+
+        cur3 = await self._execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE last_active_at >= ?",
+            (int(since_ms),),
+        )
+        row3 = await asyncio.to_thread(cur3.fetchone)
+        agg["active_sessions"] = int(row3["n"]) if row3 else 0
+
+        cur4 = await self._execute("SELECT COUNT(*) AS n FROM sessions")
+        row4 = await asyncio.to_thread(cur4.fetchone)
+        agg["total_sessions"] = int(row4["n"]) if row4 else 0
+        return agg
+
+    async def insert_tool_call(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        arguments: str,
+        result_text: str | None,
+        is_error: bool,
+        latency_ms: int,
+        permission_decision: str | None,
+    ) -> int:
+        cur = await self._execute(
+            """
+            INSERT INTO tool_calls
+              (ts, session_id, tool_name, arguments, result_text,
+               is_error, latency_ms, permission_decision)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                int(time.time() * 1000),
+                session_id, tool_name, arguments,
+                (result_text or "")[:2048],
+                1 if is_error else 0,
+                int(latency_ms),
+                permission_decision,
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    async def insert_skill_activation(
+        self,
+        *,
+        session_id: str,
+        skill_id: str,
+        trigger: str | None,
+        user_text: str | None,
+    ) -> int:
+        cur = await self._execute(
+            """
+            INSERT INTO skill_activations (ts, session_id, skill_id, trigger, user_text)
+            VALUES (?,?,?,?,?)
+            """,
+            (
+                int(time.time() * 1000),
+                session_id, skill_id, trigger,
+                (user_text or "")[:512],
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
 
 _db_singleton: Database | None = None
 

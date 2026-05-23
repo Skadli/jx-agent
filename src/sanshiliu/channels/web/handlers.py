@@ -11,11 +11,13 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sanshiliu.channels.web.approvals import WebApprovalBroker
 from sanshiliu.channels.web.sse import format_event, safe_write
 from sanshiliu.context.manager import ContextManager
 from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.storage.db import Database
 
 if TYPE_CHECKING:
@@ -55,12 +57,46 @@ class HealthState:
             }
 
 
+class SessionStore:
+    """进程内会话缓存；按 session_id 复用 Session 对象，支持多轮上下文。"""
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, Session] = {}
+        self._lock = threading.Lock()
+
+    def get_or_create(self, session_id: str | None, channel: str = "web") -> Session:
+        with self._lock:
+            if session_id and session_id in self._sessions:
+                return self._sessions[session_id]
+            if session_id:
+                sess = Session(session_id=session_id, channel=channel)
+            else:
+                sess = Session.new(channel=channel)
+            self._sessions[sess.session_id] = sess
+            return sess
+
+    def get(self, session_id: str) -> Session | None:
+        with self._lock:
+            return self._sessions.get(session_id)
+
+    def delete(self, session_id: str) -> bool:
+        with self._lock:
+            return self._sessions.pop(session_id, None) is not None
+
+    def all_ids(self) -> list[str]:
+        with self._lock:
+            return list(self._sessions.keys())
+
+
 def make_chat_handler(
     engine: ConversationEngine,
     loop: asyncio.AbstractEventLoop,
     health: HealthState,
+    session_store: SessionStore,
+    short_term: ShortTermMemory | None = None,
+    approval_broker: WebApprovalBroker | None = None,
 ) -> Callable[[BaseHTTPRequestHandler], None]:
-    """构造 /chat (POST + SSE) handler；engine 与 loop 由外部注入。"""
+    """构造 /chat (POST + SSE) handler；engine / store / 持久化由外部注入。"""
 
     def handler(req: BaseHTTPRequestHandler) -> None:
         length = int(req.headers.get("Content-Length", "0") or "0")
@@ -77,12 +113,15 @@ def make_chat_handler(
         if not isinstance(question, str) or not question.strip():
             req.send_error(400, "missing field: q")
             return
+        explicit_sid = (body or {}).get("session_id")
+        if not isinstance(explicit_sid, str):
+            explicit_sid = None
 
         # SSE 响应头；X-Accel-Buffering=no 禁止 Nginx 缓冲
         req.send_response(200)
         req.send_header("Content-Type", "text/event-stream; charset=utf-8")
         req.send_header("Cache-Control", "no-cache, no-transform")
-        req.send_header("Connection", "keep-alive")
+        req.send_header("Connection", "close")
         req.send_header("X-Accel-Buffering", "no")
         req.end_headers()
 
@@ -90,17 +129,35 @@ def make_chat_handler(
         sse_q: q_mod.Queue[Any] = q_mod.Queue()
         SENTINEL = object()
         ERROR = object()
+        APPROVAL = object()
+
+        session = session_store.get_or_create(explicit_sid, channel="web")
+        # 先把 session_id 推到客户端，便于前端跟踪
+        safe_write(req.wfile, format_event(session.session_id, event="session"))
 
         async def _produce() -> None:
-            session = Session.new(channel="web")
+            approval_token = None
+            if approval_broker is not None:
+                approval_token = approval_broker.bind_emitter(
+                    lambda payload: sse_q.put((APPROVAL, payload))
+                )
             try:
                 async for delta in engine.stream_turn(session, question.strip()):
                     sse_q.put(delta.text)
+                # 落 jsonl 用于回放和 dashboard 历史展示
+                if short_term is not None:
+                    try:
+                        await short_term.snapshot(session)
+                    except Exception as exc:
+                        _logger.warning("snapshot 失败（不阻塞）", error=str(exc))
                 sse_q.put(SENTINEL)
             except Exception as exc:
                 _logger.error("/chat 流式生成失败", error=str(exc))
                 sse_q.put((ERROR, f"{type(exc).__name__}: {exc}"))
                 sse_q.put(SENTINEL)
+            finally:
+                if approval_broker is not None and approval_token is not None:
+                    approval_broker.reset_emitter(approval_token)
 
         future = asyncio.run_coroutine_threadsafe(_produce(), loop)
 
@@ -127,6 +184,11 @@ def make_chat_handler(
                 if isinstance(item, tuple) and item[0] is ERROR:
                     safe_write(req.wfile, format_event(str(item[1]), event="error"))
                     break
+                if isinstance(item, tuple) and item[0] is APPROVAL:
+                    payload = json.dumps(item[1], ensure_ascii=False, default=str)
+                    safe_write(req.wfile, format_event(payload, event="approval"))
+                    last_beat = time.monotonic()
+                    continue
                 if not safe_write(req.wfile, format_event(str(item))):
                     break
                 last_beat = time.monotonic()
@@ -134,6 +196,7 @@ def make_chat_handler(
             # 确保 coroutine 在客户端断开后仍能跑完（已 yield 的 sse_q 数据让它消化掉）
             with contextlib.suppress(Exception):
                 future.result(timeout=5.0)
+            req.close_connection = True
 
         health.set("llm", "up")
 

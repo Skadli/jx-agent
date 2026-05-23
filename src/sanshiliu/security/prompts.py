@@ -1,6 +1,6 @@
 """用户确认文案 + REPL Confirmer 实现。
 
-设计：通道层各自实现 Confirmer 协议；REPL 走 input()，wechat/web 默认 None（缺省拒绝）。
+设计：通道层各自实现 Confirmer 协议；REPL 走 input()，web 走 SSE 审批，非交互通道缺省拒绝。
 """
 
 from __future__ import annotations

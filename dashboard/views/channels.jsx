@@ -1,79 +1,108 @@
-/* Channels — admin config surface.
- * Page header + channel selector (segmented) + config form + live metrics panel.
- */
+/* Channels — 真实读 /api/channels，配置写入由 setting.json 走（暂时只展示）。 */
 
 function Channels({ onJump }) {
-  const [active, setActive] = React.useState("web");
+  const [active, setActive]     = React.useState("web");
+  const [channels, setChannels] = React.useState(null);
+  const [sessions, setSessions] = React.useState([]);
+  const [health, setHealth]     = React.useState(null);
+
+  const refresh = React.useCallback(async () => {
+    const [c, s, h] = await Promise.all([
+      API.get("/api/channels"),
+      API.get("/api/sessions?limit=20"),
+      API.get("/api/health"),
+    ]);
+    if (!c.error) setChannels(c);
+    if (!s.error) setSessions(s.sessions || []);
+    if (!h.error) setHealth(h);
+  }, []);
+
+  React.useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 10000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  // 按通道统计活跃会话
+  const byChannel = sessions.reduce((acc, s) => {
+    acc[s.channel] = acc[s.channel] || { sessions: 0, calls: 0 };
+    acc[s.channel].sessions += 1;
+    acc[s.channel].calls += s.calls || 0;
+    return acc;
+  }, {});
+
+  const repl = channels && channels.repl;
+  const web = channels && channels.web;
+  const wechat = channels && channels.wechat;
+
+  const reload = async () => {
+    const r = await API.post("/api/instance/reload");
+    if (r.error) alert("重载失败：" + r.error);
+    else alert("已重载");
+  };
 
   return (
     <div data-screen-label="06 通道">
       <PageHeader
         title="通道"
-        sub="3 个通道 · 2 已启用 · OpenAI 兼容直通"
+        sub={channels
+          ? `${[repl && repl.enabled, web && web.enabled, wechat && wechat.enabled].filter(Boolean).length}/3 已启用 · OpenAI 兼容直通`
+          : "加载中…"}
         actions={
           <>
-            <button className="btn btn-secondary"><Icon name="external" size={13}/>查看 settings.json</button>
-            <button className="btn btn-primary"><Icon name="check" size={13} color="#fff"/>保存配置</button>
+            <button className="btn btn-secondary" onClick={() => onJump("permissions")}><Icon name="external" size={13}/>查看 settings.json</button>
+            <button className="btn btn-secondary" onClick={reload}><Icon name="refresh" size={13}/>重启实例</button>
           </>
         }
       />
 
       <div className="page-body">
-        {/* Three summary cards as selectable tabs */}
         <div className="grid-3">
           <ChannelSummary
             active={active === "repl"}
             onClick={() => setActive("repl")}
             icon="terminal" name="REPL" tag="本地终端"
-            status="up" sessions={2} msg24={184}
-            kv={[["进程", "PID 48211"], ["命令前缀", "/"]]}
-          />
+            status={repl ? (repl.enabled ? "up" : "off") : "off"}
+            sessions={byChannel.repl ? byChannel.repl.sessions : 0}
+            msg24={byChannel.repl ? byChannel.repl.calls : 0}
+            kv={[["状态", repl ? (repl.enabled ? "已启用" : "关闭") : "—"]]} />
           <ChannelSummary
             active={active === "web"}
             onClick={() => setActive("web")}
             icon="globe" name="Web HTTP" tag="/chat SSE · OpenAI 兼容"
-            status="up" sessions={5} msg24={624}
-            kv={[["监听", "0.0.0.0:8080"], ["TLS", "letsencrypt"]]}
-          />
+            status={web ? "up" : "off"}
+            sessions={byChannel.web ? byChannel.web.sessions : 0}
+            msg24={byChannel.web ? byChannel.web.calls : 0}
+            kv={web ? [["监听", `${web.host}:${web.port}`]] : [["状态", "—"]]} />
           <ChannelSummary
             active={active === "wechat"}
             onClick={() => setActive("wechat")}
             icon="wechat" name="iLink 微信" tag="扫码登录 · 消息中继"
-            status="off" sessions={0} msg24={0}
-            kv={[["状态", "未开启"], ["缺", "iLink token"]]}
+            status={wechat && wechat.enabled ? "up" : "off"}
+            sessions={byChannel.wechat ? byChannel.wechat.sessions : 0}
+            msg24={byChannel.wechat ? byChannel.wechat.calls : 0}
+            kv={wechat ? [["状态", wechat.enabled ? "已启用" : "未开启"], ["凭据", wechat.has_official_creds || wechat.has_webhook_creds ? "已配置" : "缺"]] : [["状态", "—"]]}
           />
         </div>
 
-        {/* Detail */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginTop: 16 }}>
           <div className="card">
             <CardHeader
               title={active === "repl" ? "REPL · 配置" : active === "web" ? "Web HTTP · 配置" : "iLink 微信 · 配置"}
               sub={active === "repl" ? "本地终端 · 单进程" : active === "web" ? "/chat SSE 流式" : "扫码登录 · 消息中继"}
-              right={
-                <>
-                  <button className="btn btn-ghost btn-sm"><Icon name="refresh" size={13}/>重启</button>
-                  <button className="btn btn-secondary btn-sm">回滚</button>
-                </>
-              }
             />
             <div className="card-body">
               {active === "repl"   && <ReplConfig />}
-              {active === "web"    && <WebConfig />}
-              {active === "wechat" && <WechatConfig />}
+              {active === "web"    && <WebConfig web={web} />}
+              {active === "wechat" && <WechatConfig wechat={wechat} />}
             </div>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <LiveMetricsCard active={active} />
-            <ProbesCard active={active} />
+            <LiveMetricsCard active={active} byChannel={byChannel} />
+            <ProbesCard active={active} health={health} />
             <ModelCard onJump={onJump} />
           </div>
-        </div>
-
-        {/* Connection log */}
-        <div style={{ marginTop: 16 }}>
-          <ConnectionLog active={active} />
         </div>
       </div>
     </div>
@@ -87,7 +116,7 @@ function ChannelSummary({ active, onClick, icon, name, tag, status, sessions, ms
       cursor: "pointer",
       borderColor: active ? "var(--primary)" : "var(--hairline)",
       borderWidth: active ? 2 : 1,
-      padding: active ? 19 : 20, // compensate
+      padding: active ? 19 : 20,
     }}>
       <div className="card-padded" style={{ padding: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -116,7 +145,7 @@ function ChannelSummary({ active, onClick, icon, name, tag, status, sessions, ms
           </div>
           <div>
             <div className="t-stat-sm">{msg24}</div>
-            <div className="t-meta" style={{ marginTop: 2 }}>24h 消息</div>
+            <div className="t-meta" style={{ marginTop: 2 }}>累计调用</div>
           </div>
         </div>
 
@@ -128,167 +157,75 @@ function ChannelSummary({ active, onClick, icon, name, tag, status, sessions, ms
   );
 }
 
-/* ===== Configurators ===== */
-
-function FormField({ label, hint, children }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <span className="t-row-strong">{label}</span>
-        {hint && <span className="t-meta">{hint}</span>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function ToggleRow({ label, hint, defaultOn = true }) {
-  const [on, setOn] = React.useState(defaultOn);
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--divider-soft)" }}>
-      <div>
-        <div className="t-row-strong">{label}</div>
-        {hint && <div className="t-meta" style={{ marginTop: 2 }}>{hint}</div>}
-      </div>
-      <Toggle on={on} onChange={setOn} />
-    </div>
-  );
-}
-
 function ReplConfig() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <FormField label="启动命令">
-        <input className="field field-mono" defaultValue="python -m sanshiliu repl" />
-      </FormField>
-      <FormField label="工作目录">
-        <input className="field field-mono" defaultValue="~/.sanshiliu" />
-      </FormField>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <FormField label="提示符">
-          <input className="field field-mono" defaultValue="贱笑> " />
-        </FormField>
-        <FormField label="命令前缀">
-          <input className="field field-mono" defaultValue="/" />
-        </FormField>
+      <div className="t-body" style={{ color: "var(--ink-60)" }}>
+        REPL 通道在终端运行：<code className="t-mono-sm">python -m sanshiliu repl</code>。配置走 .env 文件。
       </div>
-      <FormField label="历史记录" hint="≤10,000 行">
-        <input className="field field-mono" defaultValue="~/.sanshiliu/history" />
-      </FormField>
-      <div style={{ marginTop: 6 }}>
-        <ToggleRow label="自动重连断开会话" />
-        <ToggleRow label="行内打印 token 计费" />
-        <ToggleRow label="启动横幅" />
-        <ToggleRow label="bash 历史互通" defaultOn={false} hint="zsh / bash 共享 history" />
-      </div>
+      <KV k="启动命令" v="python -m sanshiliu repl" />
+      <KV k="data 目录" v="./data" />
+      <KV k="持久化" v="sqlite + jsonl" />
     </div>
   );
 }
 
-function WebConfig() {
+function WebConfig({ web }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
-        <FormField label="监听地址">
-          <input className="field field-mono" defaultValue="0.0.0.0" />
-        </FormField>
-        <FormField label="端口">
-          <input className="field field-mono" defaultValue="8080" />
-        </FormField>
+      <div className="t-body" style={{ color: "var(--ink-60)" }}>
+        当前 web server 正在监听。修改端口需改 .env <code className="t-mono-sm">SANSHILIU_WEB_PORT</code> 并重启。
       </div>
-      <FormField label="CORS Origins" hint="逗号分隔">
-        <input className="field field-mono" defaultValue="https://*.sanshiliu.app, http://localhost:5173" />
-      </FormField>
-      <FormField label="API Key 头" hint="附加到 /chat 请求">
-        <input className="field field-mono" defaultValue="X-API-Key" />
-      </FormField>
-      <FormField label="速率限制" hint="每 IP / 分钟">
-        <input className="field field-mono" defaultValue="60" />
-      </FormField>
-      <div style={{ marginTop: 6 }}>
-        <ToggleRow label="/chat SSE 流式" />
-        <ToggleRow label="/healthz 公开" />
-        <ToggleRow label="/metrics Prometheus 暴露" hint="text/plain · v0.0.4 schema" />
-        <ToggleRow label="OpenAI 兼容模式" hint="messages[]、tool_calls" />
-      </div>
+      <KV k="监听地址" v={web ? `${web.host}:${web.port}` : "—"} />
+      <KV k="状态" v={web ? web.status : "—"} accent="var(--success-fg)" />
+      <KV k="端点" v="/chat (SSE) · /healthz · /metrics · /api/*" />
+      <KV k="静态" v="/dashboard/*" />
     </div>
   );
 }
 
-function WechatConfig() {
+function WechatConfig({ wechat }) {
+  if (!wechat) return null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div className="card" style={{ background: "var(--warning-bg)", borderColor: "rgba(242,180,65,0.40)", padding: "10px 14px" }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-          <Icon name="alert" size={16} color="var(--warning-fg)"/>
-          <div>
-            <div className="t-row-strong" style={{ color: "var(--warning-fg)" }}>未开启</div>
-            <div className="t-meta" style={{ color: "var(--warning-fg)", marginTop: 2 }}>填入 iLink token 并扫码，三步内能跑通。</div>
+      {!wechat.enabled && (
+        <div className="card" style={{ background: "var(--warning-bg)", borderColor: "rgba(242,180,65,0.40)", padding: "10px 14px" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <Icon name="alert" size={16} color="var(--warning-fg)"/>
+            <div>
+              <div className="t-row-strong" style={{ color: "var(--warning-fg)" }}>未开启</div>
+              <div className="t-meta" style={{ color: "var(--warning-fg)", marginTop: 2 }}>
+                在 .env 设置 SANSHILIU_WECHAT_ENABLED=true 并填入凭据，或运行 <code className="t-mono-sm">python -m sanshiliu setup</code> 扫码。
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-
-      <FormField label="iLink Token" hint="存在 secrets 里">
-        <input className="field field-mono" placeholder="ilink_•••••••••••••••" />
-      </FormField>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <FormField label="目标群">
-          <input className="field field-mono" placeholder="群名 或 wxid" />
-        </FormField>
-        <FormField label="触发词">
-          <input className="field field-mono" defaultValue="@贱笑" />
-        </FormField>
-      </div>
-
-      <FormField label="每日上限">
-        <input className="field field-mono" defaultValue="200" />
-      </FormField>
-
-      <div style={{ marginTop: 6 }}>
-        <ToggleRow label="自动套用 wechat-style 技能" />
-        <ToggleRow label="避免回复包含「您」" />
-        <ToggleRow label="只回 @ 自己的消息" />
-      </div>
-
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8, padding: 14, background: "var(--pearl)", borderRadius: 10, border: "1px solid var(--hairline)" }}>
-        <div style={{ width: 72, height: 72, border: "1px dashed var(--hairline-strong)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--canvas)" }}>
-          <Icon name="qr" size={32} color="var(--ink-48)"/>
-        </div>
-        <div style={{ flex: 1 }}>
-          <div className="t-row-strong">扫码登录</div>
-          <div className="t-meta" style={{ marginTop: 3 }}>填好 token 后，这里会生成二维码。</div>
-        </div>
-        <button className="btn btn-primary btn-sm">生成二维码</button>
-      </div>
+      )}
+      <KV k="启用" v={wechat.enabled ? "是" : "否"} />
+      <KV k="官方 iLink 凭据" v={wechat.has_official_creds ? "已配置" : "缺"} />
+      <KV k="Webhook 凭据" v={wechat.has_webhook_creds ? "已配置" : "缺"} />
     </div>
   );
 }
 
-/* ===== Live metrics ===== */
-
-function LiveMetricsCard({ active }) {
-  const m = {
-    repl:   { s: "2",  c: "18", l: "—" },
-    web:    { s: "5",  c: "47", l: "1.21" },
-    wechat: { s: "0",  c: "0",  l: "—" },
-  }[active];
+function LiveMetricsCard({ active, byChannel }) {
+  const stats = byChannel[active] || { sessions: 0, calls: 0 };
   return (
     <div className="card">
-      <CardHeader title="实时" sub="每 5s 刷新" right={<span className="t-mono-sm" style={{ color: "var(--ink-60)" }}>2s 前</span>} />
+      <CardHeader title="实时" sub="每 10s 刷新" right={<span className="t-mono-sm" style={{ color: "var(--ink-60)" }}>实时</span>} />
       <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div>
           <div className="t-eyebrow">活跃会话</div>
-          <div className="t-stat" style={{ marginTop: 4 }}>{m.s}</div>
+          <div className="t-stat" style={{ marginTop: 4 }}>{stats.sessions}</div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           <div>
-            <div className="t-eyebrow">1h 消息</div>
-            <div className="t-stat-sm" style={{ marginTop: 4 }}>{m.c}</div>
+            <div className="t-eyebrow">累计调用</div>
+            <div className="t-stat-sm" style={{ marginTop: 4 }}>{stats.calls}</div>
           </div>
           <div>
-            <div className="t-eyebrow">首字延迟</div>
-            <div className="t-stat-sm" style={{ marginTop: 4 }}>{m.l}{m.l !== "—" && <span className="t-row" style={{ color: "var(--ink-60)" }}> s</span>}</div>
+            <div className="t-eyebrow">通道</div>
+            <div className="t-stat-sm" style={{ marginTop: 4 }}>{active}</div>
           </div>
         </div>
       </div>
@@ -296,13 +233,13 @@ function LiveMetricsCard({ active }) {
   );
 }
 
-function ProbesCard({ active }) {
-  const off = active === "wechat";
+function ProbesCard({ active, health }) {
+  const comp = (health && health.components) || {};
   const rows = [
-    { label: "/healthz",  status: off ? "off" : "up",   value: off ? "—" : "200 · 8ms" },
-    { label: "/metrics",  status: off ? "off" : "up",   value: off ? "—" : "200 · 14ms" },
-    { label: "LLM",       status: "up",                  value: "312ms" },
-    { label: "模型缓存",   status: "up",                  value: "14 hit / 3 miss" },
+    { label: "Web",     status: comp.web === "up" ? "up" : "warn", value: comp.web || "?" },
+    { label: "DB",      status: comp.db === "up" ? "up" : "warn",  value: comp.db || "?" },
+    { label: "LLM",     status: comp.llm === "up" ? "up" : "warn", value: comp.llm || "?" },
+    { label: "微信",     status: comp.wechat === "up" ? "up" : (comp.wechat === "disabled" ? "off" : "warn"), value: comp.wechat || "?" },
   ];
   return (
     <div className="card">
@@ -315,69 +252,21 @@ function ProbesCard({ active }) {
 }
 
 function ModelCard({ onJump }) {
+  const [model, setModel] = React.useState("");
+  React.useEffect(() => {
+    API.get("/api/overview").then(o => { if (!o.error) setModel(o.model || "—"); });
+  }, []);
   return (
     <div className="card">
-      <CardHeader title="当前模型" right={<button className="btn btn-ghost btn-sm">切换 →</button>} />
+      <CardHeader title="当前模型" />
       <div className="card-body">
-        <div className="t-stat-sm">gpt-4o-mini</div>
-        <div className="t-mono-sm" style={{ color: "var(--ink-60)", marginTop: 4 }}>api.deepseek.com / v1</div>
+        <div className="t-stat-sm">{model || "—"}</div>
+        <div className="t-mono-sm" style={{ color: "var(--ink-60)", marginTop: 4 }}>OpenAI 兼容后端</div>
         <div style={{ display: "flex", gap: 6, marginTop: 14, flexWrap: "wrap" }}>
-          <span className="chip">128k 上下文</span>
           <span className="chip">流式</span>
           <span className="chip">tool_calls</span>
         </div>
       </div>
-    </div>
-  );
-}
-
-/* ===== Connection log ===== */
-
-const CONNS = {
-  repl: [
-    { t: "现在",        ev: "session.open",  meta: "repl-8f2a", note: "pid=48211" },
-    { t: "14m",        ev: "command.exec",  meta: "/stats",    note: "OK 12ms" },
-    { t: "3h",         ev: "session.open",  meta: "repl-71d0", note: "pid=48211" },
-    { t: "3h",         ev: "session.close", meta: "repl-71d0", note: "/quit · 18 msgs · 11,408 tok" },
-  ],
-  web: [
-    { t: "30s",  ev: "POST /chat",     meta: "web-2c91", note: "200 · text/event-stream · 1.18s" },
-    { t: "2m",   ev: "POST /chat",     meta: "web-2c91", note: "200 · text/event-stream · 1.42s" },
-    { t: "14m",  ev: "POST /chat",     meta: "web-2c91", note: "200 · 18,902 tok" },
-    { t: "1h",   ev: "GET /healthz",   meta: "—",        note: "200 · 8ms · k8s liveness" },
-    { t: "1h",   ev: "POST /chat",     meta: "denied",   note: "401 · X-API-Key 错误" },
-    { t: "2h",   ev: "GET /metrics",   meta: "—",        note: "200 · 14ms · prom-scrape" },
-  ],
-  wechat: [
-    { t: "—",   ev: "未启用",          meta: "—",        note: "提供 iLink token 后查看连接日志" },
-  ],
-};
-
-function ConnectionLog({ active }) {
-  const rows = CONNS[active];
-  return (
-    <div className="card">
-      <CardHeader title="连接日志" sub={`通道 · ${active}`} right={<button className="btn btn-ghost btn-sm"><Icon name="download" size={13}/>导出</button>} />
-      <table className="tbl">
-        <thead>
-          <tr>
-            <th style={{ width: 80 }}>时间</th>
-            <th style={{ width: 220 }}>事件</th>
-            <th style={{ width: 140 }}>对象</th>
-            <th>详情</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{r.t}</td>
-              <td><span className="t-mono">{r.ev}</span></td>
-              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{r.meta}</td>
-              <td className="t-row" style={{ color: "var(--ink-80)" }}>{r.note}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }

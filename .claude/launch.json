@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sanshiliu-serve",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "sanshiliu", "serve"],
+      "port": 9527
+    }
+  ]
+}

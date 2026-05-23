@@ -1,4 +1,4 @@
-"""微信白名单；不在白名单内的 wxid 收到消息只记日志、不调 LLM、不回复。"""
+"""微信白名单；配置后限制 wxid，未配置时默认允许本地 bot 回复。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _logger = get_logger(__name__)
 
 
 class WechatWhitelist:
-    """简单 set 包装；空集合表示「未配置」，此时一律拒绝（最小特权）。"""
+    """简单 set 包装；空集合表示未配置，此时允许所有 wxid。"""
 
     def __init__(self, wxids: Iterable[str]) -> None:
         self._wxids = {w.strip() for w in wxids if w.strip()}
@@ -24,7 +24,7 @@ class WechatWhitelist:
         if self._allow_all:
             return True
         if not self._wxids:
-            return False
+            return True
         ok = wxid in self._wxids
         if not ok:
             _logger.info("wechat 非白名单消息忽略", wxid=wxid)

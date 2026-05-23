@@ -26,9 +26,11 @@ class Router:
 
     def resolve(self, method: str, path: str) -> Handler | None:
         m = method.upper()
-        if (m, path) in self._exact:
-            return self._exact[(m, path)]
+        # 剥离 query string；exact 路由按裸 path 匹配
+        clean = path.split("?", 1)[0]
+        if (m, clean) in self._exact:
+            return self._exact[(m, clean)]
         for h_method, prefix, handler in self._prefix:
-            if h_method == m and path.startswith(prefix):
+            if h_method == m and clean.startswith(prefix):
                 return handler
         return None

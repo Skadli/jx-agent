@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from collections.abc import AsyncIterator
 
 from sanshiliu.context.manager import ContextManager
@@ -210,6 +212,7 @@ class ConversationEngine:
             ))
             parsed_calls = parse_tool_calls(result.tool_calls)
             for tc in parsed_calls:
+                tool_started = time.monotonic()
                 count = loop_state.remember(tc.name, tc.arguments)
                 if count > _DEDUPE_THRESHOLD:
                     tool_result_text = (
@@ -221,6 +224,14 @@ class ConversationEngine:
                     res = await self._tool_dispatcher.execute(tc, session_id=session.session_id)
                     tool_result_text = res.content
                     is_error = res.is_error
+                await self._record_tool_call(
+                    session_id=session.session_id,
+                    tool_name=tc.name,
+                    arguments=tc.arguments,
+                    result_text=tool_result_text,
+                    is_error=is_error,
+                    latency_ms=int((time.monotonic() - tool_started) * 1000),
+                )
                 _logger.info(
                     "tool 调用完成",
                     tool=tc.name, turn=loop_state.turn, is_error=is_error,
@@ -267,3 +278,28 @@ class ConversationEngine:
             )
         except Exception as exc:
             _logger.error("upsert_session 失败（不阻塞）", error=str(exc))
+
+    async def _record_tool_call(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        result_text: str,
+        is_error: bool,
+        latency_ms: int,
+    ) -> None:
+        if self._db is None:
+            return
+        try:
+            await self._db.insert_tool_call(
+                session_id=session_id,
+                tool_name=tool_name,
+                arguments=json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+                result_text=result_text,
+                is_error=is_error,
+                latency_ms=latency_ms,
+                permission_decision=None,
+            )
+        except Exception as exc:
+            _logger.error("tool_calls 落库失败（不阻塞）", tool=tool_name, error=str(exc))
