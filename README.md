@@ -33,19 +33,20 @@ Phase 1-9 代码骨架全部落地，**214 个单元测试通过**，6 份 smoke
 
 ### 1. 装依赖
 
-推荐 `uv`（与"自动装依赖"协同好）；没 uv 用 venv + pip 也行。
+直接使用 Python 自带 `venv` + `pip` 即可。
 
 ```powershell
 # Windows PowerShell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 ```bash
 # POSIX
-uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
 ```
 
 ### 2. 自检环境
@@ -54,7 +55,7 @@ uv pip install -e ".[dev]"
 sanshiliu doctor
 ```
 
-打印 preflight 三项（Python 版本 / uv / venv）+ 6 个核心依赖检测。缺什么会直接告诉你装什么。
+打印 Python 版本、虚拟环境状态和 6 个核心依赖检测。缺什么会直接告诉你用 `pip` 装什么。
 
 ### 3. 填配置
 
