@@ -85,38 +85,64 @@ const RAIL_SECTIONS = [
 
 function LeftRail({ active, onJump }) {
   return (
-    <aside className="rail">
-      {RAIL_SECTIONS.map((section, i) =>
-      <div key={section.label} style={{ marginBottom: 4 }}>
-          <div className="rail-section">
-            <div className="rail-section-label">{section.label}</div>
-          </div>
-          {section.items.map((it) =>
-        <div
-          key={it.id}
-          className={`rail-item ${active === it.id ? "active" : ""}`}
-          onClick={() => onJump(it.id)}>
-          
-              <span className="rail-glyph"><Icon name={it.icon} size={15} /></span>
-              <span>{it.label}</span>
-              {it.count && <span className="rail-count">{it.count}</span>}
+    <aside className="rail" style={{ display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: "0 0 auto" }}>
+        {RAIL_SECTIONS.map((section, i) =>
+        <div key={section.label} style={{ marginBottom: 4 }}>
+            <div className="rail-section">
+              <div className="rail-section-label">{section.label}</div>
             </div>
-        )}
-          {i < RAIL_SECTIONS.length - 1 && <hr className="hr" style={{ margin: "10px 14px" }} />}
-        </div>
-      )}
+            {section.items.map((it) =>
+          <div
+            key={it.id}
+            className={`rail-item ${active === it.id ? "active" : ""}`}
+            onClick={() => onJump(it.id)}>
 
-      {/* Bottom dock — environment badge */}
-      <div style={{ marginTop: 24, padding: "12px 18px", borderTop: "1px solid var(--hairline)" }}>
-        <div className="t-eyebrow">环境</div>
-        <div style={{ marginTop: 8 }}>
-          <div className="t-mono" style={{ color: "var(--ink)" }}>~/.sanshiliu</div>
-          <div className="t-meta" style={{ marginTop: 3 }}>本机 · Python 3.13.0</div>
+                <span className="rail-glyph"><Icon name={it.icon} size={15} /></span>
+                <span>{it.label}</span>
+                {it.count && <span className="rail-count">{it.count}</span>}
+              </div>
+          )}
+            {i < RAIL_SECTIONS.length - 1 && <hr className="hr" style={{ margin: "10px 14px" }} />}
+          </div>
+        )}
+      </div>
+
+      {/* Bottom dock — environment badge, pinned to bottom */}
+      <div style={{
+        marginTop: "auto",
+        padding: "12px 14px",
+        borderTop: "1px solid var(--hairline)",
+        background: "var(--pearl)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="dot dot-up" />
+          <span className="t-row-strong" style={{ color: "var(--ink)", fontSize: 12 }}>本机环境</span>
+          <span className="t-meta" style={{ marginLeft: "auto", color: "var(--ink-48)" }}>Py 3.13</span>
         </div>
-        <div style={{ marginTop: 14, display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <span className="chip chip-success chip-dot">REPL</span>
-          <span className="chip chip-success chip-dot">Web</span>
-          <span className="chip" style={{ color: "var(--ink-48)" }}><span className="dot dot-off" />微信</span>
+        <div
+          className="t-mono-sm"
+          title="~/.sanshiliu"
+          style={{
+            color: "var(--ink-80)",
+            background: "var(--canvas)",
+            border: "1px solid var(--hairline)",
+            borderRadius: 6,
+            padding: "3px 8px",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >~/.sanshiliu</div>
+        <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="chip chip-success chip-dot" style={{ fontSize: 10 }}>REPL</span>
+          <span className="chip chip-success chip-dot" style={{ fontSize: 10 }}>Web</span>
+          <span className="chip" style={{ fontSize: 10, color: "var(--ink-48)", background: "rgba(0,0,0,0.04)" }}>
+            <span className="dot dot-off" />微信
+          </span>
         </div>
       </div>
     </aside>);

@@ -177,15 +177,52 @@ function Memory({ onJump }) {
             </div>
           </div>
 
-          <div className="card">
-            <CardHeader title="Claude Code 兼容" />
-            <div className="card-body">
-              <div className="t-body" style={{ marginBottom: 12 }}>
-                把 <code className="t-mono-sm">~/.claude/memdir/</code> 拷贝到 <code className="t-mono-sm">~/.sanshiliu/memdir/</code> —— schema 完全一致。
-              </div>
-              <button className="btn btn-secondary btn-sm" style={{ width: "100%" }}>查看协议对照表</button>
-            </div>
+          <UsageInsights isClaude={isClaude} file={file} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UsageInsights({ isClaude, file }) {
+  const hit = isClaude ? 18 : file.hit;
+  const trend = isClaude ? [12, 15, 14, 18, 16, 19, 18]
+              : hit > 5  ? [2, 4, 3, 6, 5, 8, 7]
+              : hit > 0  ? [1, 2, 1, 2, 3, 2, 3]
+                         : [0, 1, 0, 0, 1, 0, 0];
+  const trendMax = Math.max(...trend, 1);
+  const trendLabel = isClaude ? "+8%" : hit > 5 ? "+22%" : hit > 0 ? "持平" : "—";
+  const trendColor = isClaude || hit > 5 ? "var(--success-fg)" : "var(--ink-60)";
+
+  const status      = isClaude ? "常驻注入" : hit > 5 ? "活跃" : hit > 0 ? "偶尔引用" : "本周未引用";
+  const statusColor = isClaude || hit > 5 ? "var(--success-fg)" : hit === 0 ? "var(--warning-fg)" : undefined;
+  const avgInject   = isClaude ? "4,210 tok" : `${Math.round((file.chars || 0) * 0.6).toLocaleString()} tok`;
+
+  return (
+    <div className="card">
+      <CardHeader title="使用洞察" sub={isClaude ? "项目记忆全局指标" : "这条记忆最近一周表现"} />
+      <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+            <span className="t-meta">7 天命中走势</span>
+            <span className="t-mono-sm" style={{ color: trendColor }}>{trendLabel}</span>
           </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 32 }}>
+            {trend.map((v, i) => (
+              <div key={i} style={{
+                flex: 1,
+                height: `${Math.max(6, (v / trendMax) * 100)}%`,
+                background: i === trend.length - 1 ? "var(--primary)" : "var(--primary-soft-2)",
+                borderRadius: 2,
+              }} />
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 10, borderTop: "1px solid var(--divider-soft)" }}>
+          <KV k="状态"       v={status}   mono={false} accent={statusColor} />
+          <KV k="平均注入"   v={avgInject} />
+          <KV k="冲突检测"   v="无"        mono={false} />
         </div>
       </div>
     </div>

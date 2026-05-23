@@ -21,7 +21,7 @@ const ALL_SESSIONS = [
   { id: "repl-3f12",  ch: "REPL",  status: "closed",  tokens: 4101,  cost: "0.0041", t: "2 天前",     last: "/persona 看一下",                     msgs: 3 },
 ];
 
-function Chat({ onJump }) {
+function Chat() {
   const [activeId, setActiveId] = React.useState("repl-8f2a");
   const [filter, setFilter] = React.useState("all");
   const [messages, setMessages] = React.useState(SEED_CHAT);
@@ -82,7 +82,7 @@ function Chat({ onJump }) {
 
       <div style={{
         display: "grid",
-        gridTemplateColumns: "320px 1fr 340px",
+        gridTemplateColumns: "320px 1fr",
         gap: 16,
         padding: "16px 28px 24px",
         flex: 1,
@@ -145,39 +145,56 @@ function Chat({ onJump }) {
 
           {/* Composer */}
           <div style={{ borderTop: "1px solid var(--hairline)", padding: "12px 16px", background: "var(--pearl)" }}>
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-              <textarea
-                rows={2}
-                className="field field-mono"
-                style={{ resize: "none", flex: 1, fontFamily: "var(--font-mono)" }}
-                placeholder="说人话。Cmd / Ctrl + Enter 发送。"
-                value={composer}
-                onChange={e => setComposer(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
-              />
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <button className="btn btn-primary" onClick={send} disabled={streaming}>
-                  {streaming ? "在算…" : <><Icon name="send" size={13} color="#fff"/>发送</>}
-                </button>
-                {streaming && <button className="btn btn-secondary btn-sm" onClick={() => setStreaming(false)}><Icon name="stop" size={11}/>停止</button>}
+            <div style={{
+              border: "1px solid var(--hairline)",
+              borderRadius: 12,
+              background: "var(--canvas)",
+              padding: "10px 14px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <textarea
+                  rows={1}
+                  style={{
+                    flex: 1,
+                    resize: "none",
+                    border: "none",
+                    outline: "none",
+                    background: "transparent",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 14,
+                    lineHeight: 1.5,
+                    color: "var(--ink)",
+                    padding: "4px 0",
+                  }}
+                  placeholder="说人话，或输入 / 触发命令"
+                  value={composer}
+                  onChange={e => setComposer(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
+                />
+                <button
+                  className="btn-icon"
+                  onClick={send}
+                  disabled={streaming || !composer.trim()}
+                  title="发送（⌘/Ctrl + Enter）"
+                  style={{ color: "var(--ink-60)", fontSize: 14, lineHeight: 1, padding: 4 }}
+                >↵</button>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <button className="btn btn-ghost btn-sm" style={{ color: "var(--warning-fg)", padding: "2px 6px" }}>权限·全放行</button>
+                <span className="t-meta">Opus 4.7 · 上下文 69%</span>
               </div>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
-              <span className="t-meta">工具 · web_search · file_read · file_write · bash_exec</span>
-              <span className="t-meta">模型 · gpt-4o-mini · 上下文 69% · ⌘+Enter 发送</span>
-            </div>
+            {streaming && (
+              <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => setStreaming(false)}><Icon name="stop" size={11}/>停止</button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* ===== RIGHT: inspector ===== */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, overflow: "hidden" }}>
-          <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
-            <InspectorBudget />
-            <InspectorTools />
-            <InspectorSkills onJump={onJump} />
-            <InspectorMemory onJump={onJump} />
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -251,102 +268,6 @@ function Bubble({ role, text, streaming, t, tokens, latency_ms, tool, tool_ms })
         }}>
           {text}
           {streaming && <span className="blink-cursor" style={{ color: "var(--primary)", marginLeft: 2 }}>▮</span>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function InspectorBudget() {
-  return (
-    <div className="card">
-      <CardHeader title="上下文" />
-      <div className="card-body">
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-          <span className="t-stat-sm">69%</span>
-          <span className="t-mono-sm" style={{ color: "var(--ink-60)" }}>88,412 / 128k</span>
-        </div>
-        <div style={{ marginTop: 10 }}>
-          <Meter value={88412} max={128000} color="var(--primary)" height={5} />
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 14 }}>
-          <KV k="compact 阈值" v="80%" />
-          <KV k="compact / micro" v="2 / 7" />
-          <KV k="cache 命中" v="14" />
-          <KV k="平均 TPS" v="62.4" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function InspectorTools() {
-  const tools = [
-    { name: "web_search",  on: true, calls: 3 },
-    { name: "file_read",   on: true, calls: 2 },
-    { name: "file_write",  on: true, calls: 0 },
-    { name: "bash_exec",   on: true, calls: 1 },
-    { name: "code_interp", on: true, calls: 0 },
-    { name: "http_post",   on: false, calls: 0 },
-  ];
-  return (
-    <div className="card">
-      <CardHeader title="工具" sub="本次会话可用工具" />
-      <div style={{ padding: "4px 16px 14px" }}>
-        {tools.map((t, i) => (
-          <div key={t.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: i === tools.length - 1 ? "none" : "1px solid var(--divider-soft)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className={`dot ${t.on ? "dot-up" : "dot-off"}`} />
-              <span className="t-mono" style={{ color: t.on ? "var(--ink)" : "var(--ink-60)" }}>{t.name}</span>
-            </div>
-            <span className="t-mono-sm" style={{ color: t.calls ? "var(--primary)" : "var(--ink-60)" }}>{t.calls}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function InspectorSkills({ onJump }) {
-  return (
-    <div className="card">
-      <CardHeader title="技能命中" right={<button className="btn btn-ghost btn-sm" onClick={() => onJump("skills")}>→</button>} />
-      <div className="card-body" style={{ paddingTop: 4, display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="dot dot-up" />
-            <span className="t-mono">video-editor</span>
-          </div>
-          <span className="chip chip-info">脚本</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="dot dot-off" />
-            <span className="t-mono" style={{ color: "var(--ink-60)" }}>wechat-style</span>
-          </div>
-          <span className="t-meta">REPL 不激活</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function InspectorMemory({ onJump }) {
-  return (
-    <div className="card">
-      <CardHeader title="记忆命中" right={<button className="btn btn-ghost btn-sm" onClick={() => onJump("memory")}>→</button>} />
-      <div className="card-body" style={{ paddingTop: 4, display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Icon name="doc" size={13} color="var(--primary)"/>
-          <span className="t-mono-sm" style={{ color: "var(--ink)" }}>user/preferred_format.md</span>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Icon name="doc" size={13} color="var(--primary)"/>
-          <span className="t-mono-sm" style={{ color: "var(--ink)" }}>project/jx-style-guide.md</span>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Icon name="doc" size={13} color="var(--ink-48)"/>
-          <span className="t-mono-sm" style={{ color: "var(--ink-60)" }}>CLAUDE.md · 1,210 字</span>
         </div>
       </div>
     </div>
