@@ -8,6 +8,9 @@ function Chat() {
   const [composer, setComposer]   = React.useState("");
   const [streaming, setStreaming] = React.useState(false);
   const [streamText, setStreamText] = React.useState("");
+  // 待审批 + 已结案的工具授权卡片（替代原 window.confirm）
+  const [pendingApprovals, setPendingApprovals] = React.useState([]);
+  const [resolvedApprovals, setResolvedApprovals] = React.useState([]);
   const streamCtrl = React.useRef(null);
 
   // 拉会话列表（5s 轮询）
@@ -28,7 +31,9 @@ function Chat() {
 
   // 拉某个会话的历史消息
   React.useEffect(() => {
-    if (!activeId) { setMessages([]); return; }
+    if (!activeId) { setMessages([]); setPendingApprovals([]); setResolvedApprovals([]); return; }
+    setPendingApprovals([]);
+    setResolvedApprovals([]);
     let alive = true;
     (async () => {
       const r = await API.get(`/api/sessions/${encodeURIComponent(activeId)}/messages`);
@@ -46,11 +51,15 @@ function Chat() {
 
   const active = sessions.find(s => s.id === activeId);
 
-  const askToolApproval = async (approval) => {
-    const toolName = approval.canonical_name || approval.tool_name || "工具";
-    setStreamText(`等待授权：${toolName}`);
-    const allow = window.confirm(formatToolApprovalPrompt(approval));
-    const r = await API.respondToolApproval(approval.id, allow ? "allow" : "deny", "once");
+  // 把待审批的工具调用以聊天卡片形式插入会话流，不再弹浏览器原生 confirm。
+  const askToolApproval = (approval) => {
+    setPendingApprovals(list => list.some(a => a.id === approval.id) ? list : [...list, approval]);
+  };
+
+  const resolveApproval = async (approval, decision, scope) => {
+    setPendingApprovals(list => list.filter(a => a.id !== approval.id));
+    setResolvedApprovals(list => [...list, { approval, decision, scope, at: Date.now() }]);
+    const r = await API.respondToolApproval(approval.id, decision, scope);
     if (r.error) {
       setMessages(m => [...m, { role: "assistant", content: `[工具审批提交失败] ${r.error}` }]);
     }
@@ -89,6 +98,7 @@ function Chat() {
         setMessages(m => [...m, { role: "assistant", content: `[错误] ${msg}` }]);
         setStreamText("");
         setStreaming(false);
+        setPendingApprovals([]);
         streamCtrl.current = null;
       },
     });
@@ -100,6 +110,7 @@ function Chat() {
     setStreaming(false);
     if (streamText) setMessages(m => [...m, { role: "assistant", content: streamText + " …[已中止]" }]);
     setStreamText("");
+    setPendingApprovals([]);
   };
 
   const newSession = async () => {
@@ -246,6 +257,12 @@ function Chat() {
               )}
               {messages.map((m, i) => <Bubble key={i} role={m.role} text={m.content} />)}
               {streaming && <Bubble role="assistant" text={streamText} streaming t="正在生成" />}
+              {resolvedApprovals.map((r, i) => (
+                <ApprovalCard key={`r-${r.approval.id}-${i}`} approval={r.approval} resolved={r} />
+              ))}
+              {pendingApprovals.map((a) => (
+                <ApprovalCard key={`p-${a.id}`} approval={a} onResolve={(decision, scope) => resolveApproval(a, decision, scope)} />
+              ))}
             </div>
           </div>
 
@@ -334,22 +351,77 @@ function SessionListItem({ s, active, onClick, onDelete }) {
   );
 }
 
-function formatToolApprovalPrompt(approval) {
+function ApprovalCard({ approval, onResolve, resolved }) {
   const toolName = approval.canonical_name || approval.tool_name || "工具";
-  const lines = [
-    `是否运行工具 ${toolName}？`,
-    "",
-    `实际调用：${approval.tool_name || toolName}`,
-  ];
-  if (approval.danger) lines.push(`风险级别：${approval.danger}`);
-  if (approval.arguments_preview) {
-    lines.push("");
-    lines.push("参数预览：");
-    lines.push(approval.arguments_preview);
-  }
-  lines.push("");
-  lines.push("确定：允许本次调用；取消：拒绝。");
-  return lines.join("\n");
+  const danger = approval.danger;
+  const dangerColor = danger === "critical" ? "var(--danger)"
+                    : danger === "high"     ? "#c4660a"
+                    : danger === "moderate" ? "#9c7700"
+                    : "var(--ink-60)";
+  const headerBg = resolved
+    ? "var(--pearl)"
+    : danger === "critical" || danger === "high"
+      ? "rgba(193,60,60,0.06)"
+      : "var(--primary-soft)";
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{
+          width: 22, height: 22, borderRadius: "50%",
+          background: "var(--ink-60)", color: "#fff",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          fontSize: 10, fontWeight: 600,
+        }}>权</span>
+        <span className="t-row-strong" style={{ color: "var(--ink)" }}>工具授权</span>
+        <span className="t-meta" style={{ color: "var(--ink-60)" }}>
+          {resolved
+            ? (resolved.decision === "allow" ? `已允许（${resolved.scope}）` : "已拒绝")
+            : "等待你的确认"}
+        </span>
+      </div>
+      <div style={{
+        marginLeft: 30,
+        padding: "12px 14px",
+        background: headerBg,
+        border: "1px solid var(--hairline)",
+        borderRadius: 10,
+        fontFamily: "var(--font-text)",
+        fontSize: 13.5,
+        lineHeight: 1.5,
+        color: "var(--ink)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <span style={{ fontWeight: 600 }}>{toolName}</span>
+          {approval.tool_name && approval.tool_name !== toolName && (
+            <span className="t-meta" style={{ color: "var(--ink-60)" }}>· 运行时 {approval.tool_name}</span>
+          )}
+          {danger && (
+            <span className="t-meta" style={{ color: dangerColor, fontWeight: 500 }}>· {danger}</span>
+          )}
+          {approval.matched_rule && (
+            <span className="t-meta" style={{ color: "var(--ink-60)" }}>· {approval.matched_rule}</span>
+          )}
+        </div>
+        {approval.arguments_preview && (
+          <pre style={{
+            margin: 0, padding: "8px 10px",
+            background: "var(--canvas)", border: "1px solid var(--hairline)",
+            borderRadius: 6, fontFamily: "var(--font-mono)", fontSize: 12,
+            whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--ink)",
+          }}>{approval.arguments_preview}</pre>
+        )}
+        {!resolved && (
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button className="btn btn-primary" onClick={() => onResolve("allow", "once")}>允许本次</button>
+            <button className="btn btn-secondary" onClick={() => onResolve("allow", "session")}>允许本会话</button>
+            <button className="btn btn-secondary" onClick={() => onResolve("allow", "permanent")}>始终允许</button>
+            <button className="btn btn-secondary" style={{ color: "var(--danger)" }} onClick={() => onResolve("deny", "once")}>拒绝</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function Bubble({ role, text, streaming, t }) {

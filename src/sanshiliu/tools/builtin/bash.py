@@ -16,21 +16,32 @@ _logger = get_logger(__name__)
 _MAX_OUTPUT_CHARS = 4000
 
 
+def _decode_output(b: bytes | None) -> str:
+    # cmd.exe 输出走 OEM/系统 CP（zh-CN 为 GBK）；chcp 65001 后才是 UTF-8。
+    # 先试 UTF-8（兼容 Python 程序输出和 chcp 65001），失败再退 mbcs（ANSI CP）。
+    if not b:
+        return ""
+    if sys.platform == "win32":
+        try:
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            return b.decode("mbcs", errors="replace")
+    return b.decode("utf-8", errors="replace")
+
+
 def build_bash_exec_tool(definition: ToolDef, cwd: str | None = None) -> FunctionTool:
     async def _run(args: dict[str, Any]) -> ToolResult:
         cmd = str(args.get("command") or "").strip()
         if not cmd:
             return ToolResult("", definition.name, "参数 command 不能为空", is_error=True)
         timeout = float(args.get("timeout_sec") or 30)
-        # 用 shell=True 简化，但限制超时 + 截断输出
-        if sys.platform == "win32":
-            shell = ["cmd.exe", "/c", cmd]
-        else:
-            shell = ["/bin/sh", "-c", cmd]
 
+        # 必须用 shell 模式：create_subprocess_exec(["cmd.exe","/c",cmd]) 会把
+        # cmd 经 list2cmdline 重转义（内嵌 " 变 \"），cmd.exe 不认这种转义，
+        # 导致 `python -c "import os; ..."` 抵达 Python 时还带着外层引号。
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *shell,
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd or os.getcwd(),
@@ -54,8 +65,8 @@ def build_bash_exec_tool(definition: ToolDef, cwd: str | None = None) -> Functio
                 is_error=True,
             )
 
-        stdout = stdout_b.decode("utf-8", errors="replace") if stdout_b else ""
-        stderr = stderr_b.decode("utf-8", errors="replace") if stderr_b else ""
+        stdout = _decode_output(stdout_b)
+        stderr = _decode_output(stderr_b)
         truncated = False
         if len(stdout) > _MAX_OUTPUT_CHARS:
             stdout = stdout[:_MAX_OUTPUT_CHARS] + "\n[... stdout 截断 ...]"

@@ -182,6 +182,11 @@ class PermissionManager:
             return PermissionDecision(kind="deny", rule="session-cache", danger=danger,
                                       reason="本会话此前已拒绝同款调用")
 
+        # 3.5) 安全 bash 自动放行（仅 bash_classifier 判定为 safe 的只读/查询类）；
+        # deny / 显式 allow / 会话缓存仍优先，用户撤销也可以经 settings.deny 收回。
+        if tool_name in ("bash_exec", "Bash") and danger == "safe":
+            return PermissionDecision(kind="allow", rule="bash-safe-auto", danger=danger)
+
         # 4) defaultMode
         if settings.default_mode == "allow":
             return PermissionDecision(kind="allow", rule="defaultMode=allow", danger=danger)
