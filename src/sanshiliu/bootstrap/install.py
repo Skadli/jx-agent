@@ -1,12 +1,11 @@
-"""依赖检测 + 交互安装；缺包时 uv pip install（uv 缺则回退 pip）。"""
+"""依赖检测 + 交互安装；缺包时直接使用 python -m pip install。"""
 
 from __future__ import annotations
 
 import importlib
-import shutil
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from sanshiliu.foundation.logging import get_logger
@@ -22,6 +21,7 @@ _CORE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("structlog", "structlog>=24.4.0"),
     ("httpx", "httpx>=0.27.0"),
     ("yaml", "pyyaml>=6.0.0"),
+    ("qrcode", "qrcode>=7.4.0"),
 )
 
 
@@ -44,22 +44,28 @@ def detect_missing_dependencies(
         try:
             mod = importlib.import_module(import_name)
             ver = getattr(mod, "__version__", "?")
-            out.append(DependencyStatus(
-                import_name=import_name, pip_spec=pip_spec,
-                installed=True, detail=f"{import_name} {ver}",
-            ))
+            out.append(
+                DependencyStatus(
+                    import_name=import_name,
+                    pip_spec=pip_spec,
+                    installed=True,
+                    detail=f"{import_name} {ver}",
+                )
+            )
         except ImportError as exc:
-            out.append(DependencyStatus(
-                import_name=import_name, pip_spec=pip_spec,
-                installed=False, detail=str(exc),
-            ))
+            out.append(
+                DependencyStatus(
+                    import_name=import_name,
+                    pip_spec=pip_spec,
+                    installed=False,
+                    detail=str(exc),
+                )
+            )
     return out
 
 
 def _build_install_cmd(specs: list[str]) -> list[str]:
-    """优先 `uv pip install`；uv 缺则回退 `python -m pip install`。"""
-    if shutil.which("uv"):
-        return ["uv", "pip", "install", *specs]
+    """用当前 Python 对应的 pip 安装，避免 PATH 上的 pip 指向别的解释器。"""
     return [sys.executable, "-m", "pip", "install", *specs]
 
 
@@ -67,11 +73,11 @@ def run_install_wizard(
     statuses: list[DependencyStatus],
     *,
     confirm: bool = True,
-    confirmer: object | None = None,
+    confirmer: Callable[[str], str] | None = None,
 ) -> tuple[bool, list[str]]:
     """对缺失依赖跑交互确认 + 安装；返回 (success, missing_after)。
 
-    confirmer：可注入的 callable[[str], bool]，便于测试；默认走 input()。
+    confirmer：可注入的 callable[[str], str]，便于测试；默认走 input()。
     confirm=False 时直接装不问，用于 CI/E2E。
     """
     missing = [s for s in statuses if not s.installed]
@@ -84,8 +90,8 @@ def run_install_wizard(
         print(f"  - {s.pip_spec}")
 
     if confirm:
-        ask = _safe_input if confirmer is None else confirmer  # type: ignore[assignment]
-        answer = ask("是否现在自动安装？[Y/n] ").strip().lower() if confirmer is None else "y"
+        ask = _safe_input if confirmer is None else confirmer
+        answer = ask("是否现在自动安装？[Y/n] ").strip().lower()
         if answer not in ("", "y", "yes"):
             print("已取消安装；后续启动会再次检测。")
             return False, specs
@@ -96,22 +102,20 @@ def run_install_wizard(
         proc = subprocess.run(cmd, check=False, capture_output=False)
     except FileNotFoundError as exc:
         _logger.error("安装命令不可用", error=str(exc), cmd=cmd)
-        print(f"  ❌ 安装失败：{exc}")
+        print(f"  [ERROR] 安装失败：{exc}")
         return False, specs
 
     if proc.returncode != 0:
-        print(f"  ❌ 安装失败 (exit {proc.returncode})；请手动 `{' '.join(cmd)}`")
+        print(f"  [ERROR] 安装失败 (exit {proc.returncode})；请手动 `{' '.join(cmd)}`")
         return False, specs
 
     # 再检测一次确认
-    re_check = detect_missing_dependencies(
-        [(s.import_name, s.pip_spec) for s in missing]
-    )
+    re_check = detect_missing_dependencies([(s.import_name, s.pip_spec) for s in missing])
     still_missing = [s.pip_spec for s in re_check if not s.installed]
     if still_missing:
-        print(f"  ⚠️ 仍有未装成功的依赖：{still_missing}")
+        print(f"  [WARN] 仍有未装成功的依赖：{still_missing}")
         return False, still_missing
-    print("  ✅ 所有依赖已就位")
+    print("  [OK] 所有依赖已就位")
     return True, []
 
 

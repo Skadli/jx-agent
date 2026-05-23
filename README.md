@@ -2,7 +2,7 @@
 
 一个通用 agent 框架，协议尽量对齐 Claude Code（CLAUDE.md / memdir / SKILL.md / settings.json），默认人设为博主"三十六贱笑"的数字分身。换 persona 文件即可变成任何人的分身。
 
-- **Python 3.13+**，主依赖 6 个（openai / pydantic / pydantic-settings / structlog / httpx / pyyaml）
+- **Python 3.13+**，主依赖 7 个（openai / pydantic / pydantic-settings / structlog / httpx / pyyaml / qrcode）
 - **LLM 走 OpenAI 兼容标准子集**：chat.completions + streaming + tool_calls（同一份代码可跑 OpenAI / DeepSeek / GLM / 通义 / OneAPI / Ollama）
 - **3 个接入通道**：REPL、iLink 微信 Bot、Web HTTP（含 SSE）
 - **与 Claude Code 文件级互通**：`~/.claude/` 下的 CLAUDE.md / memdir / SKILL.md / settings.json 软链或拷过来直接生效
@@ -13,7 +13,7 @@
 
 ## 当前状态（2026-05-23）
 
-Phase 1-9 代码骨架全部落地，**214 个单元测试通过**，6 份 smoke（phase 2-9）通过。**尚未达 GA**——见文末"已知缺口"。
+Phase 1-9 代码骨架全部落地。恢复记录里曾有 **214 个单元测试通过** 和 6 份 smoke（phase 2-9）通过；当前恢复工作区未包含 `tests/` 目录，commit 前以 targeted check + 手工 smoke 为准。**尚未达 GA**——见文末"已知缺口"。
 
 | Phase | 主题 | 代码 | 单测 | Smoke |
 |-------|------|------|------|-------|
@@ -52,18 +52,20 @@ python -m pip install -e ".[dev]"
 ### 2. 自检环境
 
 ```powershell
-sanshiliu doctor
+python -m sanshiliu doctor
 ```
 
-打印 Python 版本、虚拟环境状态和 6 个核心依赖检测。缺什么会直接告诉你用 `pip` 装什么。
+打印 Python 版本、虚拟环境状态和核心依赖检测。缺什么会直接告诉你用 `pip` 装什么。
 
 ### 3. 填配置
 
 ```powershell
-sanshiliu setup    # 首次跑会引导填 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL，并真调一次 LLM 测连通
+Copy-Item .env.example .env
+# 编辑 .env，按需填写模型配置
+python -m sanshiliu setup    # 可选：检测现有配置，并真调一次 LLM 测连通
 ```
 
-向导把配置写到 `~/.sanshiliu/.env`。也可手工 `cp .env.example .env` 后编辑。
+当前程序实际读取进程环境变量和项目根目录 `.env`。Windows 下建议直接编辑项目根目录 `.env`。`setup` 只会询问模型名，不会询问或写入 LLM API key / base URL；如果没有 WeChat channel 凭据，会按 Hermes 的 iLink Bot 流程显示微信二维码，扫码确认后自动保存 `data/wechat-account.json` 并把 `WEIXIN_*` / `ILINK_*` 运行时配置写回项目 `.env`，下次启动自动复用，有新 token 时覆盖旧值。
 
 支持的 backend：
 
@@ -78,9 +80,9 @@ sanshiliu setup    # 首次跑会引导填 OPENAI_API_KEY / OPENAI_BASE_URL / OP
 ### 4. 跑起来
 
 ```powershell
-sanshiliu repl    # 默认：终端 REPL
-sanshiliu serve   # HTTP server（/chat SSE + /healthz + /metrics）
-sanshiliu bot     # serve 的别名，强调拉 wechat bot；需 .env 里 SANSHILIU_WECHAT_ENABLED=true
+python -m sanshiliu repl    # 默认：终端 REPL
+python -m sanshiliu serve   # HTTP server（/chat SSE + /healthz + /metrics）
+python -m sanshiliu bot     # serve 的别名，强调拉 wechat bot；setup 扫码后会写入 WeChat 凭据
 ```
 
 REPL 内置命令：`/quit /stats /persona /memory /help`。
@@ -90,15 +92,17 @@ REPL 内置命令：`/quit /stats /persona /memory /help`。
 ## 命令行接口
 
 ```text
-sanshiliu [--version] <command>
+python -m sanshiliu [--version] <command>
 
 <command>:
   repl       交互式对话（默认）；首次运行自动跑 setup 向导
   serve      HTTP 服务（含 SSE）+ 按 .env 决定是否拉 wechat bot
   bot        serve 的别名
   doctor     环境检查（preflight + 依赖检测），不进 REPL
-  setup      首次启动向导（填 .env + 测 LLM 连通）
+  setup      配置检查向导（检测 .env + 测 LLM 连通）
 ```
+
+如果已经激活 `.venv` 且 console script 在 PATH 中，也可以直接用 `sanshiliu <command>`。
 
 退出码：`0` 成功 / `78` 配置错误 / `130` 用户中断。
 
@@ -127,7 +131,14 @@ sanshiliu [--version] <command>
 | `SANSHILIU_AUTO_EXTRACT_ENABLED` | `false` | 每轮异步提取候选记忆（开了会多调一次 LLM） |
 | `SANSHILIU_WECHAT_ENABLED` | `false` | 拉 iLink wechat bot |
 | `SANSHILIU_WEB_PORT` | `9527` | HTTP 端口 |
-| `ILINK_API_KEY` / `ILINK_WEBHOOK_SECRET` | — | wechat 启用时必填 |
+| `WEIXIN_ACCOUNT_ID` / `WEIXIN_TOKEN` | — | Hermes 风格官方 iLink Bot 凭据；setup 扫码后自动写入 |
+| `WEIXIN_BASE_URL` | `https://ilinkai.weixin.qq.com` | 官方 iLink Bot API 地址 |
+| `WEIXIN_ACCOUNT_STORE` | `data/wechat-account.json` | 扫码账号缓存；后续启动复用 |
+| `WEIXIN_QR_FILE` | `data/wechat-login-qr.svg` | 终端二维码识别失败时的备用 SVG |
+| `WEIXIN_QR_LOGIN` | `true` | 无微信凭据时是否在 setup 中拉二维码；设为 `false` 可跳过 |
+| `WEIXIN_QR_OPEN_FILE` | `true` | 终端无法安全渲染二维码时，尝试自动打开 SVG |
+| `SANSHILIU_WECHAT_WHITELIST` | — | 逗号分隔 wxid；空集合一律拒绝，调试可填 `*` |
+| `ILINK_API_KEY` / `ILINK_WEBHOOK_SECRET` | — | 旧本地 iLink webhook 兼容模式凭据 |
 
 ### `settings.json`（权限）
 
@@ -185,7 +196,7 @@ cp    ~/.claude/settings.json ~/.sanshiliu/settings.json
 
 ```
 jx-agent/
-├── pyproject.toml             # 主依赖 6 个；ruff/mypy/pytest 配置
+├── pyproject.toml             # 主依赖 7 个；ruff/mypy/pytest 配置
 ├── .env.example
 ├── settings.json.example      # Claude 风格权限示例
 ├── CLAUDE.md                  # 项目级长期记忆（启动注入 system prompt 顶部）
@@ -225,9 +236,7 @@ jx-agent/
 │   └── observability/         # healthz / metrics（含在 web/handlers 里）
 │
 ├── data/                      # 运行时（gitignore）：sqlite / logs / jsonl / htmlcov
-└── tests/
-    ├── unit/                  # 214 个；test_<module>.py
-    └── smoke/                 # smoke_phase{2,3,4,5_6,7,8,9}.py；E2E 路径检查
+└── tests/                     # 当前恢复工作区未包含；恢复后放单测和 smoke
 ```
 
 ### 分层依赖图
@@ -254,18 +263,18 @@ jx-agent/
 ## 开发约定
 
 - `ruff check` + `ruff format` 零错；中文项目允许全角标点（已在 `pyproject.toml` 中 ignore RUF001/2/3）
-- `mypy src/sanshiliu` strict 模式：**当前仍有 26 个错待修**（见缺口清单）
-- `pytest tests/unit -q`：当前 214 通过 / 约 41 秒
-- `python -m tests.smoke.smoke_phase<N>`：手动跑各 Phase E2E
+- `mypy src/sanshiliu` strict 模式：历史记录里仍有 26 个错待修（见缺口清单）
+- 当前恢复工作区未包含 `tests/`，先跑 targeted `ruff` / `py_compile` / 手工 smoke
+- 若恢复 `tests/`，再跑 `pytest tests/unit -q` 和 `python -m tests.smoke.smoke_phase<N>`
 - 注释 / 日志中文，仅在关键决策点添加；不写 what，只写 why
 - 严禁绕过权限或重写 git 历史
 
 ### 测试入口
 
 ```powershell
-python -m pytest tests/unit -q --no-cov                          # 快速跑单测
-python -m pytest tests/unit --cov=sanshiliu -q                   # 含覆盖率
-python -m tests.smoke.smoke_phase9                                # E2E 烟测（不依赖真 backend）
+python -m ruff check src/sanshiliu
+python -m py_compile src/sanshiliu/bootstrap/setup_wizard.py
+python -m sanshiliu doctor
 ```
 
 ---

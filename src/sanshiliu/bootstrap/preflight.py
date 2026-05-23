@@ -1,11 +1,10 @@
-"""Phase 9 环境检查；步骤 1-3：Python 版本 / uv 可用 / venv 状态。
+"""Phase 9 环境检查；步骤 1-2：Python 版本 / venv 状态。
 
 非交互函数，只生成 PreflightReport；交互逻辑放 cli。
 """
 
 from __future__ import annotations
 
-import shutil
 import sys
 from dataclasses import dataclass, field
 from typing import Literal
@@ -54,44 +53,35 @@ def _check_python() -> PreflightItem:
             name="python",
             status="fail",
             detail=f"当前 Python {cur[0]}.{cur[1]}；最低需要 {_MIN_PYTHON[0]}.{_MIN_PYTHON[1]}",
-            hint="请安装 Python 3.13+（推荐用 uv python install 3.13）",
+            hint="请安装 Python 3.13+，然后重新创建 venv 并运行 python -m pip install -e .",
         )
     return PreflightItem(
-        name="python", status="ok",
+        name="python",
+        status="ok",
         detail=f"Python {cur[0]}.{cur[1]}.{sys.version_info.micro}",
     )
 
 
-def _check_uv() -> PreflightItem:
-    """uv 不是硬要求（pip 也行），但有 uv 时自动装依赖体验更佳。"""
-    path = shutil.which("uv")
-    if path:
-        return PreflightItem(name="uv", status="ok", detail=path)
-    return PreflightItem(
-        name="uv", status="warn",
-        detail="未检测到 uv；自动装依赖会回退到 pip",
-        hint="可选：pipx install uv 或参考 https://docs.astral.sh/uv/",
-    )
-
-
 def _check_venv() -> PreflightItem:
-    """是否在 venv / uv project；纯参考，不阻塞。"""
+    """是否在 venv；纯参考，不阻塞。"""
     in_venv = (
-        sys.prefix != sys.base_prefix
-        or hasattr(sys, "real_prefix")  # 老 virtualenv
+        sys.prefix != sys.base_prefix or hasattr(sys, "real_prefix")  # 老 virtualenv
     )
     if in_venv:
         return PreflightItem(
-            name="venv", status="ok", detail=f"已在 venv：{sys.prefix}",
+            name="venv",
+            status="ok",
+            detail=f"已在 venv：{sys.prefix}",
         )
     return PreflightItem(
-        name="venv", status="warn",
+        name="venv",
+        status="warn",
         detail="未在 venv 内运行；可能影响依赖隔离",
-        hint="建议：uv venv && source .venv/bin/activate（POSIX）或 .\\.venv\\Scripts\\activate（Windows）",
+        hint="建议：python -m venv .venv 后激活，再运行 python -m pip install -e .",
     )
 
 
 def run_preflight() -> PreflightReport:
-    """跑全部 3 项检查；返回 PreflightReport 供 cli 决策。"""
-    items = (_check_python(), _check_uv(), _check_venv())
+    """跑全部检查；返回 PreflightReport 供 cli 决策。"""
+    items = (_check_python(), _check_venv())
     return PreflightReport(items=items)

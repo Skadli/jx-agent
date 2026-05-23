@@ -16,15 +16,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="三十六贱笑 Agent — 通用 agent 框架（协议对齐 Claude Code）",
     )
     parser.add_argument(
-        "--version", action="version", version=f"sanshiliu {__version__}",
+        "--version",
+        action="version",
+        version=f"sanshiliu {__version__}",
     )
 
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
     sub.add_parser("repl", help="进入交互式对话（默认命令）")
-    sub.add_parser("serve", help="启动 HTTP 服务（/chat /healthz /metrics），并按 .env 决定是否拉 wechat bot")
+    sub.add_parser(
+        "serve", help="启动 HTTP 服务（/chat /healthz /metrics），并按 .env 决定是否拉 wechat bot"
+    )
     sub.add_parser("bot", help="serve 的别名；强调启动 wechat bot")
     sub.add_parser("doctor", help="环境检查 + 依赖检测；不进入 REPL")
-    sub.add_parser("setup", help="首次启动向导：交互填 ~/.sanshiliu/.env")
+    sub.add_parser("setup", help="配置检查向导：模型名 + 缺 wechat 凭据时扫码连接")
     return parser
 
 
@@ -48,10 +52,12 @@ def main(argv: list[str] | None = None) -> int:
             print("\n(已取消)")
             return 130
         from sanshiliu.channels.repl.main import run_repl_sync
+
         return run_repl_sync()
 
     if cmd in {"serve", "bot"}:
         from sanshiliu.channels.web.runner import run_serve_sync
+
         return run_serve_sync()
 
     parser.print_help()
@@ -66,26 +72,26 @@ def _run_doctor() -> int:
     print("── Preflight 环境检查 ──")
     report = run_preflight()
     for it in report.items:
-        mark = {"ok": "✓", "warn": "!", "fail": "✗"}[it.status]
+        mark = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}[it.status]
         print(f"  [{mark}] {it.name:<6} {it.detail}")
         if it.hint and it.status != "ok":
-            print(f"        → {it.hint}")
+            print(f"        -> {it.hint}")
 
     print("\n── 依赖检测 ──")
     deps = detect_missing_dependencies()
     for d in deps:
-        mark = "✓" if d.installed else "✗"
+        mark = "OK" if d.installed else "FAIL"
         print(f"  [{mark}] {d.pip_spec}  {d.detail}")
     missing = [d for d in deps if not d.installed]
 
     if report.has_failures:
-        print("\n❌ preflight 有阻塞项；请按提示修复后重试")
+        print("\n[ERROR] preflight 有阻塞项；请按提示修复后重试")
         return 78
     if missing:
-        print(f"\n⚠️ 缺 {len(missing)} 个依赖；运行 `sanshiliu` 时会引导自动装")
+        print(f"\n[WARN] 缺 {len(missing)} 个依赖；运行 `python -m sanshiliu` 时会引导自动装")
         return 0
 
-    print("\n✅ 所有检查通过")
+    print("\n[OK] 所有检查通过")
     return 0
 
 
@@ -100,14 +106,19 @@ async def _run_setup(*, skip_if_complete: bool = False) -> int:
     # 用 settings 解析 home_dir；缺 env 也能跑（home_dir 走 default_factory）
     import os
     from pathlib import Path
+
     raw = os.environ.get("SANSHILIU_HOME_DIR")
     home_dir = Path(raw) if raw else Path.home() / ".sanshiliu"
 
-    result = await run_setup_wizard(home_dir, force=not skip_if_complete)
+    result = await run_setup_wizard(
+        home_dir,
+        force=not skip_if_complete,
+        project_env_path=Path.cwd() / ".env",
+    )
     if result is None:
         # env 已完整
         return 0
-    if not result.llm_ok:
+    if not result.completed:
         return 1
     return 0
 

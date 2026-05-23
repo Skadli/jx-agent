@@ -50,6 +50,19 @@ CREATE TABLE IF NOT EXISTS channel_messages (
 CREATE INDEX IF NOT EXISTS idx_channel_messages_session ON channel_messages(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_channel_messages_unproc ON channel_messages(processed, ts);
 
+-- 官方 iLink Bot 长轮询状态；避免重启后从空 cursor 重放历史消息
+CREATE TABLE IF NOT EXISTS wechat_ilink_state (
+    account_id   TEXT PRIMARY KEY,
+    sync_buf     TEXT    NOT NULL DEFAULT '',
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wechat_ilink_seen (
+    dedup_key    TEXT PRIMARY KEY,
+    ts           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wechat_ilink_seen_ts ON wechat_ilink_seen(ts);
+
 -- 限流计数器，Phase 4 用
 CREATE TABLE IF NOT EXISTS rate_limit_counters (
     scope         TEXT    NOT NULL,           -- user:<wxid> / global / channel:wechat

@@ -114,6 +114,37 @@ class Settings(BaseSettings):
         description="iLink webhook HMAC 签名 header 名",
     )
 
+    # Hermes 风格官方 iLink Bot 凭据；扫码后由 setup 自动写入
+    weixin_account_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("weixin_account_id", "WEIXIN_ACCOUNT_ID"),
+        description="iLink 官方 Bot 账号 ID",
+    )
+    weixin_token: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("weixin_token", "WEIXIN_TOKEN"),
+        description="iLink 官方 Bot token",
+    )
+    weixin_base_url: str = Field(
+        default="https://ilinkai.weixin.qq.com",
+        validation_alias=AliasChoices("weixin_base_url", "WEIXIN_BASE_URL"),
+        description="iLink 官方 Bot API 地址",
+    )
+    weixin_poll_timeout_ms: int = Field(
+        default=35_000,
+        ge=5_000,
+        le=120_000,
+        validation_alias=AliasChoices("weixin_poll_timeout_ms", "WEIXIN_POLL_TIMEOUT_MS"),
+        description="iLink 官方 Bot getupdates 长轮询超时",
+    )
+    weixin_poll_interval_ms: int = Field(
+        default=1_000,
+        ge=100,
+        le=60_000,
+        validation_alias=AliasChoices("weixin_poll_interval_ms", "WEIXIN_POLL_INTERVAL_MS"),
+        description="iLink 官方 Bot 轮询间隔",
+    )
+
     # 微信白名单 + 限流 + 黑名单；CSV 形式
     wechat_whitelist: str = Field(
         default="",
@@ -127,20 +158,28 @@ class Settings(BaseSettings):
     )
     wechat_output_blacklist: str = Field(
         default="",
-        validation_alias=AliasChoices("wechat_output_blacklist", "SANSHILIU_WECHAT_OUTPUT_BLACKLIST"),
+        validation_alias=AliasChoices(
+            "wechat_output_blacklist", "SANSHILIU_WECHAT_OUTPUT_BLACKLIST"
+        ),
         description="逗号分隔的输出关键词；命中则替换为话术",
     )
     wechat_rate_per_user_per_day: int = Field(
-        default=30, ge=1, le=10_000,
+        default=30,
+        ge=1,
+        le=10_000,
         validation_alias=AliasChoices(
-            "wechat_rate_per_user_per_day", "SANSHILIU_WECHAT_RATE_PER_USER_PER_DAY",
+            "wechat_rate_per_user_per_day",
+            "SANSHILIU_WECHAT_RATE_PER_USER_PER_DAY",
         ),
         description="单用户每日额度；超过收冷却提示",
     )
     wechat_rate_global_per_minute: int = Field(
-        default=2, ge=1, le=1_000,
+        default=2,
+        ge=1,
+        le=1_000,
         validation_alias=AliasChoices(
-            "wechat_rate_global_per_minute", "SANSHILIU_WECHAT_RATE_GLOBAL_PER_MINUTE",
+            "wechat_rate_global_per_minute",
+            "SANSHILIU_WECHAT_RATE_GLOBAL_PER_MINUTE",
         ),
         description="全局每分钟额度；保护后端突发流量",
     )
@@ -221,7 +260,7 @@ class Settings(BaseSettings):
         """persona_dir/prompts_dir 只解析路径不强建——对应 loader 内会校验文件齐不齐。"""
         return v.expanduser().resolve()
 
-    @field_validator("openai_base_url", mode="after")
+    @field_validator("openai_base_url", "ilink_base_url", "weixin_base_url", mode="after")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         """base_url 末尾不带 /，与 openai SDK 内部拼接一致，避免双斜杠 404。"""
@@ -231,15 +270,14 @@ class Settings(BaseSettings):
     def _check_channel_dependencies(self) -> Settings:
         """通道启用时校验对应凭据，失败信息明确字段名（验收 1-V2 同款）。"""
         if self.wechat_enabled:
-            missing: list[str] = []
-            if not self.ilink_api_key:
-                missing.append("ILINK_API_KEY")
-            if not self.ilink_webhook_secret:
-                missing.append("ILINK_WEBHOOK_SECRET")
-            if missing:
+            official_ready = bool(self.weixin_account_id.strip() and self.weixin_token)
+            webhook_ready = bool(self.ilink_api_key and self.ilink_webhook_secret)
+            if not official_ready and not webhook_ready:
                 raise ValueError(
-                    f"wechat_enabled=true 但缺少凭据：{', '.join(missing)}；"
-                    f"请在 .env 中补齐或将 SANSHILIU_WECHAT_ENABLED 设为 false"
+                    "wechat_enabled=true 但缺少凭据：请配置 WEIXIN_ACCOUNT_ID + WEIXIN_TOKEN，"
+                    "或配置 ILINK_API_KEY + ILINK_WEBHOOK_SECRET；"
+                    "也可以运行 `python -m sanshiliu setup` 扫码，"
+                    "或将 SANSHILIU_WECHAT_ENABLED 设为 false"
                 )
         return self
 

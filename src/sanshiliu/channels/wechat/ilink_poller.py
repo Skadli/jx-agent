@@ -1,0 +1,372 @@
+"""官方 iLink Bot getupdates 长轮询；把 Hermes 消息形态落入现有 sqlite 队列。"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import time
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
+from sanshiliu.channels.web.handlers import HealthState
+from sanshiliu.channels.wechat.ilink_client import ILinkClient
+from sanshiliu.foundation.errors import ChannelError
+from sanshiliu.foundation.logging import get_logger
+from sanshiliu.storage.db import Database
+
+_logger = get_logger(__name__)
+
+_ITEM_TEXT = 1
+_ITEM_VOICE = 3
+_POLL_RETRY_DELAY_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class ILinkInboundMessage:
+    peer_id: str
+    user_id: str
+    group_id: str | None
+    message_id: str
+    dedup_key: str
+    text: str
+
+
+class ILinkLongPoller:
+    """官方 iLink 长轮询任务；入站消息复用 WechatQueue 的消费链路。"""
+
+    def __init__(
+        self,
+        *,
+        db: Database,
+        client: ILinkClient,
+        account_id: str,
+        health: HealthState,
+        poll_timeout_ms: int,
+        poll_interval_ms: int,
+    ) -> None:
+        self._db = db
+        self._client = client
+        self._account_id = account_id
+        self._health = health
+        self._poll_timeout_ms = poll_timeout_ms
+        self._poll_interval = poll_interval_ms / 1000
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._sync_buf = ""
+        self._seen: set[str] = set()
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+        self._sync_buf = await self._load_sync_buf()
+        self._stop.clear()
+        self._task = asyncio.create_task(self._run(), name="wechat-ilink-poll")
+        _logger.info("官方 iLink 长轮询已启动", account=self._short(self._account_id))
+
+    async def stop(self, *, shutdown_timeout: float = 5.0) -> None:
+        self._stop.set()
+        if self._task is None:
+            return
+        try:
+            await asyncio.wait_for(self._task, timeout=shutdown_timeout)
+        except TimeoutError:
+            self._task.cancel()
+        self._task = None
+
+    async def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self._poll_once()
+                self._health.set("wechat", "up")
+                wait_seconds = self._poll_interval
+            except ChannelError as exc:
+                self._health.set("wechat", "down")
+                wait_seconds = _POLL_RETRY_DELAY_SECONDS
+                _logger.warning("官方 iLink 轮询失败，将稍后重试", error=str(exc))
+            except Exception as exc:
+                self._health.set("wechat", "down")
+                wait_seconds = _POLL_RETRY_DELAY_SECONDS
+                _logger.exception("官方 iLink 轮询任务异常，将稍后重试", error=str(exc))
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=wait_seconds)
+            except TimeoutError:
+                continue
+
+    async def _poll_once(self) -> None:
+        response = await self._client.get_updates(
+            self._sync_buf,
+            timeout_ms=self._poll_timeout_ms,
+        )
+        sync_buf = _extract_sync_buf(response)
+
+        messages = _extract_inbound_messages(response, self._account_id)
+        for message in messages:
+            if message.dedup_key in self._seen or await self._has_seen(message.dedup_key):
+                continue
+            await self._enqueue(message)
+            await self._mark_seen(message.dedup_key)
+            self._remember_seen(message.dedup_key)
+        if messages:
+            _logger.info("官方 iLink 收到消息", count=len(messages))
+        if sync_buf:
+            self._sync_buf = sync_buf
+            await self._save_sync_buf(sync_buf)
+
+    async def _enqueue(self, message: ILinkInboundMessage) -> None:
+        session_id = _session_id_for(message.user_id, message.group_id)
+        await self._db._execute(
+            """
+            INSERT INTO channel_messages
+              (ts, channel, direction, session_id, user_id, group_id, content, msg_type, processed)
+            VALUES (?,?,?,?,?,?,?,?,0)
+            """,
+            (
+                int(time.time() * 1000),
+                "wechat",
+                "in",
+                session_id,
+                message.user_id,
+                message.group_id,
+                message.text,
+                "text",
+            ),
+        )
+
+    async def _load_sync_buf(self) -> str:
+        cur = await self._db._execute(
+            "SELECT sync_buf FROM wechat_ilink_state WHERE account_id = ?",
+            (self._account_id,),
+        )
+        row = cur.fetchone()
+        return str(row["sync_buf"]) if row and row["sync_buf"] else ""
+
+    async def _save_sync_buf(self, sync_buf: str) -> None:
+        await self._db._execute(
+            """
+            INSERT INTO wechat_ilink_state (account_id, sync_buf, updated_at)
+            VALUES (?,?,?)
+            ON CONFLICT(account_id) DO UPDATE SET
+              sync_buf = excluded.sync_buf,
+              updated_at = excluded.updated_at
+            """,
+            (self._account_id, sync_buf, int(time.time() * 1000)),
+        )
+
+    async def _has_seen(self, dedup_key: str) -> bool:
+        cur = await self._db._execute(
+            "SELECT 1 FROM wechat_ilink_seen WHERE dedup_key = ? LIMIT 1",
+            (dedup_key,),
+        )
+        return cur.fetchone() is not None
+
+    async def _mark_seen(self, dedup_key: str) -> None:
+        await self._db._execute(
+            "INSERT OR IGNORE INTO wechat_ilink_seen (dedup_key, ts) VALUES (?,?)",
+            (dedup_key, int(time.time() * 1000)),
+        )
+
+    def _remember_seen(self, dedup_key: str) -> None:
+        self._seen.add(dedup_key)
+        if len(self._seen) > 5_000:
+            self._seen.clear()
+
+    @staticmethod
+    def _short(value: str) -> str:
+        return value[:8] + ("..." if len(value) > 8 else "")
+
+
+def _extract_sync_buf(value: Any) -> str:
+    return _find_string_key(value, ("get_updates_buf", "sync_buf", "next_sync_buf"))
+
+
+def _extract_inbound_messages(value: Any, account_id: str) -> list[ILinkInboundMessage]:
+    messages: list[ILinkInboundMessage] = []
+    _collect_message_arrays(value, account_id, messages)
+    return messages
+
+
+def _collect_message_arrays(
+    value: Any,
+    account_id: str,
+    messages: list[ILinkInboundMessage],
+) -> None:
+    if isinstance(value, list):
+        for item in value:
+            parsed = _parse_inbound_message(item, account_id)
+            if parsed is not None:
+                messages.append(parsed)
+        return
+    if not isinstance(value, dict):
+        return
+
+    for key in ("msgs", "messages", "updates"):
+        items = value.get(key)
+        if isinstance(items, list):
+            for item in items:
+                parsed = _parse_inbound_message(item, account_id)
+                if parsed is not None:
+                    messages.append(parsed)
+    for key in ("data", "result"):
+        child = value.get(key)
+        if child is not None:
+            _collect_message_arrays(child, account_id, messages)
+
+
+def _parse_inbound_message(value: Any, account_id: str) -> ILinkInboundMessage | None:
+    message = _message_object(value)
+    if message is None:
+        return None
+    sender_id = _string_field(message, ("from_user_id", "from", "sender", "sender_id"))
+    if not sender_id or sender_id == account_id:
+        return None
+
+    text = _extract_message_text(message)
+    if not text.strip():
+        return None
+
+    room_id = _string_field(message, ("room_id", "chat_room_id", "group_id"))
+    peer_id = _guess_peer_id(message, account_id, sender_id)
+    group_id = room_id or None
+    user_id = sender_id if group_id else peer_id
+    raw_message_id = _string_field(
+        message,
+        ("message_id", "msg_id", "client_msg_id", "new_msg_id", "id"),
+    )
+    timestamp = _string_field(message, ("timestamp", "msg_time", "create_time", "time", "ts"))
+    if raw_message_id:
+        dedup_key = f"message:{raw_message_id}"
+        message_id = raw_message_id
+    elif timestamp:
+        dedup_key = f"content:{peer_id}:{sender_id}:{timestamp}:{_stable_hash(text)}"
+        message_id = f"generated-{_stable_hash(dedup_key)}"
+    else:
+        message_id = f"generated-{uuid.uuid4().hex}"
+        dedup_key = f"generated:{message_id}"
+    return ILinkInboundMessage(
+        peer_id=peer_id,
+        user_id=user_id,
+        group_id=group_id,
+        message_id=message_id,
+        dedup_key=dedup_key,
+        text=text,
+    )
+
+
+def _message_object(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict) and _looks_like_message(value):
+        return value
+    if not isinstance(value, dict):
+        return None
+    for key in ("msg", "message", "payload"):
+        child = value.get(key)
+        if isinstance(child, dict) and _looks_like_message(child):
+            return child
+    return None
+
+
+def _looks_like_message(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return any(key in value for key in ("item_list", "from_user_id", "message_id", "msg_id"))
+
+
+def _guess_peer_id(message: dict[str, Any], account_id: str, sender_id: str) -> str:
+    room_id = _string_field(message, ("room_id", "chat_room_id", "group_id"))
+    to_user_id = _string_field(message, ("to_user_id",))
+    msg_type = _number_field(message, ("msg_type",)) or 0
+    if room_id:
+        return room_id
+    if to_user_id and to_user_id != account_id and msg_type == 1:
+        return to_user_id
+    return sender_id
+
+
+def _extract_message_text(message: dict[str, Any]) -> str:
+    items = message.get("item_list")
+    if isinstance(items, list):
+        text = _extract_text_from_items(items)
+        if text:
+            return text
+    return _string_field(
+        message,
+        ("text", "content", "message", "message_content", "msg", "plain_text"),
+    )
+
+
+def _extract_text_from_items(items: list[Any]) -> str:
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = _number_field(item, ("type",)) or 0
+        text_item = item.get("text_item")
+        if item_type == _ITEM_TEXT and isinstance(text_item, dict):
+            text = _string_field(text_item, ("text",))
+            if text:
+                return text
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = _number_field(item, ("type",)) or 0
+        voice_item = item.get("voice_item")
+        if item_type == _ITEM_VOICE and isinstance(voice_item, dict):
+            text = _string_field(voice_item, ("text",))
+            if text:
+                return text
+    return ""
+
+
+def _session_id_for(wxid: str, group_id: str | None) -> str:
+    if group_id:
+        return f"wechat:group:{group_id}:{wxid}"
+    return f"wechat:user:{wxid}"
+
+
+def _find_string_key(value: Any, keys: tuple[str, ...]) -> str:
+    if isinstance(value, dict):
+        for key in keys:
+            text = _as_string(value.get(key))
+            if text:
+                return text
+        for child in value.values():
+            text = _find_string_key(child, keys)
+            if text:
+                return text
+    elif isinstance(value, list):
+        for item in value:
+            text = _find_string_key(item, keys)
+            if text:
+                return text
+    return ""
+
+
+def _string_field(value: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        text = _as_string(value.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _number_field(value: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        raw = value.get(key)
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return int(raw.strip())
+            except ValueError:
+                continue
+    return None
+
+
+def _as_string(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return text
+
+
+def _stable_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]

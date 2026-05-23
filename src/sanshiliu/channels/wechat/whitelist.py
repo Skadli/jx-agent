@@ -14,12 +14,15 @@ class WechatWhitelist:
 
     def __init__(self, wxids: Iterable[str]) -> None:
         self._wxids = {w.strip() for w in wxids if w.strip()}
+        self._allow_all = "*" in self._wxids
 
     @property
     def size(self) -> int:
         return len(self._wxids)
 
     def allows(self, wxid: str) -> bool:
+        if self._allow_all:
+            return True
         if not self._wxids:
             return False
         ok = wxid in self._wxids

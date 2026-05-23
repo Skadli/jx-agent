@@ -18,6 +18,7 @@ from sanshiliu.channels.web.routes import Router
 from sanshiliu.channels.web.server import WebServer
 from sanshiliu.channels.wechat.bot import WechatBot
 from sanshiliu.channels.wechat.ilink_client import ILinkClient
+from sanshiliu.channels.wechat.ilink_poller import ILinkLongPoller
 from sanshiliu.channels.wechat.queue import WechatQueue
 from sanshiliu.channels.wechat.rate_limit import WechatRateLimiter
 from sanshiliu.channels.wechat.safety import WechatSafety
@@ -86,11 +87,13 @@ async def run_serve() -> int:
     )
     # Phase 8：权限（web/wechat 走 DenyAllConfirmer，ask 模式直接拒绝）
     from pathlib import Path as _Path
+
     permission_manager: PermissionManager | None = None
     if settings.security_enabled:
         try:
             settings_loader = SettingsLoader(
-                global_home=settings.home_dir, project_cwd=_Path.cwd(),
+                global_home=settings.home_dir,
+                project_cwd=_Path.cwd(),
             )
             settings_loader.load()
             path_guard = PathGuard(cwd_root=_Path.cwd())
@@ -111,7 +114,9 @@ async def run_serve() -> int:
             tool_registry, tool_dispatcher = build_tool_stack(
                 prompts_dir=settings.prompts_dir,
                 cwd_root=_Path.cwd(),
-                tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
+                tavily_api_key=settings.tavily_api_key.get_secret_value()
+                if settings.tavily_api_key
+                else None,
                 permission=permission_manager,
             )
         except ConfigError as exc:
@@ -135,6 +140,7 @@ async def run_serve() -> int:
     memory_extractor: MemoryExtractor | None = None
     if settings.memory_enabled:
         from pathlib import Path as _Path
+
         try:
             claudemd_loader = ClaudeMdLoader(
                 global_home=settings.home_dir,
@@ -157,15 +163,21 @@ async def run_serve() -> int:
             try:
                 instruction = load_extract_instruction(settings.prompts_dir)
                 memory_extractor = MemoryExtractor(
-                    llm=llm, memdir_root=memdir_loader.root, instruction=instruction,
+                    llm=llm,
+                    memdir_root=memdir_loader.root,
+                    instruction=instruction,
                 )
                 _logger.info("auto-extract 已开启")
             except ConfigError as exc:
                 print(f"auto-extract 加载失败（继续不带 extract）：{exc}", file=sys.stderr)
 
     engine = ConversationEngine(
-        llm=llm, db=db, persona_loader=loader, context_manager=context_manager,
-        tool_registry=tool_registry, tool_dispatcher=tool_dispatcher,
+        llm=llm,
+        db=db,
+        persona_loader=loader,
+        context_manager=context_manager,
+        tool_registry=tool_registry,
+        tool_dispatcher=tool_dispatcher,
         skill_activator=skill_activator,
         claudemd_loader=claudemd_loader,
         memdir_loader=memdir_loader,
@@ -186,14 +198,28 @@ async def run_serve() -> int:
 
     # wechat 可选启动；webhook 路径挂在同一 web server 上
     wechat_bot: WechatBot | None = None
+    wechat_poller: ILinkLongPoller | None = None
+    client: ILinkClient | None = None
     if settings.wechat_enabled:
-        if settings.ilink_api_key is None or settings.ilink_webhook_secret is None:
+        official_wechat = bool(settings.weixin_account_id.strip() and settings.weixin_token)
+        webhook_wechat = bool(settings.ilink_api_key and settings.ilink_webhook_secret)
+        if not official_wechat and not webhook_wechat:
             print("wechat_enabled=true 但缺凭据；终止", file=sys.stderr)
             return 78
-        client = ILinkClient(
-            base_url=settings.ilink_base_url,
-            api_key=settings.ilink_api_key.get_secret_value(),
-        )
+        if official_wechat:
+            client = ILinkClient(
+                base_url=settings.weixin_base_url,
+                api_key=settings.weixin_token.get_secret_value() if settings.weixin_token else None,
+                account_id=settings.weixin_account_id,
+                timeout=max(settings.weixin_poll_timeout_ms / 1000 + 5, 10),
+            )
+        else:
+            client = ILinkClient(
+                base_url=settings.ilink_base_url,
+                api_key=settings.ilink_api_key.get_secret_value()
+                if settings.ilink_api_key
+                else None,
+            )
         queue = WechatQueue(db)
         whitelist = WechatWhitelist.from_csv(settings.wechat_whitelist)
         rate_limiter = WechatRateLimiter(
@@ -206,21 +232,43 @@ async def run_serve() -> int:
             output_blacklist=settings.wechat_output_blacklist.split(","),
         )
         wechat_bot = WechatBot(
-            db=db, engine=engine, client=client, queue=queue,
-            whitelist=whitelist, rate_limiter=rate_limiter, safety=safety, health=health,
-        )
-        processor = WechatWebhookProcessor(
             db=db,
-            webhook_secret=settings.ilink_webhook_secret.get_secret_value(),
-            signature_header=settings.ilink_signature_header,
+            engine=engine,
+            client=client,
+            queue=queue,
+            whitelist=whitelist,
+            rate_limiter=rate_limiter,
+            safety=safety,
+            health=health,
         )
-        router.register("POST", "/wechat/webhook", make_webhook_handler(processor.process, loop))
+        if official_wechat:
+            wechat_poller = ILinkLongPoller(
+                db=db,
+                client=client,
+                account_id=settings.weixin_account_id,
+                health=health,
+                poll_timeout_ms=settings.weixin_poll_timeout_ms,
+                poll_interval_ms=settings.weixin_poll_interval_ms,
+            )
+        else:
+            processor = WechatWebhookProcessor(
+                db=db,
+                webhook_secret=settings.ilink_webhook_secret.get_secret_value()
+                if settings.ilink_webhook_secret
+                else "",
+                signature_header=settings.ilink_signature_header,
+            )
+            router.register(
+                "POST", "/wechat/webhook", make_webhook_handler(processor.process, loop)
+            )
     else:
         health.set("wechat", "disabled")
-        client = None  # type: ignore[assignment]
 
     server = WebServer(
-        host="0.0.0.0", port=settings.web_port, router=router, loop=loop,
+        host="0.0.0.0",
+        port=settings.web_port,
+        router=router,
+        loop=loop,
     )
 
     # 信号处理：Ctrl+C / SIGTERM 优雅退出
@@ -238,12 +286,17 @@ async def run_serve() -> int:
     server.start()
     if wechat_bot is not None:
         await wechat_bot.start()
+    if wechat_poller is not None:
+        await wechat_poller.start()
 
     print("\n── 服务已启动 ──")
     print(f"  HTTP    : http://0.0.0.0:{settings.web_port}")
     print("    POST /chat (SSE) | GET /healthz | GET /metrics")
     if wechat_bot is not None:
-        print("  Wechat  : 已启用，webhook=/wechat/webhook")
+        if wechat_poller is not None:
+            print("  Wechat  : 已启用，Hermes iLink 长轮询")
+        else:
+            print("  Wechat  : 已启用，webhook=/wechat/webhook")
     print("  停止：Ctrl+C")
 
     try:
@@ -251,9 +304,12 @@ async def run_serve() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if wechat_poller is not None:
+            await wechat_poller.stop()
         if wechat_bot is not None:
             await wechat_bot.stop()
-            await client.close()  # type: ignore[union-attr]
+        if client is not None:
+            await client.close()
         server.stop()
         await persona_watcher.stop()
         await llm.close()
