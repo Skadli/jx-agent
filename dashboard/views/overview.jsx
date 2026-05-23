@@ -33,6 +33,11 @@ function Overview({ onJump }) {
           <StatCard label="平均首字延迟" value="1.21" unit="s" sub="P50 · 流式" trend={{ kind: "down", value: "-0.08s" }} />
         </div>
 
+        {/* ===== Long-range activity + heatmap ===== */}
+        <div style={{ marginTop: 16 }}>
+          <ActivityStatsCard />
+        </div>
+
         {/* ===== Activity + identity + health ===== */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginTop: 16, alignItems: "start" }}>
           <SessionsCard onJump={onJump} />
@@ -288,6 +293,108 @@ function MemoryPreview({ onJump }) {
             <span className="t-mono-sm" style={{ color: m.hits ? "var(--primary)" : "var(--ink-60)", textAlign: "right" }}>{m.hits} 命中</span>
           </div>
         )}
+      </div>
+    </div>);
+
+}
+
+function ActivityStatsCard() {
+  const [tab, setTab] = React.useState("overview");
+  const [range, setRange] = React.useState("all");
+
+  const kpis = [
+    { label: "会话",        value: "14" },
+    { label: "消息",        value: "2,414" },
+    { label: "累计 tokens", value: "6.0M" },
+    { label: "活跃天数",     value: "5" },
+    { label: "当前连续",     value: "3 天" },
+    { label: "最长连续",     value: "3 天" },
+    { label: "高峰时段",     value: "15 时" },
+    { label: "常用模型",     value: "Opus 4.7" }];
+
+
+  const COLS = 30,ROWS = 7;
+  const cells = [];
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < ROWS; r++) {
+      let v = 0;
+      if (c >= COLS - 3) {
+        const seed = ((c + 1) * 11 + (r + 1) * 7) % 9;
+        if (seed >= 5) v = Math.min(3, seed - 4);
+      }
+      cells.push(v);
+    }
+  }
+  const heatColors = [
+  "var(--hairline)",
+  "rgba(0,102,204,0.18)",
+  "rgba(0,102,204,0.42)",
+  "var(--primary)"];
+
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <Segmented value={tab} onChange={setTab} options={[
+        { id: "overview", label: "概览" },
+        { id: "models", label: "按模型" }]
+        } />
+        <Segmented value={range} onChange={setRange} options={[
+        { id: "all", label: "全部" },
+        { id: "30d", label: "30 天" },
+        { id: "7d", label: "7 天" }]
+        } />
+      </div>
+      <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+          {kpis.map((k, i) =>
+          <div key={i} style={{
+            background: "var(--pearl)",
+            borderRadius: 8,
+            padding: "10px 12px"
+          }}>
+              <div className="t-meta">{k.label}</div>
+              <div style={{
+              marginTop: 4,
+              fontFamily: "var(--font-text)",
+              fontSize: 18,
+              fontWeight: 600,
+              color: "var(--ink)",
+              letterSpacing: "-0.01em"
+            }}>{k.value}</div>
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${COLS}, 1fr)`,
+          gridTemplateRows: `repeat(${ROWS}, auto)`,
+          gridAutoFlow: "column",
+          gap: 3
+        }}>
+          {cells.map((v, i) =>
+          <div key={i} style={{
+            background: heatColors[v],
+            width: "100%",
+            aspectRatio: "1 / 1",
+            borderRadius: 2
+          }} />
+          )}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span className="t-meta" style={{ color: "var(--ink-60)" }}>
+            已消耗 tokens 约相当于《霍比特人》全文的 48 倍
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className="t-meta" style={{ color: "var(--ink-48)" }}>少</span>
+            {heatColors.map((bg, i) =>
+            <span key={i} style={{ width: 10, height: 10, background: bg, borderRadius: 2 }} />
+            )}
+            <span className="t-meta" style={{ color: "var(--ink-48)" }}>多</span>
+          </div>
+        </div>
       </div>
     </div>);
 
