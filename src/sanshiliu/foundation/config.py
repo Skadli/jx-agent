@@ -174,6 +174,30 @@ class Settings(BaseSettings):
         description="仓库内自带 skills 目录（优先级最低）",
     )
 
+    # Phase 8 安全权限配置
+    security_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("security_enabled", "SANSHILIU_SECURITY_ENABLED"),
+        description="是否启用 settings.json 权限审批；关闭后所有工具直接放行",
+    )
+
+    # Phase 7 长期记忆配置
+    memory_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("memory_enabled", "SANSHILIU_MEMORY_ENABLED"),
+        description="是否启用 CLAUDE.md + memdir 加载",
+    )
+    memdir_dir: Path = Field(
+        default=Path("./memdir"),
+        validation_alias=AliasChoices("memdir_dir", "SANSHILIU_MEMDIR_DIR"),
+        description="memdir 根目录；含 MEMORY.md 索引与 4 类记忆 md",
+    )
+    auto_extract_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("auto_extract_enabled", "SANSHILIU_AUTO_EXTRACT_ENABLED"),
+        description="是否在每轮对话后异步调 LLM 提取候选记忆（默认关；按需开）",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

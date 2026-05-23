@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.security.permission import PermissionManager
 from sanshiliu.tools.builtin import (
     build_bash_exec_tool,
     build_file_read_tool,
@@ -22,6 +23,7 @@ def build_tool_stack(
     prompts_dir: Path,
     cwd_root: Path,
     tavily_api_key: str | None = None,
+    permission: PermissionManager | None = None,
 ) -> tuple[ToolRegistry, ToolDispatcher]:
     """从 prompts/tools/ 加载描述 + 绑定内置 executor；缺描述文件抛 ConfigError。"""
     defs = load_tool_definitions(prompts_dir / "tools")
@@ -39,6 +41,6 @@ def build_tool_stack(
             continue
         registry.register(builders[name](definition))
 
-    dispatcher = ToolDispatcher(registry)
-    _logger.info("工具栈就绪", tools=registry.names())
+    dispatcher = ToolDispatcher(registry, permission=permission)
+    _logger.info("工具栈就绪", tools=registry.names(), permission=bool(permission))
     return registry, dispatcher

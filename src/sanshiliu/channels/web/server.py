@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -17,7 +18,7 @@ def _build_request_handler(router: Router) -> type[BaseHTTPRequestHandler]:
 
     class _Handler(BaseHTTPRequestHandler):
         # 静默默认日志（每请求一行），改走我们的 structlog
-        def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - signature 固定
+        def log_message(self, format: str, *args: object) -> None:
             _logger.debug("http", line=format % args)
 
         def _dispatch(self) -> None:
@@ -29,11 +30,9 @@ def _build_request_handler(router: Router) -> type[BaseHTTPRequestHandler]:
                 handler(self)
             except Exception as exc:
                 _logger.exception("http handler 异常", path=self.path, error=str(exc))
-                # response 可能已发，二次 send_error 会异常；try 包一层
-                try:
+                # response 可能已发，二次 send_error 会异常；suppress 一层
+                with contextlib.suppress(Exception):
                     self.send_error(500, "internal error")
-                except Exception:
-                    pass
 
         do_GET = _dispatch
         do_POST = _dispatch

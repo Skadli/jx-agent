@@ -1,4 +1,4 @@
-"""工具调用分发器；解析 LLM tool_call → 校验 → 路由 → 包 ToolResult。"""
+"""工具调用分发器；解析 LLM tool_call → 校验 → 权限 → 路由 → 包 ToolResult。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.security.permission import PermissionManager
 from sanshiliu.tools.registry import ToolRegistry
 from sanshiliu.tools.types import ToolCall, ToolResult
 
@@ -40,10 +41,15 @@ def _validate_required(args: dict[str, Any], schema: dict[str, Any]) -> list[str
 class ToolDispatcher:
     """注册表 + 安全壳；每次 execute 把异常变成 ToolResult(is_error=True)。"""
 
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        permission: PermissionManager | None = None,
+    ) -> None:
         self._registry = registry
+        self._permission = permission
 
-    async def execute(self, call: ToolCall) -> ToolResult:
+    async def execute(self, call: ToolCall, *, session_id: str = "") -> ToolResult:
         tool = self._registry.get(call.name)
         if tool is None:
             return ToolResult(
@@ -57,6 +63,21 @@ class ToolDispatcher:
                 call_id=call.id, name=call.name,
                 content=f"参数缺失：{', '.join(missing)}", is_error=True,
             )
+
+        # Phase 8：权限审批；deny 直接出错；allow 继续
+        if self._permission is not None:
+            decision = await self._permission.check(
+                tool_name=call.name, arguments=call.arguments, session_id=session_id,
+            )
+            if decision.kind == "deny":
+                msg = f"权限拒绝：{decision.reason or decision.rule or 'denied'}"
+                _logger.warning(
+                    "工具被权限拒绝",
+                    tool=call.name, rule=decision.rule, danger=decision.danger,
+                )
+                return ToolResult(
+                    call_id=call.id, name=call.name, content=msg, is_error=True,
+                )
 
         try:
             result = await tool.execute(call.arguments)

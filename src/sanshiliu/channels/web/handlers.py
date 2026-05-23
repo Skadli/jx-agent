@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import queue as q_mod
 import threading
@@ -58,7 +59,7 @@ def make_chat_handler(
     engine: ConversationEngine,
     loop: asyncio.AbstractEventLoop,
     health: HealthState,
-) -> Callable[["BaseHTTPRequestHandler"], None]:
+) -> Callable[[BaseHTTPRequestHandler], None]:
     """构造 /chat (POST + SSE) handler；engine 与 loop 由外部注入。"""
 
     def handler(req: BaseHTTPRequestHandler) -> None:
@@ -131,10 +132,8 @@ def make_chat_handler(
                 last_beat = time.monotonic()
         finally:
             # 确保 coroutine 在客户端断开后仍能跑完（已 yield 的 sse_q 数据让它消化掉）
-            try:
+            with contextlib.suppress(Exception):
                 future.result(timeout=5.0)
-            except Exception:
-                pass
 
         health.set("llm", "up")
 
@@ -145,14 +144,14 @@ def make_healthz_handler(
     db: Database,
     loop: asyncio.AbstractEventLoop,
     health: HealthState,
-) -> Callable[["BaseHTTPRequestHandler"], None]:
+) -> Callable[[BaseHTTPRequestHandler], None]:
     """构造 /healthz handler；同步返回 4 个组件状态。"""
 
     def handler(req: BaseHTTPRequestHandler) -> None:
         # DB ping：通过桥跑一个轻量查询
         async def _ping_db() -> bool:
             try:
-                cur = await db._execute("SELECT 1 AS ok")  # noqa: SLF001
+                cur = await db._execute("SELECT 1 AS ok")
                 row = cur.fetchone()
                 return bool(row and row["ok"] == 1)
             except Exception:
@@ -181,7 +180,7 @@ def make_healthz_handler(
 
 def make_metrics_handler(
     context_manager: ContextManager | None,
-) -> Callable[["BaseHTTPRequestHandler"], None]:
+) -> Callable[[BaseHTTPRequestHandler], None]:
     """构造 /metrics handler；返回 budget 统计 JSON。"""
 
     def handler(req: BaseHTTPRequestHandler) -> None:
@@ -199,7 +198,7 @@ def make_metrics_handler(
 def make_webhook_handler(
     process_fn: Callable[[bytes, dict[str, str]], Awaitable[tuple[int, str]]],
     loop: asyncio.AbstractEventLoop,
-) -> Callable[["BaseHTTPRequestHandler"], None]:
+) -> Callable[[BaseHTTPRequestHandler], None]:
     """构造 /wechat/webhook handler；HMAC 校验由 process_fn 内部完成。"""
 
     def handler(req: BaseHTTPRequestHandler) -> None:

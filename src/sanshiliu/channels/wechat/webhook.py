@@ -66,7 +66,7 @@ class WechatWebhookProcessor:
         # 入队：写一行 channel_messages，processed=0 等 bot 拉
         session_id = _session_id_for(from_wxid, group_id)
         try:
-            await self._db._execute(  # noqa: SLF001 - 内部友元访问
+            await self._db._execute(
                 """
                 INSERT INTO channel_messages
                   (ts, channel, direction, session_id, user_id, group_id, content, msg_type, processed)

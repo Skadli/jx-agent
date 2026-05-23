@@ -11,6 +11,9 @@ from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.llm.client import LLMClient
 from sanshiliu.llm.stream import StreamDelta
+from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
+from sanshiliu.memory.longterm.extract import MemoryExtractor
+from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.storage.db import Database
 from sanshiliu.tools.dispatcher import ToolDispatcher, parse_tool_calls
@@ -35,6 +38,9 @@ class ConversationEngine:
         tool_registry: ToolRegistry | None = None,
         tool_dispatcher: ToolDispatcher | None = None,
         skill_activator: SkillActivator | None = None,
+        claudemd_loader: ClaudeMdLoader | None = None,
+        memdir_loader: MemdirLoader | None = None,
+        memory_extractor: MemoryExtractor | None = None,
     ) -> None:
         self._llm = llm
         self._db = db
@@ -43,6 +49,9 @@ class ConversationEngine:
         self._tool_registry = tool_registry
         self._tool_dispatcher = tool_dispatcher
         self._skill_activator = skill_activator
+        self._claudemd_loader = claudemd_loader
+        self._memdir_loader = memdir_loader
+        self._memory_extractor = memory_extractor
 
     @property
     def llm(self) -> LLMClient:
@@ -74,6 +83,28 @@ class ConversationEngine:
             return
         session.refresh_system_prompt(snap)
 
+    def _refresh_memory(self, session: Session) -> None:
+        """拼装全局 CLAUDE.md + 项目 CLAUDE.md + memdir MEMORY.md 索引到 memory_block。"""
+        parts: list[str] = []
+        if self._claudemd_loader is not None:
+            try:
+                snap = self._claudemd_loader.get()
+                txt = snap.assembled()
+                if txt:
+                    parts.append(txt)
+            except Exception as exc:
+                _logger.warning("CLAUDE.md 读失败（不阻塞）", error=str(exc))
+        if self._memdir_loader is not None:
+            try:
+                mem_snap = self._memdir_loader.get()
+                if mem_snap.index_text.strip():
+                    parts.append(
+                        "# Long-term Memory Index (memdir)\n\n" + mem_snap.index_text.strip()
+                    )
+            except Exception as exc:
+                _logger.warning("memdir 读失败（不阻塞）", error=str(exc))
+        session.memory_block_text = "\n\n---\n\n".join(parts) if parts else ""
+
     def _refresh_skills(self, session: Session, user_text: str) -> None:
         """根据本轮用户输入激活 skills；空 activator 时清空避免上轮残留。"""
         if self._skill_activator is None:
@@ -100,6 +131,7 @@ class ConversationEngine:
             yield StreamDelta(text=msg.content)
             return
 
+        self._refresh_memory(session)
         self._refresh_persona(session)
         self._refresh_skills(session, user_text)
         await self._maybe_compact(session)
@@ -121,9 +153,16 @@ class ConversationEngine:
             session.add_assistant(assistant_text)
             # 流式路径下 budget 反查必须在 finally，否则客户端早断不会执行
             await self._refresh_budget_from_db(session)
+            # 异步触发 auto-extract（V-7：失败不阻塞）
+            if assistant_text and self._memory_extractor is not None:
+                self._memory_extractor.schedule(
+                    user_text=user_text, assistant_text=assistant_text,
+                    session_id=session.session_id,
+                )
 
     async def complete_turn(self, session: Session, user_text: str) -> ChatMessage:
         """非流式 + tool_call 循环；返回最终 assistant 消息。"""
+        self._refresh_memory(session)
         self._refresh_persona(session)
         self._refresh_skills(session, user_text)
         await self._maybe_compact(session)
@@ -152,7 +191,14 @@ class ConversationEngine:
                 )
 
             if not result.tool_calls:
-                return session.add_assistant(result.text)
+                msg = session.add_assistant(result.text)
+                # 异步触发 auto-extract（V-7：失败不阻塞）
+                if result.text and self._memory_extractor is not None:
+                    self._memory_extractor.schedule(
+                        user_text=user_text, assistant_text=result.text,
+                        session_id=session.session_id,
+                    )
+                return msg
 
             # 有 tool_calls：追加 assistant 占位 + 执行每个 call → tool 消息
             # DeepSeek reasoner 系列要求 reasoning_content 原样回传，否则下轮 400
@@ -172,7 +218,7 @@ class ConversationEngine:
                     is_error = True
                 else:
                     assert self._tool_dispatcher is not None
-                    res = await self._tool_dispatcher.execute(tc)
+                    res = await self._tool_dispatcher.execute(tc, session_id=session.session_id)
                     tool_result_text = res.content
                     is_error = res.is_error
                 _logger.info(
@@ -191,7 +237,7 @@ class ConversationEngine:
         if self._context_manager is None or self._db is None:
             return
         try:
-            cur = await self._db._execute(  # noqa: SLF001
+            cur = await self._db._execute(
                 """
                 SELECT input_tokens, output_tokens FROM llm_calls
                 WHERE session_id = ? AND channel != 'compact-internal'

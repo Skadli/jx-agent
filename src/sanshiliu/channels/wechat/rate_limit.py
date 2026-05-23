@@ -65,7 +65,7 @@ class WechatRateLimiter:
         return RateLimitDecision(allowed=True, reason="ok")
 
     async def _read_count(self, scope: str, window_start: int) -> int:
-        cur = await self._db._execute(  # noqa: SLF001
+        cur = await self._db._execute(
             "SELECT count FROM rate_limit_counters WHERE scope = ? AND window_start = ?",
             (scope, window_start),
         )
@@ -73,7 +73,7 @@ class WechatRateLimiter:
         return int(row["count"]) if row else 0
 
     async def _bump(self, scope: str, window_start: int) -> None:
-        await self._db._execute(  # noqa: SLF001
+        await self._db._execute(
             """
             INSERT INTO rate_limit_counters (scope, window_start, count)
             VALUES (?, ?, 1)

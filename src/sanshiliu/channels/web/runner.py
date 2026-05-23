@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 import sys
 
@@ -31,6 +32,13 @@ from sanshiliu.foundation.logging import configure_logging, get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.client import LLMClient
+from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
+from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
+from sanshiliu.memory.longterm.memdir import MemdirLoader
+from sanshiliu.security.path_guard import PathGuard
+from sanshiliu.security.permission import PermissionManager
+from sanshiliu.security.prompts import DenyAllConfirmer
+from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.skills.loader import SkillLoader
 from sanshiliu.storage.db import get_database
@@ -76,16 +84,35 @@ async def run_serve() -> int:
         max_context_tokens=settings.max_context_tokens,
         compact_threshold_ratio=settings.compact_threshold_ratio,
     )
+    # Phase 8：权限（web/wechat 走 DenyAllConfirmer，ask 模式直接拒绝）
+    from pathlib import Path as _Path
+    permission_manager: PermissionManager | None = None
+    if settings.security_enabled:
+        try:
+            settings_loader = SettingsLoader(
+                global_home=settings.home_dir, project_cwd=_Path.cwd(),
+            )
+            settings_loader.load()
+            path_guard = PathGuard(cwd_root=_Path.cwd())
+            permission_manager = PermissionManager(
+                settings_loader=settings_loader,
+                path_guard=path_guard,
+                confirmer=DenyAllConfirmer("web/wechat"),
+                db=db,
+            )
+        except Exception as exc:
+            print(f"权限管理加载失败（继续无权限审批）：{exc}", file=sys.stderr)
+
     # Phase 5：tool 栈
     tool_registry = None
     tool_dispatcher = None
     if settings.tools_enabled:
         try:
-            from pathlib import Path as _Path
             tool_registry, tool_dispatcher = build_tool_stack(
                 prompts_dir=settings.prompts_dir,
                 cwd_root=_Path.cwd(),
                 tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
+                permission=permission_manager,
             )
         except ConfigError as exc:
             print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
@@ -102,10 +129,47 @@ async def run_serve() -> int:
         except Exception as exc:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
 
+    # Phase 7：长期记忆（CLAUDE.md + memdir + auto-extract）
+    claudemd_loader: ClaudeMdLoader | None = None
+    memdir_loader: MemdirLoader | None = None
+    memory_extractor: MemoryExtractor | None = None
+    if settings.memory_enabled:
+        from pathlib import Path as _Path
+        try:
+            claudemd_loader = ClaudeMdLoader(
+                global_home=settings.home_dir,
+                project_cwd=_Path.cwd(),
+            )
+            claudemd_loader.load()
+            memdir_loader = MemdirLoader(settings.memdir_dir)
+            memdir_loader.load()
+            _logger.info(
+                "memory 已加载",
+                claudemd_chars=claudemd_loader.get().total_chars(),
+                memdir_entries=len(memdir_loader.get().entries),
+            )
+        except Exception as exc:
+            print(f"memory 加载失败（继续不带 memory）：{exc}", file=sys.stderr)
+            claudemd_loader = None
+            memdir_loader = None
+
+        if settings.auto_extract_enabled and memdir_loader is not None:
+            try:
+                instruction = load_extract_instruction(settings.prompts_dir)
+                memory_extractor = MemoryExtractor(
+                    llm=llm, memdir_root=memdir_loader.root, instruction=instruction,
+                )
+                _logger.info("auto-extract 已开启")
+            except ConfigError as exc:
+                print(f"auto-extract 加载失败（继续不带 extract）：{exc}", file=sys.stderr)
+
     engine = ConversationEngine(
         llm=llm, db=db, persona_loader=loader, context_manager=context_manager,
         tool_registry=tool_registry, tool_dispatcher=tool_dispatcher,
         skill_activator=skill_activator,
+        claudemd_loader=claudemd_loader,
+        memdir_loader=memdir_loader,
+        memory_extractor=memory_extractor,
     )
     persona_watcher = PersonaWatcher(loader)
 
@@ -166,22 +230,20 @@ async def run_serve() -> int:
         stop_event.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        # Windows 不支持 add_signal_handler；退化为靠 KeyboardInterrupt
+        with contextlib.suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(sig, _request_stop)
-        except (NotImplementedError, RuntimeError):
-            # Windows 不支持 add_signal_handler；退化为靠 KeyboardInterrupt
-            pass
 
     await persona_watcher.start()
     server.start()
     if wechat_bot is not None:
         await wechat_bot.start()
 
-    print(f"\n── 服务已启动 ──")
+    print("\n── 服务已启动 ──")
     print(f"  HTTP    : http://0.0.0.0:{settings.web_port}")
-    print(f"    POST /chat (SSE) | GET /healthz | GET /metrics")
+    print("    POST /chat (SSE) | GET /healthz | GET /metrics")
     if wechat_bot is not None:
-        print(f"  Wechat  : 已启用，webhook=/wechat/webhook")
+        print("  Wechat  : 已启用，webhook=/wechat/webhook")
     print("  停止：Ctrl+C")
 
     try:

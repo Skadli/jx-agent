@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "defaultMode": "ask",
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(pwd)",
+      "Bash(git status)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Read(./**)",
+      "WebSearch"
+    ],
+    "deny": [
+      "Bash(rm:-rf*)",
+      "Bash(sudo:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(/etc/shadow)",
+      "Write(/etc/**)"
+    ]
+  }
+}

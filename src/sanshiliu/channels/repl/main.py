@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from typing import NoReturn
 
 from sanshiliu import __version__
@@ -17,6 +18,14 @@ from sanshiliu.foundation.logging import configure_logging, get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.client import LLMClient
+from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
+from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
+from sanshiliu.memory.longterm.memdir import MemdirLoader
+from sanshiliu.memory.shortterm import ShortTermMemory
+from sanshiliu.security.path_guard import PathGuard
+from sanshiliu.security.permission import PermissionManager
+from sanshiliu.security.prompts import ReplConfirmer
+from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.skills.loader import SkillLoader
 from sanshiliu.storage.db import Database, get_database
@@ -28,14 +37,15 @@ _logger = get_logger(__name__)
 _BANNER = """
 ╔══════════════════════════════════════════╗
 ║  三十六贱笑 (Sanshiliu Jianxiao) v{version:<7s}║
-║  Phase 3 · 上下文管理接入                ║
+║  Phase 7 · 长期记忆接入                  ║
 ╠══════════════════════════════════════════╣
 ║  Model   : {model:<30s}║
 ║  Base    : {base:<30s}║
 ║  Persona : {persona:<30s}║
 ║  Prompts : {prompts:<30s}║
+║  Memory  : {memory:<30s}║
 ╠══════════════════════════════════════════╣
-║  命令: /quit /stats /persona /help       ║
+║  命令: /quit /stats /persona /memory /help ║
 ╚══════════════════════════════════════════╝
 """
 
@@ -81,12 +91,43 @@ async def _print_persona(loader: PersonaLoader) -> None:
     print()
 
 
+def _print_memory(
+    claudemd_loader: ClaudeMdLoader | None,
+    memdir_loader: MemdirLoader | None,
+    extractor: MemoryExtractor | None,
+) -> None:
+    """/memory：长期记忆状态总览。"""
+    print("── 长期记忆（CLAUDE.md + memdir）──")
+    if claudemd_loader is None:
+        print("  CLAUDE.md  : (memory_enabled=false，未加载)")
+    else:
+        snap = claudemd_loader.get()
+        print(f"  全局 CLAUDE.md : {snap.global_path} ({len(snap.global_text)} 字)")
+        print(f"  项目 CLAUDE.md : {snap.project_path} ({len(snap.project_text)} 字)")
+    if memdir_loader is None:
+        print("  memdir     : (未加载)")
+    else:
+        mem = memdir_loader.get()
+        by = mem.by_type()
+        print(f"  memdir 根    : {memdir_loader.root}")
+        print(
+            "  分类条数   : "
+            f"user={len(by['user'])} feedback={len(by['feedback'])} "
+            f"project={len(by['project'])} reference={len(by['reference'])}"
+        )
+        idx_lines = [ln for ln in mem.index_text.splitlines() if ln.strip().startswith("-")]
+        print(f"  MEMORY.md  : {len(idx_lines)} 行索引")
+    print(f"  auto-extract: {'on' if extractor is not None else 'off'}")
+    print()
+
+
 def _print_help() -> None:
     print(
         "── 命令 ──\n"
         "  /quit /exit  退出\n"
         "  /stats       会话 token / budget / compact 汇总\n"
         "  /persona     当前人设文件状态\n"
+        "  /memory      长期记忆（CLAUDE.md + memdir）状态\n"
         "  /help        显示本帮助\n"
         "  其他输入     发给 agent\n"
     )
@@ -130,16 +171,40 @@ async def run_repl() -> int:
         max_context_tokens=settings.max_context_tokens,
         compact_threshold_ratio=settings.compact_threshold_ratio,
     )
+    # Phase 8：权限管理（settings.json + 状态机 + REPL Confirmer）
+    permission_manager: PermissionManager | None = None
+    if settings.security_enabled:
+        try:
+            settings_loader = SettingsLoader(
+                global_home=settings.home_dir, project_cwd=Path.cwd(),
+            )
+            settings_loader.load()
+            path_guard = PathGuard(cwd_root=Path.cwd())
+            permission_manager = PermissionManager(
+                settings_loader=settings_loader,
+                path_guard=path_guard,
+                confirmer=ReplConfirmer(),
+                db=db,
+            )
+            _logger.info(
+                "权限管理已启用",
+                default_mode=settings_loader.get().default_mode,
+                allow_count=len(settings_loader.get().allow),
+                deny_count=len(settings_loader.get().deny),
+            )
+        except Exception as exc:
+            print(f"权限管理加载失败（继续无权限审批）：{exc}", file=sys.stderr)
+
     # Phase 5：tool 栈（默认开；用户可在 .env 关）
     tool_registry = None
     tool_dispatcher = None
     if settings.tools_enabled:
         try:
-            from pathlib import Path as _Path
             tool_registry, tool_dispatcher = build_tool_stack(
                 prompts_dir=settings.prompts_dir,
-                cwd_root=_Path.cwd(),
+                cwd_root=Path.cwd(),
                 tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
+                permission=permission_manager,
             )
         except ConfigError as exc:
             print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
@@ -156,15 +221,62 @@ async def run_repl() -> int:
         except Exception as exc:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
 
+    # Phase 7：长期记忆（CLAUDE.md + memdir + auto-extract）
+    claudemd_loader: ClaudeMdLoader | None = None
+    memdir_loader: MemdirLoader | None = None
+    memory_extractor: MemoryExtractor | None = None
+    short_term: ShortTermMemory | None = None
+    if settings.memory_enabled:
+        try:
+            claudemd_loader = ClaudeMdLoader(
+                global_home=settings.home_dir,
+                project_cwd=Path.cwd(),
+            )
+            claudemd_loader.load()
+            memdir_loader = MemdirLoader(settings.memdir_dir)
+            memdir_loader.load()
+            short_term = ShortTermMemory(settings.data_dir / "shortterm")
+            _logger.info(
+                "memory 已加载",
+                claudemd_chars=claudemd_loader.get().total_chars(),
+                memdir_entries=len(memdir_loader.get().entries),
+            )
+        except Exception as exc:
+            print(f"memory 加载失败（继续不带 memory）：{exc}", file=sys.stderr)
+            claudemd_loader = None
+            memdir_loader = None
+
+        if settings.auto_extract_enabled and memdir_loader is not None:
+            try:
+                instruction = load_extract_instruction(settings.prompts_dir)
+                memory_extractor = MemoryExtractor(
+                    llm=llm, memdir_root=memdir_loader.root, instruction=instruction,
+                )
+                _logger.info("auto-extract 已开启")
+            except ConfigError as exc:
+                print(f"auto-extract 加载失败（继续不带 extract）：{exc}", file=sys.stderr)
+
     engine = ConversationEngine(
         llm=llm, db=db, persona_loader=loader, context_manager=context_manager,
         tool_registry=tool_registry, tool_dispatcher=tool_dispatcher,
         skill_activator=skill_activator,
+        claudemd_loader=claudemd_loader,
+        memdir_loader=memdir_loader,
+        memory_extractor=memory_extractor,
     )
     session = Session.new(channel="repl")
     # 懒失效模式：watcher 仅 invalidate loader 缓存，engine 每轮拉新 snapshot；不挂 on_change
     watcher = PersonaWatcher(loader)
 
+    if claudemd_loader is not None and memdir_loader is not None:
+        mem_summary = (
+            f"CLAUDE.md {claudemd_loader.get().total_chars()}字 / "
+            f"memdir {len(memdir_loader.get().entries)}条"
+        )
+    elif claudemd_loader is not None:
+        mem_summary = f"CLAUDE.md {claudemd_loader.get().total_chars()}字 / memdir-off"
+    else:
+        mem_summary = "off"
     print(
         _BANNER.format(
             version=__version__,
@@ -172,6 +284,7 @@ async def run_repl() -> int:
             base=settings.openai_base_url,
             persona=str(settings.persona_dir.name),
             prompts=str(settings.prompts_dir.name),
+            memory=mem_summary,
         )
     )
     _logger.info(
@@ -202,6 +315,9 @@ async def run_repl() -> int:
             if cmd == "/persona":
                 await _print_persona(loader)
                 continue
+            if cmd == "/memory":
+                _print_memory(claudemd_loader, memdir_loader, memory_extractor)
+                continue
             if cmd == "/help":
                 _print_help()
                 continue
@@ -219,6 +335,8 @@ async def run_repl() -> int:
                 _logger.error("系统异常", error=str(exc), session_id=session.session_id)
     finally:
         await watcher.stop()
+        if short_term is not None:
+            await short_term.snapshot(session)
         await llm.close()
         await db.close()
         _logger.info("REPL 结束", session_id=session.session_id)

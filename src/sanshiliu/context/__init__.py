@@ -7,10 +7,10 @@ from sanshiliu.context.microcompact import MicroCompactor
 from sanshiliu.context.prompts import CompactPrompts, load_compact_prompts
 
 __all__ = [
+    "CompactPrompts",
     "Compactor",
     "ContextManager",
     "MicroCompactor",
     "TokenBudget",
-    "CompactPrompts",
     "load_compact_prompts",
 ]

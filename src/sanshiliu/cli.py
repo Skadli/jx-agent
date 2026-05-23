@@ -1,8 +1,9 @@
-"""命令行入口；Phase 4 起 serve 已实现，bot/serve 都走 web.runner。"""
+"""命令行入口；Phase 9 接入 preflight / setup / doctor / wire。"""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 
 from sanshiliu import __version__
@@ -22,7 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("repl", help="进入交互式对话（默认命令）")
     sub.add_parser("serve", help="启动 HTTP 服务（/chat /healthz /metrics），并按 .env 决定是否拉 wechat bot")
     sub.add_parser("bot", help="serve 的别名；强调启动 wechat bot")
-    sub.add_parser("doctor", help="[Phase 9] 环境检查向导")
+    sub.add_parser("doctor", help="环境检查 + 依赖检测；不进入 REPL")
+    sub.add_parser("setup", help="首次启动向导：交互填 ~/.sanshiliu/.env")
     return parser
 
 
@@ -32,7 +34,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     cmd = args.cmd or "repl"
 
+    if cmd == "doctor":
+        return _run_doctor()
+
+    if cmd == "setup":
+        return asyncio.run(_run_setup())
+
     if cmd == "repl":
+        # 首次启动：尝试跑向导（env 已齐则秒过）
+        try:
+            asyncio.run(_run_setup(skip_if_complete=True))
+        except KeyboardInterrupt:
+            print("\n(已取消)")
+            return 130
         from sanshiliu.channels.repl.main import run_repl_sync
         return run_repl_sync()
 
@@ -40,11 +54,61 @@ def main(argv: list[str] | None = None) -> int:
         from sanshiliu.channels.web.runner import run_serve_sync
         return run_serve_sync()
 
-    if cmd == "doctor":
-        print("[尚未实现] doctor 将在 Phase 9 完成", file=sys.stderr)
-        return 2
-
     parser.print_help()
+    return 0
+
+
+def _run_doctor() -> int:
+    """`sanshiliu doctor`：preflight + 依赖检测 + env 状态；不进 REPL。"""
+    from sanshiliu.bootstrap.install import detect_missing_dependencies
+    from sanshiliu.bootstrap.preflight import run_preflight
+
+    print("── Preflight 环境检查 ──")
+    report = run_preflight()
+    for it in report.items:
+        mark = {"ok": "✓", "warn": "!", "fail": "✗"}[it.status]
+        print(f"  [{mark}] {it.name:<6} {it.detail}")
+        if it.hint and it.status != "ok":
+            print(f"        → {it.hint}")
+
+    print("\n── 依赖检测 ──")
+    deps = detect_missing_dependencies()
+    for d in deps:
+        mark = "✓" if d.installed else "✗"
+        print(f"  [{mark}] {d.pip_spec}  {d.detail}")
+    missing = [d for d in deps if not d.installed]
+
+    if report.has_failures:
+        print("\n❌ preflight 有阻塞项；请按提示修复后重试")
+        return 78
+    if missing:
+        print(f"\n⚠️ 缺 {len(missing)} 个依赖；运行 `sanshiliu` 时会引导自动装")
+        return 0
+
+    print("\n✅ 所有检查通过")
+    return 0
+
+
+async def _run_setup(*, skip_if_complete: bool = False) -> int:
+    """`sanshiliu setup`：跑 setup_wizard；env 完整时按 skip_if_complete 决定是否略过。"""
+    try:
+        from sanshiliu.bootstrap.setup_wizard import run_setup_wizard
+    except ImportError as exc:
+        print(f"setup 模块加载失败：{exc}", file=sys.stderr)
+        return 78
+
+    # 用 settings 解析 home_dir；缺 env 也能跑（home_dir 走 default_factory）
+    import os
+    from pathlib import Path
+    raw = os.environ.get("SANSHILIU_HOME_DIR")
+    home_dir = Path(raw) if raw else Path.home() / ".sanshiliu"
+
+    result = await run_setup_wizard(home_dir, force=not skip_if_complete)
+    if result is None:
+        # env 已完整
+        return 0
+    if not result.llm_ok:
+        return 1
     return 0
 
 

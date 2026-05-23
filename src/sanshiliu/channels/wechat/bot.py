@@ -68,7 +68,7 @@ class WechatBot:
                 continue
             try:
                 await asyncio.wait_for(t, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 t.cancel()
         self._consume_task = None
         self._ping_task = None
@@ -155,5 +155,5 @@ class WechatBot:
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=_PING_INTERVAL_SEC)
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue

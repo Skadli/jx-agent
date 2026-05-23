@@ -76,6 +76,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["N802", "N803"]  # 测试函数命名宽松
+"src/sanshiliu/channels/web/server.py" = ["N815"]   # do_GET 等是 http.server 协议固定名
+"src/sanshiliu/channels/web/handlers.py" = ["N806"] # SENTINEL/ERROR 哨兵对象惯例大写
 
 [tool.ruff.format]
 quote-style = "double"

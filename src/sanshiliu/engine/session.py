@@ -28,6 +28,8 @@ class Session:
     compact_summary: str = ""
     # Phase 6 起：本轮活跃 skills 拼成的段落；engine 在每轮 LLM 调用前刷新
     active_skills_text: str = ""
+    # Phase 7 起：CLAUDE.md（全局+项目）+ memdir 索引块，拼到 prompt 最顶部
+    memory_block_text: str = ""
 
     def __post_init__(self) -> None:
         # 占位 system 行；真实内容由 engine 在每轮前调 refresh_system_prompt 注入
@@ -53,9 +55,16 @@ class Session:
         return msg
 
     def _effective_system(self) -> str:
-        """合并 persona system + active skills + compact_summary；空段跳过。"""
+        """合并：memory_block > persona > active skills > compact_summary；空段跳过。"""
         persona = self.messages[0].content if self.messages and self.messages[0].role == "system" else ""
-        parts = [p for p in (persona, self.active_skills_text, self.compact_summary) if p]
+        parts = [
+            p for p in (
+                self.memory_block_text,
+                persona,
+                self.active_skills_text,
+                self.compact_summary,
+            ) if p
+        ]
         return _SUMMARY_JOINER.join(parts)
 
     def to_openai_messages(self) -> list[dict[str, Any]]:

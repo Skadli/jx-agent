@@ -132,6 +132,50 @@ class Database:
         row = await asyncio.to_thread(cur.fetchone)
         return dict(row) if row else None
 
+    # Phase 8 权限决策
+    async def insert_permission_decision(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        decision: str,
+        scope: str,
+        pattern: str | None,
+    ) -> int:
+        """记一条权限决定；session 范围内 dispatcher 可复用此查询。"""
+        cur = await self._execute(
+            """
+            INSERT INTO permission_decisions
+              (ts, session_id, tool_name, decision, scope, pattern)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                int(time.time() * 1000),
+                session_id,
+                tool_name,
+                decision,
+                scope,
+                pattern,
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    async def list_session_permissions(
+        self, session_id: str
+    ) -> list[dict[str, Any]]:
+        """读取本会话内所有"session"范围决定；进程重启可重建缓存。"""
+        cur = await self._execute(
+            """
+            SELECT tool_name, decision, scope, pattern, ts
+            FROM permission_decisions
+            WHERE session_id = ?
+            ORDER BY id ASC
+            """,
+            (session_id,),
+        )
+        rows = await asyncio.to_thread(cur.fetchall)
+        return [dict(r) for r in rows]
+
     # REPL /stats 统计
     async def get_session_stats(self, session_id: str) -> dict[str, int | float]:
         """返回该会话的 token 用量、调用次数等汇总。"""

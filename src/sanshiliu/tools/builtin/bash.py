@@ -42,11 +42,11 @@ def build_bash_exec_tool(definition: ToolDef, cwd: str | None = None) -> Functio
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 proc.kill()
                 await proc.wait()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             return ToolResult(
                 "", definition.name,

@@ -47,7 +47,7 @@ class PersonaWatcher:
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=self._interval + 2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._task.cancel()
         self._task = None
         _logger.info("persona watcher 已停止")
@@ -57,7 +57,7 @@ class PersonaWatcher:
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=self._interval)
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             await self._check_once()
 
