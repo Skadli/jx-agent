@@ -88,7 +88,7 @@ function Overview({ onJump }) {
             sub={`${stats ? stats.calls : 0} 次调用`} />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginTop: 16, alignItems: "start" }}>
+        <div className="grid-sessions">
           <SessionsCard sessions={sessions} onJump={onJump} />
           <IdentityCard overview={overview} ident={ident} onJump={onJump} onReload={onReload} />
         </div>
@@ -124,41 +124,37 @@ function SessionsCard({ sessions, onJump }) {
             <button className="btn btn-secondary btn-sm" onClick={() => onJump("chat")}>查看全部</button>
           </>
         } />
-      {sessions.length === 0 ? (
-        <div style={{ padding: "32px 20px", textAlign: "center", color: "var(--ink-60)" }}>暂无会话</div>
-      ) : (
-      <table className="tbl">
-        <thead>
-          <tr>
-            <th style={{ width: 200 }}>会话 ID</th>
-            <th style={{ width: 70 }}>通道</th>
-            <th>最后一句</th>
-            <th style={{ width: 100, textAlign: "right" }}>tokens</th>
-            <th style={{ width: 80, textAlign: "right" }}>成本</th>
-            <th style={{ width: 100, textAlign: "right" }}>时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sessions.map((s) => (
-            <tr key={s.id} onClick={() => onJump("chat")} style={{ cursor: "pointer" }}>
-              <td><span className="t-mono" style={{ color: "var(--ink)" }}>{s.id.slice(0, 14)}</span></td>
-              <td>
-                <span className={`chip ${s.channel === "wechat" ? "" : s.channel === "web" ? "chip-info" : "chip-success"}`}
-                  style={s.channel === "wechat" ? { background: "rgba(193,60,123,0.10)", color: "#9c2f5f" } : {}}>
-                  {s.channel}
-                </span>
-              </td>
-              <td className="cell-strong" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 360 }}>
-                {s.last_message || "—"}
-              </td>
-              <td className="col-num">{API.fmtNumber(s.input_tokens + s.output_tokens)}</td>
-              <td className="col-num">￥{API.fmtCost(s.cost_cny)}</td>
-              <td className="col-num" style={{ color: "var(--ink-60)", fontFamily: "var(--font-text)" }}>{API.relTime(s.last_active_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      )}
+      <ResponsiveTable
+        rows={sessions}
+        rowKey={s => s.id}
+        onRowClick={() => onJump("chat")}
+        emptyText="暂无会话"
+        cardMinWidth={640}
+        columns={[
+          { key: "id", label: "会话 ID", width: 200, mono: true,
+            render: s => <span style={{ color: "var(--ink)" }}>{s.id.slice(0, 14)}</span> },
+          { key: "channel", label: "通道", width: 70,
+            render: s => (
+              <span className={`chip ${s.channel === "wechat" ? "" : s.channel === "web" ? "chip-info" : "chip-success"}`}
+                style={s.channel === "wechat" ? { background: "rgba(193,60,123,0.10)", color: "#9c2f5f" } : {}}>
+                {s.channel}
+              </span>
+            )},
+          { key: "last_message", label: "最后一句",
+            render: s => (
+              <span style={{
+                display: "inline-block", maxWidth: "100%",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                color: "var(--ink)", fontWeight: 500,
+              }}>{s.last_message || "—"}</span>
+            )},
+          { key: "tokens", label: "tokens", width: 100, align: "right", mono: true,
+            render: s => API.fmtNumber(s.input_tokens + s.output_tokens) },
+          { key: "cost", label: "成本", width: 80, align: "right", mono: true,
+            render: s => `￥${API.fmtCost(s.cost_cny)}` },
+          { key: "ts", label: "时间", width: 100, align: "right",
+            render: s => <span style={{ color: "var(--ink-60)" }}>{API.relTime(s.last_active_at)}</span> },
+        ]} />
     </div>);
 }
 
@@ -228,38 +224,33 @@ function ToolCallsCard({ tools, onJump }) {
             <button className="btn btn-secondary btn-sm" onClick={() => onJump("tools")}>完整审计</button>
           </>
         } />
-      {tools.length === 0 ? (
-        <div style={{ padding: "32px 20px", textAlign: "center", color: "var(--ink-60)" }}>暂无工具调用</div>
-      ) : (
-      <table className="tbl">
-        <thead>
-          <tr>
-            <th style={{ width: 100 }}>时间</th>
-            <th style={{ width: 130 }}>工具</th>
-            <th>参数</th>
-            <th style={{ width: 160 }}>会话</th>
-            <th style={{ width: 100 }}>结果</th>
-            <th style={{ width: 70, textAlign: "right" }}>耗时</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tools.map((c) => (
-            <tr key={c.id}>
-              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{API.relTime(c.ts)}</td>
-              <td><span className="t-mono" style={{ color: "var(--ink)" }}>{c.tool_name}</span></td>
-              <td className="t-mono" style={{ color: "var(--ink-80)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 320 }}>{c.arguments}</td>
-              <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{(c.session_id || "").slice(0, 14)}</td>
-              <td>
-                {c.is_error
-                  ? <span className="chip chip-danger"><Icon name="x" size={11} />错误</span>
-                  : <span className="chip chip-success"><Icon name="check" size={11} />ok</span>}
-              </td>
-              <td className="col-num">{c.latency_ms}ms</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      )}
+      <ResponsiveTable
+        rows={tools}
+        rowKey={c => c.id}
+        emptyText="暂无工具调用"
+        cardMinWidth={640}
+        columns={[
+          { key: "ts", label: "时间", width: 100, mono: true,
+            render: c => <span style={{ color: "var(--ink-60)" }}>{API.relTime(c.ts)}</span> },
+          { key: "tool_name", label: "工具", width: 130, mono: true,
+            render: c => <span style={{ color: "var(--ink)" }}>{c.tool_name}</span> },
+          { key: "arguments", label: "参数", mono: true,
+            render: c => (
+              <span style={{
+                display: "inline-block", maxWidth: "100%",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                color: "var(--ink-80)",
+              }}>{c.arguments}</span>
+            )},
+          { key: "session_id", label: "会话", width: 160, mono: true,
+            render: c => <span style={{ color: "var(--ink-60)" }}>{(c.session_id || "").slice(0, 14)}</span> },
+          { key: "result", label: "结果", width: 100,
+            render: c => c.is_error
+              ? <span className="chip chip-danger"><Icon name="x" size={11} />错误</span>
+              : <span className="chip chip-success"><Icon name="check" size={11} />ok</span> },
+          { key: "latency_ms", label: "耗时", width: 70, align: "right", mono: true,
+            render: c => `${c.latency_ms}ms` },
+        ]} />
     </div>);
 }
 

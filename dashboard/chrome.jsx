@@ -2,7 +2,7 @@
  * Pure white surfaces, hairline borders, single blue accent on active rail item.
  */
 
-function TopBar({ active, onJump, onLogout }) {
+function TopBar({ active, onJump, onLogout, onToggleRail, railCollapsed }) {
   const [overview, setOverview] = React.useState(null);
   const [health, setHealth] = React.useState(null);
   const [menuOpen, setMenuOpen] = React.useState(false);
@@ -26,6 +26,13 @@ function TopBar({ active, onJump, onLogout }) {
 
   return (
     <div className="topbar">
+      <button
+        className="btn-icon"
+        title={railCollapsed ? "展开侧栏" : "收起侧栏"}
+        onClick={onToggleRail}
+        style={{ marginRight: 2 }}>
+        <Icon name={railCollapsed ? "menu" : "menu-collapse"} size={16} />
+      </button>
       <div className="wordmark" onClick={() => onJump("overview")} style={{ cursor: "pointer" }}>
         <Icon name="brand" size={18} color="var(--ink)" />
         <span>三十六贱<span className="accent">笑</span></span>
@@ -42,7 +49,7 @@ function TopBar({ active, onJump, onLogout }) {
 
       <div className="grow" />
 
-      <div className="search-wrap" style={{ width: 280 }}>
+      <div className="search-wrap" style={{ width: "clamp(140px, 24vw, 280px)" }}>
         <span className="search-icon"><Icon name="search" size={14} color="var(--ink-48)" /></span>
         <input className="search" placeholder="搜索会话 / 文件 / 命令  ⌘K" />
       </div>
@@ -58,7 +65,7 @@ function TopBar({ active, onJump, onLogout }) {
         {model}
       </span>
 
-      <button className="btn-icon" title="设置" onClick={() => onJump("permissions")}><Icon name="settings" size={16} /></button>
+      <button className="btn-icon" title="设置" onClick={() => onJump("settings")}><Icon name="settings" size={16} /></button>
 
       <div style={{ position: "relative" }}>
         <button
@@ -99,7 +106,8 @@ const TAB_LABEL = {
   skills: "技能",
   tools: "工具",
   channels: "通道",
-  permissions: "权限"
+  permissions: "权限",
+  settings: "设置"
 };
 
 const RAIL_SECTIONS = [
@@ -125,10 +133,16 @@ const RAIL_SECTIONS = [
   { id: "channels", label: "通道", icon: "stack", count: "2/3" },
   { id: "permissions", label: "权限", icon: "lock", count: null }]
 
+},
+{
+  label: "系统",
+  items: [
+  { id: "settings", label: "设置", icon: "settings", count: null }]
+
 }];
 
 
-function LeftRail({ active, onJump }) {
+function LeftRail({ active, onJump, collapsed }) {
   return (
     <aside className="rail" style={{ display: "flex", flexDirection: "column" }}>
       <div style={{ flex: "0 0 auto" }}>
@@ -141,6 +155,7 @@ function LeftRail({ active, onJump }) {
           <div
             key={it.id}
             className={`rail-item ${active === it.id ? "active" : ""}`}
+            title={collapsed ? it.label : undefined}
             onClick={() => onJump(it.id)}>
 
                 <span className="rail-glyph"><Icon name={it.icon} size={15} /></span>
@@ -153,8 +168,8 @@ function LeftRail({ active, onJump }) {
         )}
       </div>
 
-      {/* Bottom dock — environment badge, pinned to bottom */}
-      <div style={{
+      {/* Bottom dock — 展开态：详细环境徽章；折叠态：仅一个绿点 */}
+      <div className="rail-dock-full" style={{
         marginTop: "auto",
         padding: "12px 14px",
         borderTop: "1px solid var(--hairline)",
@@ -189,6 +204,9 @@ function LeftRail({ active, onJump }) {
             <span className="dot dot-off" />微信
           </span>
         </div>
+      </div>
+      <div className="rail-dock-mini" title="本机环境 · Py 3.13">
+        <span className="dot dot-up" style={{ width: 8, height: 8 }} />
       </div>
     </aside>);
 

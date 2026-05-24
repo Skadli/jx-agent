@@ -6,6 +6,7 @@ function Tools({ onJump }) {
   const [calls, setCalls] = React.useState([]);
   const [selectedId, setSelectedId] = React.useState(null);
   const [status, setStatus] = React.useState("loading");
+  const [page, setPage] = React.useState(1);
 
   const refresh = React.useCallback(async () => {
     setStatus("loading");
@@ -38,6 +39,15 @@ function Tools({ onJump }) {
     return acc;
   }, {});
 
+  // 每页 10 条 + 分页：数据刷新后若当前页超出范围自动收回
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(calls.length / PAGE_SIZE));
+  React.useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+  const pageStart = (page - 1) * PAGE_SIZE;
+  const pageRows = calls.slice(pageStart, pageStart + PAGE_SIZE);
+
   return (
     <div data-screen-label="08 工具">
       <PageHeader
@@ -62,7 +72,7 @@ function Tools({ onJump }) {
           <StatCard label="平均耗时" value={stats.avgLatency} unit="ms" sub={stats.topTool ? `最高频：${stats.topTool}` : "暂无调用"} />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "300px 1fr 380px", gap: 16, marginTop: 16, alignItems: "start" }}>
+        <div className="tools-grid">
           <div className="card">
             <CardHeader title="工具列表" sub={status === "loading" ? "加载中…" : `${tools.length} 个`} />
             <div style={{ padding: 4 }}>
@@ -82,33 +92,43 @@ function Tools({ onJump }) {
           </div>
 
           <div className="card">
-            <CardHeader title="调用详情" sub="最近调用" right={<span className="t-mono-sm">5s 刷新</span>} />
-            {calls.length === 0 ? (
-              <div className="t-meta" style={{ padding: 32, textAlign: "center" }}>暂无工具调用</div>
-            ) : (
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th style={{ width: 90 }}>时间</th>
-                    <th style={{ width: 130 }}>工具</th>
-                    <th>参数</th>
-                    <th style={{ width: 90 }}>状态</th>
-                    <th style={{ width: 80, textAlign: "right" }}>耗时</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {calls.map((c) => (
-                    <tr key={c.id} onClick={() => setSelectedId(c.id)} style={{ cursor: "pointer", background: selected && selected.id === c.id ? "var(--primary-soft)" : "transparent" }}>
-                      <td className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{API.relTime(c.ts)}</td>
-                      <td><span className="t-mono" style={{ color: "var(--ink)" }}>{c.tool_name}</span></td>
-                      <td className="t-mono-sm" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.arguments || "{}"}</td>
-                      <td>{c.is_error ? <span className="chip chip-danger">错误</span> : <span className="chip chip-success">ok</span>}</td>
-                      <td className="col-num">{c.latency_ms}ms</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <CardHeader
+              title="调用详情"
+              sub={`第 ${page} / ${totalPages} 页 · 累计 ${calls.length}`}
+              right={<span className="t-mono-sm">5s 刷新</span>} />
+            <ResponsiveTable
+              rows={pageRows}
+              rowKey={c => c.id}
+              onRowClick={c => setSelectedId(c.id)}
+              isRowActive={c => selected && selected.id === c.id}
+              emptyText="暂无工具调用"
+              cardMinWidth={520}
+              columns={[
+                { key: "ts",        label: "时间",  width: 90,  mono: true,
+                  render: c => <span style={{ color: "var(--ink-60)" }}>{API.relTime(c.ts)}</span> },
+                { key: "tool_name", label: "工具",  width: 130, mono: true,
+                  render: c => <span style={{ color: "var(--ink)" }}>{c.tool_name}</span> },
+                { key: "arguments", label: "参数",  mono: true,
+                  render: c => (
+                    <span style={{
+                      display: "inline-block", maxWidth: "100%",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{c.arguments || "{}"}</span>
+                  )},
+                { key: "is_error",  label: "状态",  width: 90,
+                  render: c => c.is_error
+                    ? <span className="chip chip-danger">错误</span>
+                    : <span className="chip chip-success">ok</span> },
+                { key: "latency_ms",label: "耗时",  width: 80, align: "right", mono: true,
+                  render: c => `${c.latency_ms}ms` },
+              ]} />
+            <Pagination
+              page={page}
+              totalPages={totalPages}
+              onChange={setPage}
+              info={calls.length === 0
+                ? ""
+                : `${pageStart + 1}–${Math.min(pageStart + PAGE_SIZE, calls.length)} 条 / 共 ${calls.length}`} />
           </div>
 
           <ToolInspector call={selected} tools={tools} />

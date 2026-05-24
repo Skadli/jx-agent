@@ -23,6 +23,16 @@ from sanshiliu.channels.web.api import (
     make_tool_calls_handler,
     make_tools_handler,
 )
+from sanshiliu.channels.web.api_settings import (
+    make_get_settings_handler,
+    make_put_settings_handler,
+)
+from sanshiliu.channels.web.api_wechat import (
+    WechatQrBroker,
+    make_wechat_qr_cancel_handler,
+    make_wechat_qr_start_handler,
+    make_wechat_qr_status_handler,
+)
 from sanshiliu.channels.web.api_writes import (
     make_instance_reload_handler,
     make_memory_create_handler,
@@ -307,6 +317,19 @@ async def run_serve() -> int:
     router.register("POST", "/api/instance/reload", make_instance_reload_handler(
         persona_for_api, memdir_loader, claudemd_loader, skill_loader, settings_loader,
     ))
+    # 设置页面读写 .env
+    env_file = _Path.cwd() / ".env"
+    router.register("GET", "/api/settings", make_get_settings_handler(env_file))
+    router.register("PUT", "/api/settings", make_put_settings_handler(env_file))
+
+    # 微信扫码连接
+    import os as _os
+    _store_env = (_os.environ.get("WEIXIN_ACCOUNT_STORE") or "").strip()
+    wechat_store = _Path(_store_env) if _store_env else (settings.data_dir / "wechat-account.json")
+    wechat_qr_broker = WechatQrBroker(loop=loop, env_path=env_file, store_path=wechat_store)
+    router.register("POST", "/api/wechat/qr/start", make_wechat_qr_start_handler(wechat_qr_broker))
+    router.register_prefix("GET", "/api/wechat/qr/status", make_wechat_qr_status_handler(wechat_qr_broker))
+    router.register("POST", "/api/wechat/qr/cancel", make_wechat_qr_cancel_handler(wechat_qr_broker))
 
     # wechat 可选启动；webhook 路径挂在同一 web server 上
     wechat_bot: WechatBot | None = None

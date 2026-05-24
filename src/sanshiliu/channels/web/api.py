@@ -270,11 +270,17 @@ def make_session_messages_handler(
                             continue
                     if last_record is not None:
                         for m in (last_record.get("messages") or []):
-                            if m.get("role") in ("user", "assistant"):
-                                messages.append({
-                                    "role": m["role"],
-                                    "content": m.get("content") or "",
-                                })
+                            # 跳过 system；其它都保留，前端会按 role + tool_calls 渲染
+                            role = m.get("role")
+                            if role not in ("user", "assistant", "tool"):
+                                continue
+                            messages.append({
+                                "role": role,
+                                "content": m.get("content") or "",
+                                "tool_calls": m.get("tool_calls"),
+                                "tool_call_id": m.get("tool_call_id"),
+                                "name": m.get("name"),
+                            })
             _write_json(req, {"session_id": session_id, "messages": messages})
         _safe(req, _do, "/api/sessions/messages")
     return handler

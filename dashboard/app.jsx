@@ -1,8 +1,43 @@
 /* App shell — composes topbar + rail + main content. */
 
+const RAIL_STATE_KEY = "jx_rail_collapsed";
+const MOBILE_BP = 640;
+
 function App() {
   const [view, setView] = React.useState("overview");
   const [auth, setAuth] = React.useState({ checking: true, authed: false, configured: false });
+  // 侧栏折叠状态；桌面默认展开，手机默认折叠（用 matchMedia 判一次）
+  const [railCollapsed, setRailCollapsed] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem(RAIL_STATE_KEY);
+      if (saved === "1") return true;
+      if (saved === "0") return false;
+    } catch (e) {}
+    return typeof window !== "undefined" && window.innerWidth < 1024;
+  });
+  // 手机端抽屉是否打开（折叠/展开是桌面态，open 是 ≤640 时覆盖出现）
+  const [railOpen, setRailOpen] = React.useState(false);
+  const [isMobile, setIsMobile] = React.useState(
+    typeof window !== "undefined" && window.innerWidth <= MOBILE_BP
+  );
+
+  React.useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= MOBILE_BP);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const toggleRail = React.useCallback(() => {
+    if (isMobile) {
+      setRailOpen(o => !o);
+      return;
+    }
+    setRailCollapsed(c => {
+      const next = !c;
+      try { localStorage.setItem(RAIL_STATE_KEY, next ? "1" : "0"); } catch (e) {}
+      return next;
+    });
+  }, [isMobile]);
 
   const refreshAuth = React.useCallback(async () => {
     const r = await API.authStatus();
@@ -24,7 +59,7 @@ function App() {
   React.useEffect(() => {
     const fromHash = () => {
       const h = window.location.hash.replace("#", "");
-      if (["overview","chat","persona","memory","skills","tools","channels","permissions"].includes(h)) setView(h);
+      if (["overview","chat","persona","memory","skills","tools","channels","permissions","settings"].includes(h)) setView(h);
     };
     fromHash();
     window.addEventListener("hashchange", fromHash);
@@ -34,6 +69,8 @@ function App() {
   const jump = (v) => {
     setView(v);
     window.location.hash = v;
+    // 移动端点导航后自动收起抽屉
+    if (isMobile) setRailOpen(false);
     // scroll main back to top
     const main = document.getElementById("main");
     if (main) main.scrollTop = 0;
@@ -57,13 +94,26 @@ function App() {
     case "tools":       body = <Tools        onJump={jump} />; break;
     case "channels":    body = <Channels     onJump={jump} />; break;
     case "permissions": body = <Permissions  onJump={jump} />; break;
+    case "settings":    body = <Settings     onJump={jump} />; break;
     default:            body = <Overview     onJump={jump} />;
   }
 
+  const shellClass = [
+    "shell",
+    !isMobile && railCollapsed ? "rail-collapsed" : "",
+    isMobile && railOpen ? "rail-open" : "",
+  ].filter(Boolean).join(" ");
+
   return (
-    <div className="shell">
-      <TopBar active={view} onJump={jump} onLogout={auth.configured ? logout : null} />
-      <LeftRail active={view} onJump={jump} />
+    <div className={shellClass}>
+      <TopBar
+        active={view}
+        onJump={jump}
+        onLogout={auth.configured ? logout : null}
+        onToggleRail={toggleRail}
+        railCollapsed={!isMobile && railCollapsed} />
+      <LeftRail active={view} onJump={jump} collapsed={!isMobile && railCollapsed} />
+      {isMobile && railOpen && <div className="rail-scrim" onClick={() => setRailOpen(false)} />}
       <div className="main" id="main">{body}</div>
     </div>
   );

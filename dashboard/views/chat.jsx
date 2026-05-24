@@ -1,16 +1,21 @@
-/* Chat / Sessions — 真实接 /api/sessions + /chat SSE。 */
+/* Chat / Sessions — 真实接 /api/sessions + /chat SSE。
+ * timeline 统一保存所有事件（user/assistant/tool/approval），按发生顺序渲染，
+ * 解决"工具调用 / 审批卡片固定在底部"和"刷新后工具调用消失"的两个 bug。
+ */
 
 function Chat() {
   const [sessions, setSessions]   = React.useState([]);
   const [activeId, setActiveId]   = React.useState(null);
-  const [messages, setMessages]   = React.useState([]);
+  // 统一时间线；元素形如:
+  //   { kind: "user", content }
+  //   { kind: "assistant", content }
+  //   { kind: "tool", id, name, arguments, result, is_error }
+  //   { kind: "approval", id, payload, decision?, scope? }
+  const [timeline, setTimeline]   = React.useState([]);
   const [filter, setFilter]       = React.useState("all");
   const [composer, setComposer]   = React.useState("");
   const [streaming, setStreaming] = React.useState(false);
   const [streamText, setStreamText] = React.useState("");
-  // 待审批 + 已结案的工具授权卡片（替代原 window.confirm）
-  const [pendingApprovals, setPendingApprovals] = React.useState([]);
-  const [resolvedApprovals, setResolvedApprovals] = React.useState([]);
   const streamCtrl = React.useRef(null);
 
   // 拉会话列表（5s 轮询）
@@ -29,15 +34,13 @@ function Chat() {
     return () => { alive = false; clearInterval(id); };
   }, [activeId]);
 
-  // 拉某个会话的历史消息
+  // 拉某个会话的历史消息并重建 timeline
   React.useEffect(() => {
-    if (!activeId) { setMessages([]); setPendingApprovals([]); setResolvedApprovals([]); return; }
-    setPendingApprovals([]);
-    setResolvedApprovals([]);
+    if (!activeId) { setTimeline([]); return; }
     let alive = true;
     (async () => {
       const r = await API.get(`/api/sessions/${encodeURIComponent(activeId)}/messages`);
-      if (alive && !r.error) setMessages(r.messages || []);
+      if (alive && !r.error) setTimeline(buildTimelineFromMessages(r.messages || []));
     })();
     return () => { alive = false; };
   }, [activeId]);
@@ -51,17 +54,22 @@ function Chat() {
 
   const active = sessions.find(s => s.id === activeId);
 
-  // 把待审批的工具调用以聊天卡片形式插入会话流，不再弹浏览器原生 confirm。
+  // 工具审批：直接插入 timeline 末尾，按发生顺序显示
   const askToolApproval = (approval) => {
-    setPendingApprovals(list => list.some(a => a.id === approval.id) ? list : [...list, approval]);
+    setTimeline(t => t.some(it => it.kind === "approval" && it.id === approval.id)
+      ? t
+      : [...t, { kind: "approval", id: approval.id, payload: approval }]);
   };
 
   const resolveApproval = async (approval, decision, scope) => {
-    setPendingApprovals(list => list.filter(a => a.id !== approval.id));
-    setResolvedApprovals(list => [...list, { approval, decision, scope, at: Date.now() }]);
+    setTimeline(t => t.map(it =>
+      (it.kind === "approval" && it.id === approval.id)
+        ? { ...it, decision, scope, resolvedAt: Date.now() }
+        : it
+    ));
     const r = await API.respondToolApproval(approval.id, decision, scope);
     if (r.error) {
-      setMessages(m => [...m, { role: "assistant", content: `[工具审批提交失败] ${r.error}` }]);
+      setTimeline(t => [...t, { kind: "assistant", content: `[工具审批提交失败] ${r.error}` }]);
     }
   };
 
@@ -69,7 +77,7 @@ function Chat() {
     const text = composer.trim();
     if (!text || streaming) return;
     const sessionForSend = activeId && (!active || active.channel === "web") ? activeId : null;
-    setMessages(m => [...m, { role: "user", content: text }]);
+    setTimeline(t => [...t, { kind: "user", content: text }]);
     setComposer("");
     setStreaming(true);
     setStreamText("");
@@ -87,18 +95,23 @@ function Chat() {
       onApproval: askToolApproval,
       onDelta: (chunk) => { buf += chunk; setStreamText(buf); },
       onDone:  () => {
-        if (buf) setMessages(m => [...m, { role: "assistant", content: buf }]);
+        if (buf) setTimeline(t => [...t, { kind: "assistant", content: buf }]);
         setStreamText("");
         setStreaming(false);
         streamCtrl.current = null;
-        // 触发会话列表刷新
+        // 触发会话列表刷新 + 重拉本会话历史消息（取回工具调用记录）
         API.get("/api/sessions?limit=50").then(r => { if (!r.error) setSessions(r.sessions || []); });
+        if (activeId || sessionForSend) {
+          const sid = activeId || sessionForSend;
+          API.get(`/api/sessions/${encodeURIComponent(sid)}/messages`).then(r => {
+            if (!r.error) setTimeline(buildTimelineFromMessages(r.messages || []));
+          });
+        }
       },
       onError: (msg) => {
-        setMessages(m => [...m, { role: "assistant", content: `[错误] ${msg}` }]);
+        setTimeline(t => [...t, { kind: "assistant", content: `[错误] ${msg}` }]);
         setStreamText("");
         setStreaming(false);
-        setPendingApprovals([]);
         streamCtrl.current = null;
       },
     });
@@ -108,16 +121,15 @@ function Chat() {
     if (streamCtrl.current) streamCtrl.current.abort();
     streamCtrl.current = null;
     setStreaming(false);
-    if (streamText) setMessages(m => [...m, { role: "assistant", content: streamText + " …[已中止]" }]);
+    if (streamText) setTimeline(t => [...t, { kind: "assistant", content: streamText + " …[已中止]" }]);
     setStreamText("");
-    setPendingApprovals([]);
   };
 
   const newSession = async () => {
     const r = await API.post("/api/sessions/new", { channel: "web" });
     if (r.error) { alert("新建失败：" + r.error); return; }
     setActiveId(r.session_id);
-    setMessages([]);
+    setTimeline([]);
     setSessions(list => list.some(s => s.id === r.session_id)
       ? list
       : [{ id: r.session_id, channel: r.channel || "web", calls: 0, input_tokens: 0, output_tokens: 0, cost_cny: 0, last_active_at: Date.now(), last_message: "" }, ...list]);
@@ -146,7 +158,7 @@ function Chat() {
     const next = sessions.filter(s => s.id !== sessionId);
     setSessions(next);
     if (activeId === sessionId) {
-      setMessages([]);
+      setTimeline([]);
       setActiveId(next[0]?.id || null);
     }
 
@@ -156,7 +168,7 @@ function Chat() {
       setSessions(list);
       if (activeId === sessionId) {
         setActiveId(list[0]?.id || null);
-        setMessages([]);
+        setTimeline([]);
       }
     }
   };
@@ -198,11 +210,12 @@ function Chat() {
 
       <div style={{
         display: "grid",
-        gridTemplateColumns: "320px 1fr",
+        gridTemplateColumns: "minmax(240px, 320px) minmax(0, 1fr)",
         gap: 16,
         padding: "16px 28px 24px",
         flex: 1,
         minHeight: 0,
+        minWidth: 0,
         alignItems: "stretch",
       }}>
         {/* LEFT: session list */}
@@ -249,20 +262,31 @@ function Chat() {
             </div>
           </div>
 
-          {/* Transcript */}
+          {/* Transcript — 按 timeline 顺序渲染 */}
           <div style={{ flex: 1, overflowY: "auto", padding: "20px 28px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-              {messages.length === 0 && !streaming && (
+              {timeline.length === 0 && !streaming && (
                 <div className="t-meta" style={{ textAlign: "center", padding: 40 }}>这个会话还没有消息。下方输入框开始聊天 ↓</div>
               )}
-              {messages.map((m, i) => <Bubble key={i} role={m.role} text={m.content} />)}
+              {timeline.map((it, i) => {
+                if (it.kind === "user" || it.kind === "assistant") {
+                  return <Bubble key={i} role={it.kind} text={it.content} />;
+                }
+                if (it.kind === "tool") {
+                  return <ToolEventCard key={i} event={it} />;
+                }
+                if (it.kind === "approval") {
+                  return (
+                    <ApprovalCard
+                      key={`a-${it.id}`}
+                      approval={it.payload}
+                      resolved={it.decision ? { decision: it.decision, scope: it.scope } : null}
+                      onResolve={(decision, scope) => resolveApproval(it.payload, decision, scope)} />
+                  );
+                }
+                return null;
+              })}
               {streaming && <Bubble role="assistant" text={streamText} streaming t="正在生成" />}
-              {resolvedApprovals.map((r, i) => (
-                <ApprovalCard key={`r-${r.approval.id}-${i}`} approval={r.approval} resolved={r} />
-              ))}
-              {pendingApprovals.map((a) => (
-                <ApprovalCard key={`p-${a.id}`} approval={a} onResolve={(decision, scope) => resolveApproval(a, decision, scope)} />
-              ))}
             </div>
           </div>
 
@@ -454,6 +478,118 @@ function Bubble({ role, text, streaming, t }) {
           {text || "—"}
           {streaming && <span className="blink-cursor" style={{ color: "var(--primary)", marginLeft: 2 }}>▮</span>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 把 /api/sessions/{id}/messages 返回的扁平消息流，
+ * 重建为 timeline 的顺序事件：user / assistant / tool。
+ * - assistant 的 tool_calls 拆成多个 pending tool 事件
+ * - 后续 role=tool 按 tool_call_id 回填 result
+ */
+function buildTimelineFromMessages(msgs) {
+  const items = [];
+  const idMap = {};
+  for (const m of msgs) {
+    const role = m.role;
+    if (role === "user") {
+      items.push({ kind: "user", content: m.content || "" });
+    } else if (role === "assistant") {
+      const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      for (const tc of calls) {
+        const fn = tc.function || {};
+        const item = {
+          kind: "tool",
+          id: tc.id,
+          name: fn.name || tc.name || "tool",
+          arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {}),
+          result: null,
+          is_error: false,
+        };
+        items.push(item);
+        if (tc.id) idMap[tc.id] = item;
+      }
+      if (m.content) items.push({ kind: "assistant", content: m.content });
+    } else if (role === "tool") {
+      const target = m.tool_call_id ? idMap[m.tool_call_id] : null;
+      if (target) {
+        target.result = m.content || "";
+      } else {
+        items.push({
+          kind: "tool",
+          id: m.tool_call_id || `orphan-${items.length}`,
+          name: m.name || "tool",
+          arguments: "",
+          result: m.content || "",
+          is_error: false,
+        });
+      }
+    }
+  }
+  return items;
+}
+
+/* 工具调用卡片：参数 + 结果，与 user/assistant 同级穿插显示。 */
+function ToolEventCard({ event }) {
+  const [open, setOpen] = React.useState(false);
+  const pending = event.result == null;
+  const preview = event.arguments
+    ? (event.arguments.length > 80 ? event.arguments.slice(0, 80) + "…" : event.arguments)
+    : "";
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{
+          width: 22, height: 22, borderRadius: "50%",
+          background: "var(--primary-soft-2)", color: "var(--primary)",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          fontSize: 10, fontWeight: 600,
+        }}>⚙</span>
+        <span className="t-row-strong" style={{ color: "var(--ink)" }}>工具调用</span>
+        <span className="t-mono-sm" style={{ color: "var(--primary)" }}>{event.name}</span>
+        {pending
+          ? <span className="t-meta" style={{ color: "var(--ink-60)" }}>· 执行中…</span>
+          : event.is_error
+            ? <span className="chip chip-danger" style={{ fontSize: 10 }}>错误</span>
+            : <span className="chip chip-success" style={{ fontSize: 10 }}>ok</span>}
+      </div>
+      <div style={{
+        marginLeft: 30,
+        padding: "10px 12px",
+        background: "var(--pearl)",
+        border: "1px solid var(--hairline)",
+        borderRadius: 10,
+        fontFamily: "var(--font-mono)",
+        fontSize: 12,
+        lineHeight: 1.55,
+        color: "var(--ink-80)",
+      }}>
+        {preview && (
+          <div style={{ color: "var(--ink-60)", marginBottom: pending ? 0 : 6 }}>
+            <span style={{ color: "var(--ink-48)" }}>args: </span>{preview}
+          </div>
+        )}
+        {!pending && (
+          <div>
+            <div
+              onClick={() => setOpen(o => !o)}
+              style={{ cursor: "pointer", color: "var(--ink-60)", marginBottom: open ? 6 : 0, userSelect: "none" }}>
+              <span style={{ color: "var(--ink-48)" }}>result {open ? "▾" : "▸"} </span>
+              {!open && <span>{(event.result || "").slice(0, 80)}{(event.result || "").length > 80 ? "…" : ""}</span>}
+            </div>
+            {open && (
+              <pre style={{
+                margin: 0, padding: "8px 10px",
+                background: "var(--canvas)", border: "1px solid var(--hairline)",
+                borderRadius: 6, maxHeight: 260, overflow: "auto",
+                whiteSpace: "pre-wrap", wordBreak: "break-all",
+                fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--ink)",
+              }}>{event.result}</pre>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

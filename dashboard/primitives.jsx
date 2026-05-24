@@ -52,6 +52,8 @@ function Icon({ name, size = 16, color = "currentColor", strokeWidth = 1.5 }) {
     case "info":return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.01" /></svg>;
     case "copy":return <svg {...common}><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>;
     case "download":return <svg {...common}><path d="M12 4v12M6 12l6 6 6-6M4 20h16" /></svg>;
+    case "menu":return <svg {...common}><path d="M4 6h16M4 12h16M4 18h16" /></svg>;
+    case "menu-collapse":return <svg {...common}><path d="M4 6h16M4 12h10M4 18h16" /></svg>;
     default:return null;
   }
 }
@@ -155,4 +157,178 @@ function Toggle({ on, onChange }) {
 
 }
 
-Object.assign(window, { Icon, StatCard, KV, Meter, CardHeader, StatusRow, Segmented, Toggle });
+/**
+ * ResponsiveTable — 容器自适应表格。
+ * 用 ResizeObserver 监听自身宽度；宽度 < cardMinWidth 时切换到 KV 卡片栈，
+ * 否则用标准 .tbl 表格渲染。columns 描述列；rows 是数据。
+ *
+ * columns: [{ key, label, width?, align?, mono?, render?(row) => node, hideInCards?: bool }]
+ * rowKey:  (row) => string
+ * onRowClick / isRowActive 可选
+ * emptyText: 空数据展示
+ * cardMinWidth: 切到卡片视图的阈值（默认 520px）
+ */
+function ResponsiveTable({
+  columns,
+  rows,
+  rowKey,
+  onRowClick,
+  isRowActive,
+  emptyText = "暂无数据",
+  cardMinWidth = 520,
+}) {
+  const wrapRef = React.useRef(null);
+  const [width, setWidth] = React.useState(0);
+
+  React.useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(entries => {
+      for (const e of entries) setWidth(Math.floor(e.contentRect.width));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  if (!rows || rows.length === 0) {
+    return (
+      <div ref={wrapRef}>
+        <div className="t-meta" style={{ padding: 32, textAlign: "center", color: "var(--ink-60)" }}>{emptyText}</div>
+      </div>
+    );
+  }
+
+  const useCards = width > 0 && width < cardMinWidth;
+
+  if (useCards) {
+    return (
+      <div ref={wrapRef} style={{ display: "flex", flexDirection: "column" }}>
+        {rows.map((row, idx) => {
+          const active = isRowActive ? isRowActive(row) : false;
+          return (
+            <div
+              key={rowKey(row)}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              style={{
+                padding: "12px 14px",
+                borderTop: idx === 0 ? "none" : "1px solid var(--divider-soft)",
+                background: active ? "var(--primary-soft)" : "transparent",
+                cursor: onRowClick ? "pointer" : "default",
+                display: "flex", flexDirection: "column", gap: 4,
+              }}>
+              {columns.filter(c => !c.hideInCards).map(col => {
+                const value = col.render ? col.render(row) : row[col.key];
+                if (value == null || value === "" || value === false) return null;
+                return (
+                  <div key={col.key} style={{
+                    display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start",
+                  }}>
+                    <span className="t-meta" style={{ color: "var(--ink-60)", flex: "0 0 auto" }}>{col.label}</span>
+                    <span style={{
+                      textAlign: "right", minWidth: 0,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      fontFamily: col.mono ? "var(--font-mono)" : "var(--font-text)",
+                      fontSize: 12.5, color: "var(--ink)",
+                    }}>{value}</span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div ref={wrapRef} style={{ overflow: "auto" }}>
+      <table className="tbl">
+        <thead>
+          <tr>
+            {columns.map(col => (
+              <th key={col.key} style={{
+                width: col.width,
+                textAlign: col.align || "left",
+                whiteSpace: "nowrap",
+              }}>{col.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => {
+            const active = isRowActive ? isRowActive(row) : false;
+            return (
+              <tr
+                key={rowKey(row)}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                style={{
+                  cursor: onRowClick ? "pointer" : "default",
+                  background: active ? "var(--primary-soft)" : "transparent",
+                }}>
+                {columns.map(col => (
+                  <td key={col.key} style={{
+                    textAlign: col.align || "left",
+                    fontFamily: col.mono ? "var(--font-mono)" : undefined,
+                  }}>
+                    {col.render ? col.render(row) : row[col.key]}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Pagination — 通用分页控件。
+ * 显示「上一页 / 第 X / N 页 / 下一页」+ 左侧可选 info 文案。
+ * 单页时整体隐藏。
+ */
+function Pagination({ page, totalPages, onChange, info }) {
+  if (totalPages <= 1) return info ? (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "10px 16px", borderTop: "1px solid var(--hairline)", gap: 12,
+    }}>
+      <span className="t-meta" style={{ color: "var(--ink-60)" }}>{info}</span>
+    </div>
+  ) : null;
+
+  const go = p => onChange(Math.max(1, Math.min(totalPages, p)));
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "10px 16px", borderTop: "1px solid var(--hairline)",
+      gap: 12, flexWrap: "wrap",
+    }}>
+      <span className="t-meta" style={{ color: "var(--ink-60)" }}>{info}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <button
+          className="btn btn-secondary btn-sm"
+          disabled={page <= 1}
+          onClick={() => go(page - 1)}
+          title="上一页">
+          <Icon name="chevron-r" size={11} /> 上一页
+        </button>
+        <span className="t-meta" style={{
+          color: "var(--ink)", padding: "0 8px",
+          minWidth: 80, textAlign: "center", fontFamily: "var(--font-mono)",
+        }}>
+          {page} / {totalPages}
+        </span>
+        <button
+          className="btn btn-secondary btn-sm"
+          disabled={page >= totalPages}
+          onClick={() => go(page + 1)}
+          title="下一页">
+          下一页 <Icon name="chevron-r" size={11} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { Icon, StatCard, KV, Meter, CardHeader, StatusRow, Segmented, Toggle, ResponsiveTable, Pagination });

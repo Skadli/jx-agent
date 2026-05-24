@@ -54,7 +54,22 @@ def make_dashboard_handler(
 
     def handler(req: BaseHTTPRequestHandler) -> None:
         # 去掉 query 串、规范化路径
-        raw = req.path.split("?", 1)[0]
+        full_path = req.path
+        query = ""
+        if "?" in full_path:
+            full_path, query = full_path.split("?", 1)
+            query = "?" + query
+        raw = full_path
+
+        # /dashboard（缺尾部 /）→ 301 → /dashboard/
+        # 否则浏览器把 <script src="primitives.jsx"> 解析到 /primitives.jsx 触发 404
+        if raw == "/dashboard":
+            req.send_response(301)
+            req.send_header("Location", "/dashboard/" + query)
+            req.send_header("Content-Length", "0")
+            req.end_headers()
+            return
+
         # 去掉前缀；空 → 默认 index
         rel = raw[len("/dashboard"):].lstrip("/")
         if rel == "" or rel.endswith("/"):
