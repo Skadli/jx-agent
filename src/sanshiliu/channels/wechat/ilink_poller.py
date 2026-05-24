@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sanshiliu.channels.web.handlers import HealthState
-from sanshiliu.channels.wechat.ilink_client import ILinkClient
+from sanshiliu.channels.wechat.ilink_client import ILINK_ERR_SESSION_TIMEOUT, ILinkClient
 from sanshiliu.foundation.errors import ChannelError
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.storage.db import Database
@@ -20,6 +20,8 @@ _logger = get_logger(__name__)
 _ITEM_TEXT = 1
 _ITEM_VOICE = 3
 _POLL_RETRY_DELAY_SECONDS = 2.0
+# session-expired 后的退避：避免对 iLink 发起持续无效请求 + 给用户重新扫码留时间
+_EXPIRED_BACKOFF_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -77,9 +79,13 @@ class ILinkLongPoller:
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                await self._poll_once()
-                self._health.set("wechat", "up")
-                wait_seconds = self._poll_interval
+                expired = await self._poll_once()
+                if expired:
+                    self._health.set("wechat", "expired")
+                    wait_seconds = _EXPIRED_BACKOFF_SECONDS
+                else:
+                    self._health.set("wechat", "up")
+                    wait_seconds = self._poll_interval
             except ChannelError as exc:
                 self._health.set("wechat", "down")
                 wait_seconds = _POLL_RETRY_DELAY_SECONDS
@@ -93,14 +99,52 @@ class ILinkLongPoller:
             except TimeoutError:
                 continue
 
-    async def _poll_once(self) -> None:
+    async def _poll_once(self) -> bool:
+        """轮询一次；返回 True 表示 session 已过期需要退避 + 等用户重扫。"""
         response = await self._client.get_updates(
             self._sync_buf,
             timeout_ms=self._poll_timeout_ms,
         )
-        sync_buf = _extract_sync_buf(response)
 
+        # iLink 业务级错误 — 最常见的就是 -14 token 过期；不当作 ChannelError 抛
+        # 而是返回 True 让上层退避，并明确告诉用户需要重扫码
+        if isinstance(response, dict):
+            errcode = response.get("errcode")
+            if isinstance(errcode, int) and errcode != 0:
+                errmsg = str(response.get("errmsg") or "")
+                if errcode == ILINK_ERR_SESSION_TIMEOUT:
+                    if not getattr(self, "_warned_expired", False):
+                        _logger.warning(
+                            "iLink session 已过期，请到 dashboard 设置页扫码重新登录；轮询已暂缓",
+                            errcode=errcode, errmsg=errmsg,
+                        )
+                        self._warned_expired = True
+                    return True
+                # 其他业务级错误：警告但继续按正常间隔重试
+                _logger.warning("iLink 业务错误", errcode=errcode, errmsg=errmsg)
+                return False
+            # 收到正常响应 → 清掉过期警告标志，下次过期还会再告警一次
+            if getattr(self, "_warned_expired", False):
+                self._warned_expired = False
+                _logger.info("iLink session 已恢复正常")
+
+        sync_buf = _extract_sync_buf(response)
         messages = _extract_inbound_messages(response, self._account_id)
+
+        # 若 response 看起来非空但 parser 抽不出消息，把原始结构记下来
+        # 帮助排查"连得上但收不到消息"的字段名差异
+        if not messages and _looks_like_inbound_payload(response):
+            import json as _json
+            try:
+                preview = _json.dumps(response, ensure_ascii=False)[:600]
+            except Exception:
+                preview = repr(response)[:600]
+            _logger.warning(
+                "iLink 返回疑似消息但未解析出来",
+                top_keys=list(response.keys()) if isinstance(response, dict) else None,
+                sync_buf_present=bool(sync_buf),
+                preview=preview,
+            )
         for message in messages:
             if message.dedup_key in self._seen or await self._has_seen(message.dedup_key):
                 continue
@@ -112,6 +156,7 @@ class ILinkLongPoller:
         if sync_buf:
             self._sync_buf = sync_buf
             await self._save_sync_buf(sync_buf)
+        return False
 
     async def _enqueue(self, message: ILinkInboundMessage) -> None:
         session_id = _session_id_for(message.user_id, message.group_id)
@@ -184,6 +229,15 @@ def _extract_inbound_messages(value: Any, account_id: str) -> list[ILinkInboundM
     messages: list[ILinkInboundMessage] = []
     _collect_message_arrays(value, account_id, messages)
     return messages
+
+
+def _looks_like_inbound_payload(value: Any) -> bool:
+    """启发式：响应里出现常见消息容器键 / 长字符串内容时，认为是"应该有消息但没抽出来"。"""
+    if not isinstance(value, dict):
+        return False
+    container_keys = {"msgs", "messages", "updates", "msg_list", "items", "item_list", "list",
+                      "data", "result", "events", "update_list"}
+    return any(k in value and value.get(k) for k in container_keys)
 
 
 def _collect_message_arrays(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import uuid
 from typing import Any, cast
@@ -23,6 +24,9 @@ _ITEM_TEXT = 1
 _MSG_TYPE_BOT = 2
 _MSG_STATE_FINISH = 2
 
+# iLink session-expired 信号；poller 看到这个 errcode 就退避并通知 health
+ILINK_ERR_SESSION_TIMEOUT = -14
+
 
 class ILinkClient:
     """httpx.AsyncClient 包装；官方模式需要 account_id + token。"""
@@ -33,12 +37,16 @@ class ILinkClient:
         api_key: str | None = None,
         *,
         account_id: str = "",
+        user_id: str = "",
         timeout: float = 10.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._account_id = account_id.strip()
+        self._user_id = user_id.strip()
         self._official = bool(self._account_id and self._api_key)
+        # X-WECHAT-UIN 必须跨请求稳定（之前每次随机 → iLink 视为新 session，token -14）
+        self._wechat_uin = _stable_wechat_uin(self._user_id or self._account_id)
         headers = {"User-Agent": "sanshiliu/1.0"}
         if api_key and not self._official:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -140,7 +148,7 @@ class ILinkClient:
         body = dict(payload)
         body["base_info"] = {"channel_version": _CHANNEL_VERSION}
         body_bytes = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        headers = _official_headers(self._api_key, len(body_bytes))
+        headers = _official_headers(self._api_key, len(body_bytes), self._wechat_uin)
         try:
             response = await self._client.post(
                 f"/{endpoint}",
@@ -162,21 +170,32 @@ class ILinkClient:
         return parsed
 
 
-def _official_headers(token: str, content_length: int) -> dict[str, str]:
+def _official_headers(token: str, content_length: int, wechat_uin: str) -> dict[str, str]:
     return {
         "Content-Type": "application/json; charset=utf-8",
         "Content-Length": str(content_length),
         "AuthorizationType": "ilink_bot_token",
-        "X-WECHAT-UIN": _random_wechat_uin(),
+        "X-WECHAT-UIN": wechat_uin,
         "iLink-App-Id": _ILINK_APP_ID,
         "iLink-App-ClientVersion": _ILINK_APP_CLIENT_VERSION,
         "Authorization": f"Bearer {token}",
     }
 
 
+def _stable_wechat_uin(seed: str) -> str:
+    """从 account_id/user_id 生成稳定 32 位 UIN（base64 of digit string）。
+    iLink 用 X-WECHAT-UIN 关联 session；每次随机会被服务端视作不同客户端连接，
+    最终触发 errcode=-14 session timeout。
+    """
+    base = seed.strip() or "anonymous"
+    digest = hashlib.sha256(base.encode("utf-8")).digest()
+    value = int.from_bytes(digest[:4], "big") & 0xFFFF_FFFF
+    return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
+
+
+# 兼容旧调用点：保留旧函数名指向稳定版本（uuid 仍 import 用作 fallback）
 def _random_wechat_uin() -> str:
-    value = str(uuid.uuid4().int & 0xFFFF_FFFF)
-    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return _stable_wechat_uin(uuid.NAMESPACE_OID.hex)
 
 
 def _string_field(value: dict[str, Any], keys: tuple[str, ...]) -> str:

@@ -157,9 +157,16 @@ class WechatBot:
         )
 
     async def _ping_loop(self) -> None:
+        # 官方模式下 client.ping() 是 no-op 总返 True，盲写 "up" 会覆盖长轮询设的 "expired"
+        # 仅在本地 webhook 模式（有真实 ping 端点）下才主动探活
+        if self._client.official:
+            return
         while not self._stop.is_set():
             ok = await self._client.ping()
-            self._health.set("wechat", "up" if ok else "down")
+            # 不覆盖长轮询设的 expired/down；只在当前是 unknown 或同源 up/down 时更新
+            current = self._health.snapshot()["components"].get("wechat", "unknown")
+            if current not in ("expired", "down") or ok:
+                self._health.set("wechat", "up" if ok else "down")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=_PING_INTERVAL_SEC)
                 break

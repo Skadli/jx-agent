@@ -342,10 +342,21 @@ async def run_serve() -> int:
             print("wechat_enabled=true 但缺凭据；终止", file=sys.stderr)
             return 78
         if official_wechat:
+            # 从 wechat-account.json 取 user_id（若有），用作稳定 X-WECHAT-UIN 种子
+            _saved_user_id = ""
+            try:
+                if wechat_store.is_file():
+                    import json as _json
+                    _saved = _json.loads(wechat_store.read_text(encoding="utf-8"))
+                    if isinstance(_saved, dict):
+                        _saved_user_id = str(_saved.get("user_id") or "").strip()
+            except Exception:
+                _saved_user_id = ""
             client = ILinkClient(
                 base_url=settings.weixin_base_url,
                 api_key=settings.weixin_token.get_secret_value() if settings.weixin_token else None,
                 account_id=settings.weixin_account_id,
+                user_id=_saved_user_id,
                 timeout=max(settings.weixin_poll_timeout_ms / 1000 + 5, 10),
             )
         else:

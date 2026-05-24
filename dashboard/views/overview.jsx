@@ -201,7 +201,12 @@ function HealthCard({ health }) {
     { label: "Web",     status: comp.web === "up" ? "up" : "down",       value: comp.web || "?" },
     { label: "DB",      status: comp.db === "up" ? "up" : "down",        value: comp.db || "?" },
     { label: "LLM",     status: comp.llm === "up" ? "up" : (comp.llm === "unknown" ? "warn" : "down"), value: comp.llm || "?" },
-    { label: "微信",     status: comp.wechat === "up" ? "up" : (comp.wechat === "disabled" ? "off" : "warn"), value: comp.wechat || "?" },
+    { label: "微信",
+      status: comp.wechat === "up" ? "up"
+            : comp.wechat === "disabled" ? "off"
+            : comp.wechat === "expired" ? "down"
+            : "warn",
+      value: comp.wechat === "expired" ? "expired · 需重新扫码" : (comp.wechat || "?") },
   ];
   return (
     <div className="card">

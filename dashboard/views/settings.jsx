@@ -254,7 +254,22 @@ function WechatConnect({ data, onChanged }) {
   const [session, setSession]   = React.useState(null);  // {session_id, qr_data_url, status, ...}
   const [error, setError]       = React.useState("");
   const [starting, setStarting] = React.useState(false);
+  const [healthStatus, setHealthStatus] = React.useState(null);  // "up" | "expired" | "down" | ...
   const pollTimer = React.useRef(null);
+
+  // 拉一次健康状态判断 token 是否已过期
+  React.useEffect(() => {
+    let alive = true;
+    const ping = async () => {
+      const r = await API.get("/api/health");
+      if (!alive || r.error) return;
+      setHealthStatus(r.components?.wechat || null);
+    };
+    ping();
+    const id = setInterval(ping, 10000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+  const expired = connected && healthStatus === "expired";
 
   const stopPoll = React.useCallback(() => {
     if (pollTimer.current) {
@@ -306,18 +321,39 @@ function WechatConnect({ data, onChanged }) {
     return () => stopPoll();
   }, [stopPoll]);
 
-  // 当前连接状态展示
-  const statusBlock = connected ? (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-      <span className="chip chip-success chip-dot">已连接</span>
-      <span className="t-mono-sm" style={{ color: "var(--ink)" }}>{accountId}</span>
-    </div>
-  ) : (
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      <span className="chip chip-warning chip-dot">未连接</span>
-      <span className="t-meta" style={{ color: "var(--ink-60)" }}>点击下方按钮扫码登录</span>
-    </div>
-  );
+  // 当前连接状态展示：未连接 / 已连接 / 已过期
+  let statusBlock;
+  if (!connected) {
+    statusBlock = (
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span className="chip chip-warning chip-dot">未连接</span>
+        <span className="t-meta" style={{ color: "var(--ink-60)" }}>点击下方按钮扫码登录</span>
+      </div>
+    );
+  } else if (expired) {
+    statusBlock = (
+      <div style={{
+        padding: "10px 12px", background: "var(--danger-bg)", borderRadius: 8,
+        display: "flex", flexDirection: "column", gap: 6,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span className="chip chip-danger chip-dot">会话已过期</span>
+          <span className="t-mono-sm" style={{ color: "var(--ink)" }}>{accountId}</span>
+        </div>
+        <div className="t-meta" style={{ color: "var(--danger-fg)" }}>
+          iLink 返回 -14 session timeout —— token 已失效。请点击下方"重新扫码连接"重新登录；
+          保存后需要重启 <code className="t-mono">sanshiliu serve</code> 才能让新 token 生效。
+        </div>
+      </div>
+    );
+  } else {
+    statusBlock = (
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span className="chip chip-success chip-dot">已连接</span>
+        <span className="t-mono-sm" style={{ color: "var(--ink)" }}>{accountId}</span>
+      </div>
+    );
+  }
 
   // 没在扫码：展示状态 + 入口按钮
   if (!session) {
