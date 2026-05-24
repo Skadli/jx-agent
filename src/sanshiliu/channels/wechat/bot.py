@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 
 from sanshiliu.channels.web.handlers import HealthState
+from sanshiliu.channels.wechat.approvals import (
+    WechatApprovalBroker,
+    _current_wechat_user,
+)
 from sanshiliu.channels.wechat.ilink_client import ILinkClient
 from sanshiliu.channels.wechat.queue import QueueItem, WechatQueue
 from sanshiliu.channels.wechat.rate_limit import WechatRateLimiter
@@ -41,6 +45,7 @@ class WechatBot:
         safety: WechatSafety,
         health: HealthState,
         short_term: ShortTermMemory | None = None,
+        approval_broker: WechatApprovalBroker | None = None,
     ) -> None:
         self._db = db
         self._engine = engine
@@ -51,18 +56,30 @@ class WechatBot:
         self._safety = safety
         self._health = health
         self._short_term = short_term
+        self._approval_broker = approval_broker
         self._stop = asyncio.Event()
         self._consume_task: asyncio.Task[None] | None = None
         self._ping_task: asyncio.Task[None] | None = None
         self._session_cache: dict[str, Session] = {}
+        self._inflight: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         if self._consume_task is not None:
             return
         self._stop.clear()
+        # 让 broker 能用 client.send_text 发审批提示给用户
+        if self._approval_broker is not None:
+            self._approval_broker.bind_sender(self._send_to_user)
         self._consume_task = asyncio.create_task(self._consume_loop(), name="wechat-consume")
         self._ping_task = asyncio.create_task(self._ping_loop(), name="wechat-ping")
         _logger.info("wechat bot 启动", whitelist_size=self._whitelist.size)
+
+    async def _send_to_user(self, user_id: str, text: str) -> None:
+        """供 approval broker 向某用户单发文本；不落出站日志。"""
+        try:
+            await self._client.send_text(user_id, text)
+        except ChannelError as exc:
+            _logger.warning("wechat 审批提示发送失败", user_id=user_id, error=str(exc))
 
     async def stop(self, *, timeout: float = 5.0) -> None:
         self._stop.set()
@@ -88,7 +105,25 @@ class WechatBot:
             if item is None:
                 await self._queue.wait_until_stop(self._stop)
                 continue
-            await self._handle_one(item)
+
+            # 先看是不是审批回复（如 /同意 /拒绝），是则直接解决 broker future
+            # 不再当成新一轮对话送进引擎；否则后台 task 处理新消息
+            if (
+                self._approval_broker is not None
+                and self._approval_broker.try_consume(item.user_id, item.content)
+            ):
+                await self._queue.mark_done(item.id)
+                _logger.info(
+                    "wechat 审批回复已消费",
+                    user_id=item.user_id, item_id=item.id, content=item.content[:20],
+                )
+                continue
+
+            # 并行调度：handle_one 可能阻塞在 confirm() 上，sequential 会导致
+            # 后续审批回复无法被 consume_loop 看到 → 死锁
+            task = asyncio.create_task(self._handle_one(item))
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
 
     async def _handle_one(self, item: QueueItem) -> None:
         # 白名单：非白名单只 mark_done 不调 LLM 不回复（V-4）
@@ -110,8 +145,9 @@ class WechatBot:
             await self._queue.mark_done(item.id)
             return
 
-        # 跑引擎
+        # 跑引擎；contextvar 让 CompositeConfirmer 路由到 wechat broker
         session = self._session_cache.setdefault(item.session_id, self._build_session(item))
+        token = _current_wechat_user.set(item.user_id)
         try:
             msg = await self._engine.complete_turn(session, item.content)
             reply = msg.content or ""
@@ -124,6 +160,8 @@ class WechatBot:
             _logger.error("引擎处理 wechat 消息失败", item_id=item.id, error=str(exc))
             await self._queue.mark_failed(item.id, str(exc))
             return
+        finally:
+            _current_wechat_user.reset(token)
 
         # 输出安全：命中走 redacted 文案
         out_check = self._safety.check_output(reply)

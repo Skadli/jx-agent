@@ -16,18 +16,18 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 class Settings(BaseSettings):
     """全局配置容器。"""
 
-    # LLM 配置
+    # LLM 配置（默认值按国内可达后端 DeepSeek 设置；改 .env 可切到 OpenAI/GLM/Ollama 等）
     openai_api_key: SecretStr = Field(
         ...,
         description="OpenAI 兼容后端 API Key；缺则启动失败",
     )
     openai_base_url: str = Field(
-        default="https://api.openai.com/v1",
-        description="OpenAI 兼容后端 base URL；改此字段可切到 DeepSeek/GLM/Ollama 等",
+        default="https://api.deepseek.com",
+        description="OpenAI 兼容后端 base URL；国内默认 DeepSeek，海外可改成 https://api.openai.com/v1",
     )
     openai_model: str = Field(
-        default="gpt-4o-mini",
-        description="模型 ID；与 base_url 后端约定",
+        default="deepseek-chat",
+        description="模型 ID；与 base_url 后端约定（DeepSeek 稳定别名 deepseek-chat / deepseek-reasoner）",
     )
 
     # 运行时配置

@@ -69,13 +69,14 @@ python -m sanshiliu setup    # 可选：检测现有配置，并真调一次 LLM
 
 支持的 backend：
 
-| Backend | base_url | 推荐 model |
-|---------|----------|-----------|
-| OpenAI 官方 | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
-| OneAPI / OpenRouter | 自填 | 自填 |
-| Ollama 本地 | `http://localhost:11434/v1` | 视模型 |
+| Backend | base_url | 推荐 model | 国内可达 |
+|---------|----------|-----------|---------|
+| **DeepSeek（默认）** | `https://api.deepseek.com` | `deepseek-chat` | ✓ |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` | ✓ |
+| 阿里 通义 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | ✓ |
+| OneAPI / OpenRouter | 自填 | 自填 | 看后端 |
+| Ollama 本地 | `http://localhost:11434/v1` | 视模型 | ✓ |
+| OpenAI 官方 | `https://api.openai.com/v1` | `gpt-4o-mini` | 需翻墙 |
 
 ### 4. 跑起来
 
@@ -117,8 +118,9 @@ python -m sanshiliu [--version] <command>
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `OPENAI_API_KEY` | — | **必填**；缺则启动失败 |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI 兼容后端 |
-| `OPENAI_MODEL` | `gpt-4o-mini` | 模型 ID |
+| `OPENAI_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容后端；默认走 DeepSeek 国内可达 |
+| `OPENAI_MODEL` | `deepseek-chat` | 模型 ID |
+| `SANSHILIU_WEB_SEARCH_PROVIDER` | `auto` | 国内强制走 `sogou` 最稳；`auto` 会 Tavily→Sogou→DDG 链式 fallback |
 | `SANSHILIU_DATA_DIR` | `./data` | sqlite / 日志 / jsonl 落盘 |
 | `SANSHILIU_HOME_DIR` | `~/.sanshiliu` | 用户级目录（CLAUDE.md / memdir / settings.json） |
 | `SANSHILIU_PERSONA_DIR` | `./persona` | 人设 md 目录 |

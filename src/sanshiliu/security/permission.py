@@ -144,16 +144,18 @@ class PermissionManager:
             danger = _classify_bash(str(arguments.get("command") or ""))
 
         # 路径守卫：对 Read/Write 类先看 path 是否在默认黑名单
+        # path_guard_hit 后面 safe-auto 也要看：None 表示完全干净
+        path_guard_hit: str | None = None
         if self._path_guard is not None and tool_name in ("file_read", "file_write", "Read", "Write"):
             raw_path = str(arguments.get("path") or "")
-            hit = self._path_guard.check(raw_path)
-            if hit and hit != "out-of-cwd":
+            path_guard_hit = self._path_guard.check(raw_path)
+            if path_guard_hit and path_guard_hit != "out-of-cwd":
                 # 命中默认黑名单 → 直接拒绝
-                rule = f"path-guard:{hit}"
-                _logger.warning("权限拒绝（path-guard）", tool=tool_name, path=raw_path, rule=hit)
+                rule = f"path-guard:{path_guard_hit}"
+                _logger.warning("权限拒绝（path-guard）", tool=tool_name, path=raw_path, rule=path_guard_hit)
                 return PermissionDecision(
                     kind="deny", rule=rule, danger=danger,
-                    reason=f"路径 {raw_path} 命中安全黑名单 {hit}",
+                    reason=f"路径 {raw_path} 命中安全黑名单 {path_guard_hit}",
                 )
 
         settings = self._settings_loader.get()
@@ -182,10 +184,17 @@ class PermissionManager:
             return PermissionDecision(kind="deny", rule="session-cache", danger=danger,
                                       reason="本会话此前已拒绝同款调用")
 
-        # 3.5) 安全 bash 自动放行（仅 bash_classifier 判定为 safe 的只读/查询类）；
-        # deny / 显式 allow / 会话缓存仍优先，用户撤销也可以经 settings.deny 收回。
-        if tool_name in ("bash_exec", "Bash") and danger == "safe":
-            return PermissionDecision(kind="allow", rule="bash-safe-auto", danger=danger)
+        # 3.5) 安全工具自动放行；deny / 显式 allow / 会话缓存仍优先，
+        # 用户撤销也可以经 settings.deny 收回。覆盖范围：
+        #   - bash_exec：classifier 判定 safe（只读/查询类如 ls/git status/cat）
+        #   - web_search：纯查询公开 API，无副作用
+        #   - file_read：path_guard 完全 clean（在 cwd 且不命中系统黑名单）
+        if _is_auto_allowable(tool_name, danger, path_guard_hit):
+            rule_label = (
+                "bash-safe-auto" if tool_name in ("bash_exec", "Bash")
+                else f"{alias.lower()}-safe-auto"
+            )
+            return PermissionDecision(kind="allow", rule=rule_label, danger=danger)
 
         # 4) defaultMode
         if settings.default_mode == "allow":
@@ -284,6 +293,24 @@ class PermissionManager:
                 self._settings_loader.invalidate()
             except OSError as exc:
                 _logger.warning("settings.json 写入失败", error=str(exc), pattern=pattern)
+
+
+def _is_auto_allowable(
+    tool_name: str,
+    danger: DangerLevel | None,
+    path_guard_hit: str | None,
+) -> bool:
+    """无副作用 / 只读类工具自动放行的判定。"""
+    # 1. web_search 永远安全（纯查询）
+    if tool_name in ("web_search", "WebSearch"):
+        return True
+    # 2. bash_classifier 判 safe 的 bash
+    if tool_name in ("bash_exec", "Bash") and danger == "safe":
+        return True
+    # 3. file_read 在 cwd 内、没命中任何路径黑名单
+    if tool_name in ("file_read", "Read") and path_guard_hit is None:
+        return True
+    return False
 
 
 def _args_fingerprint(args: dict[str, Any]) -> str:

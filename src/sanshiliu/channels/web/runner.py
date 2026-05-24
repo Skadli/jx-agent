@@ -70,6 +70,10 @@ from sanshiliu.channels.web.static import (
     make_dashboard_handler,
     make_root_redirect_handler,
 )
+from sanshiliu.channels.wechat.approvals import (
+    WechatApprovalBroker,
+    WechatApprovalConfirmer,
+)
 from sanshiliu.channels.wechat.bot import WechatBot
 from sanshiliu.channels.wechat.ilink_client import ILinkClient
 from sanshiliu.channels.wechat.ilink_poller import ILinkLongPoller
@@ -91,6 +95,7 @@ from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
+from sanshiliu.security.composite_confirmer import CompositeConfirmer
 from sanshiliu.security.path_guard import PathGuard
 from sanshiliu.security.permission import PermissionManager
 from sanshiliu.security.settings_loader import SettingsLoader
@@ -140,8 +145,10 @@ async def run_serve() -> int:
         compact_threshold_ratio=settings.compact_threshold_ratio,
     )
     approval_broker = WebApprovalBroker()
+    wechat_approval_broker = WechatApprovalBroker()
 
-    # Phase 8：权限（web chat 通过 SSE + POST 做交互式工具审批）
+    # Phase 8：权限（web chat 通过 SSE + POST 做交互式工具审批；
+    # wechat 通过用户回复 /同意 /拒绝；CompositeConfirmer 根据当前 contextvar 路由）
     from pathlib import Path as _Path
 
     permission_manager: PermissionManager | None = None
@@ -157,7 +164,10 @@ async def run_serve() -> int:
             permission_manager = PermissionManager(
                 settings_loader=settings_loader,
                 path_guard=path_guard,
-                confirmer=WebApprovalConfirmer(approval_broker),
+                confirmer=CompositeConfirmer(
+                    web=WebApprovalConfirmer(approval_broker),
+                    wechat=WechatApprovalConfirmer(wechat_approval_broker),
+                ),
                 db=db,
             )
         except Exception as exc:
@@ -387,6 +397,7 @@ async def run_serve() -> int:
             safety=safety,
             health=health,
             short_term=short_term,
+            approval_broker=wechat_approval_broker,
         )
         if official_wechat:
             wechat_poller = ILinkLongPoller(
