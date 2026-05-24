@@ -1,4 +1,4 @@
-"""微信 bot 编排器；后台 poll 队列 → 白名单/限流/安全 → 引擎 → 发回。"""
+"""微信 bot 编排器；后台 poll 队列 → 白名单/安全 → 引擎 → 发回。"""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from sanshiliu.channels.wechat.approvals import (
 )
 from sanshiliu.channels.wechat.ilink_client import ILinkClient
 from sanshiliu.channels.wechat.queue import QueueItem, WechatQueue
-from sanshiliu.channels.wechat.rate_limit import WechatRateLimiter
 from sanshiliu.channels.wechat.safety import WechatSafety
 from sanshiliu.channels.wechat.whitelist import WechatWhitelist
+from sanshiliu.engine.commands import CommandContext, is_slash_command, try_dispatch
 from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
 from sanshiliu.foundation.errors import ChannelError
@@ -23,9 +23,6 @@ from sanshiliu.storage.db import Database
 
 _logger = get_logger(__name__)
 
-# 用户被限流后给的简短提示；客服话术非 LLM prompt
-_RATE_LIMIT_NOTICE_USER = "今天聊得有点多，明天再来找我吧。"
-_RATE_LIMIT_NOTICE_GLOBAL = "我现在有点忙不过来，稍等一两分钟再说。"
 # iLink 探活间隔；健康状态会写入 HealthState 给 /healthz 用
 _PING_INTERVAL_SEC = 30.0
 
@@ -41,7 +38,6 @@ class WechatBot:
         client: ILinkClient,
         queue: WechatQueue,
         whitelist: WechatWhitelist,
-        rate_limiter: WechatRateLimiter,
         safety: WechatSafety,
         health: HealthState,
         short_term: ShortTermMemory | None = None,
@@ -52,7 +48,6 @@ class WechatBot:
         self._client = client
         self._queue = queue
         self._whitelist = whitelist
-        self._rate_limiter = rate_limiter
         self._safety = safety
         self._health = health
         self._short_term = short_term
@@ -164,16 +159,22 @@ class WechatBot:
             await self._queue.mark_done(item.id)
             return
 
-        # 限流：日额超走 user 提示，分钟额超走 global 提示
-        decision = await self._rate_limiter.take(item.user_id)
-        if not decision.allowed:
-            notice = _RATE_LIMIT_NOTICE_USER if decision.reason == "user_quota" else _RATE_LIMIT_NOTICE_GLOBAL
-            await self._send_safe(item, notice)
-            await self._queue.mark_done(item.id)
-            return
+        # slash 命令短路（/new /compact /help ...）：不走 LLM，直接回 reply
+        session = self._session_cache.setdefault(item.session_id, self._build_session(item))
+        if is_slash_command(item.content):
+            cmd_ctx = CommandContext(session=session, engine=self._engine, channel="wechat")
+            result = await try_dispatch(item.content, cmd_ctx)
+            if result is not None:
+                await self._send_safe(item, result.reply)
+                if self._short_term is not None:
+                    try:
+                        await self._short_term.snapshot(session)
+                    except Exception as exc:
+                        _logger.warning("wechat 命令后 snapshot 失败", item_id=item.id, error=str(exc))
+                await self._queue.mark_done(item.id)
+                return
 
         # 跑引擎；contextvar 让 CompositeConfirmer 路由到 wechat broker
-        session = self._session_cache.setdefault(item.session_id, self._build_session(item))
         token = _current_wechat_user.set(item.user_id)
         try:
             msg = await self._engine.complete_turn(session, item.content)

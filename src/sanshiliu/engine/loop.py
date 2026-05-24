@@ -108,15 +108,17 @@ class ConversationEngine:
         session.memory_block_text = "\n\n---\n\n".join(parts) if parts else ""
 
     def _refresh_skills(self, session: Session, user_text: str) -> None:
-        """根据本轮用户输入激活 skills；空 activator 时清空避免上轮残留。"""
+        """注入 skills listing 到 system prompt；和 Claude Code 一致——
+        listing 只给 name+description，正文由 LLM 主动调 Skill 工具拿。
+        user_text 仅作签名兼容，listing 不再做关键字预匹配。"""
+        del user_text  # 显式标记不用，避免静态检查警告
         if self._skill_activator is None:
             session.active_skills_text = ""
             return
         try:
-            actives = self._skill_activator.activate_for(user_text)
-            session.active_skills_text = self._skill_activator.to_prompt_addition(actives)
+            session.active_skills_text = self._skill_activator.list_for_prompt()
         except Exception as exc:
-            _logger.error("skill 激活失败（保留旧 actives）", error=str(exc))
+            _logger.error("skill listing 构造失败（保留旧 listing）", error=str(exc))
 
     async def _maybe_compact(self, session: Session) -> None:
         if self._context_manager is None:
@@ -242,6 +244,11 @@ class ConversationEngine:
                     tool_call_id=tc.id,
                     name=tc.name,
                 ))
+
+            # 下一轮 LLM 调用前再压一次：折叠超长 tool_result + 超阈值时整段 compact。
+            # 与 Claude Code 在 tool 循环内做 microcompact 的策略一致；
+            # 上一轮的 record_usage 已刷新 last_prompt_tokens，阈值判定能正确触发。
+            await self._maybe_compact(session)
 
     async def _refresh_budget_from_db(self, session: Session) -> None:
         """流式路径下 budget 靠 DB 反查 llm_calls 最近一行；过滤 compact-internal 通道。"""

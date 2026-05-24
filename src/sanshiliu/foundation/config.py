@@ -168,26 +168,6 @@ class Settings(BaseSettings):
         ),
         description="逗号分隔的输出关键词；命中则替换为话术",
     )
-    wechat_rate_per_user_per_day: int = Field(
-        default=30,
-        ge=1,
-        le=10_000,
-        validation_alias=AliasChoices(
-            "wechat_rate_per_user_per_day",
-            "SANSHILIU_WECHAT_RATE_PER_USER_PER_DAY",
-        ),
-        description="单用户每日额度；超过收冷却提示",
-    )
-    wechat_rate_global_per_minute: int = Field(
-        default=2,
-        ge=1,
-        le=1_000,
-        validation_alias=AliasChoices(
-            "wechat_rate_global_per_minute",
-            "SANSHILIU_WECHAT_RATE_GLOBAL_PER_MINUTE",
-        ),
-        description="全局每分钟额度；保护后端突发流量",
-    )
 
     # Phase 5 工具配置
     tools_enabled: bool = Field(

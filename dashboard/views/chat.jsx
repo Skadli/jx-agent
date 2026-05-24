@@ -309,7 +309,7 @@ function Chat() {
                     background: "transparent", fontFamily: "var(--font-mono)",
                     fontSize: 14, lineHeight: 1.5, color: "var(--ink)", padding: "4px 0",
                   }}
-                  placeholder="说人话，Enter 发送，Shift+Enter 换行"
+                  placeholder="说人话，Enter 发送 / Shift+Enter 换行 / 输入 /help 看可用命令"
                   value={composer}
                   onChange={e => setComposer(e.target.value)}
                   onKeyDown={handleComposerKeyDown}

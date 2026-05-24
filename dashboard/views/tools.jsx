@@ -39,8 +39,8 @@ function Tools({ onJump }) {
     return acc;
   }, {});
 
-  // 每页 10 条 + 分页：数据刷新后若当前页超出范围自动收回
-  const PAGE_SIZE = 10;
+  // 每页 5 条 + 分页：数据刷新后若当前页超出范围自动收回
+  const PAGE_SIZE = 5;
   const totalPages = Math.max(1, Math.ceil(calls.length / PAGE_SIZE));
   React.useEffect(() => {
     if (page > totalPages) setPage(totalPages);

@@ -63,14 +63,6 @@ CREATE TABLE IF NOT EXISTS wechat_ilink_seen (
 );
 CREATE INDEX IF NOT EXISTS idx_wechat_ilink_seen_ts ON wechat_ilink_seen(ts);
 
--- 限流计数器，Phase 4 用
-CREATE TABLE IF NOT EXISTS rate_limit_counters (
-    scope         TEXT    NOT NULL,           -- user:<wxid> / global / channel:wechat
-    window_start  INTEGER NOT NULL,           -- 时间窗起点 unix sec
-    count         INTEGER NOT NULL,
-    PRIMARY KEY (scope, window_start)
-);
-
 -- 权限决策，Phase 8 用
 CREATE TABLE IF NOT EXISTS permission_decisions (
     id           INTEGER PRIMARY KEY,

@@ -233,7 +233,7 @@ jx-agent/
 │   ├── tools/                 # L7：dispatcher + registry + builtin（web_search/file_io/bash）
 │   ├── security/              # L8：settings.json + permission 状态机 + bash classifier + path guard + ReplConfirmer
 │   │
-│   ├── channels/              # L9：REPL / wechat (iLink + webhook + queue + 限流 + 黑名单) / web (server + SSE + routes)
+│   ├── channels/              # L9：REPL / wechat (iLink + webhook + queue + 黑名单) / web (server + SSE + routes)
 │   ├── bootstrap/             # L1：preflight + install + setup_wizard + banner + wire(App)
 │   └── observability/         # healthz / metrics（含在 web/handlers 里）
 │

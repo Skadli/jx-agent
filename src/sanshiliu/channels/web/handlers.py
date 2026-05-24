@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from sanshiliu.channels.web.approvals import WebApprovalBroker
 from sanshiliu.channels.web.sse import format_event, safe_write
 from sanshiliu.context.manager import ContextManager
+from sanshiliu.engine.commands import CommandContext, is_slash_command, try_dispatch
 from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
 from sanshiliu.foundation.logging import get_logger
@@ -142,7 +143,23 @@ def make_chat_handler(
                     lambda payload: sse_q.put((APPROVAL, payload))
                 )
             try:
-                async for delta in engine.stream_turn(session, question.strip()):
+                # slash 命令短路：不走 LLM，直接回 reply
+                q = question.strip()
+                if is_slash_command(q):
+                    cmd_ctx = CommandContext(session=session, engine=engine, channel="web")
+                    result = await try_dispatch(q, cmd_ctx)
+                    if result is not None:
+                        sse_q.put(result.reply)
+                        # 也写一次 snapshot，让 dashboard 历史能反映 /new 清空、/compact 摘要等结果
+                        if short_term is not None:
+                            try:
+                                await short_term.snapshot(session)
+                            except Exception as exc:
+                                _logger.warning("snapshot 失败（不阻塞）", error=str(exc))
+                        sse_q.put(SENTINEL)
+                        return
+
+                async for delta in engine.stream_turn(session, q):
                     sse_q.put(delta.text)
                 # 落 jsonl 用于回放和 dashboard 历史展示
                 if short_term is not None:

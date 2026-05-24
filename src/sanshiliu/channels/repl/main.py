@@ -10,6 +10,7 @@ from typing import NoReturn
 from sanshiliu import __version__
 from sanshiliu.context.manager import ContextManager
 from sanshiliu.context.prompts import load_compact_prompts
+from sanshiliu.engine.commands import CommandContext, COMMANDS_META, try_dispatch
 from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
 from sanshiliu.foundation.config import get_settings
@@ -122,15 +123,19 @@ def _print_memory(
 
 
 def _print_help() -> None:
-    print(
-        "── 命令 ──\n"
-        "  /quit /exit  退出\n"
-        "  /stats       会话 token / budget / compact 汇总\n"
-        "  /persona     当前人设文件状态\n"
-        "  /memory      长期记忆（CLAUDE.md + memdir）状态\n"
-        "  /help        显示本帮助\n"
-        "  其他输入     发给 agent\n"
-    )
+    lines = [
+        "── 命令 ──",
+        "  /quit /exit  退出",
+        "  /stats       会话 token / budget / compact 汇总",
+        "  /persona     当前人设文件状态",
+        "  /memory      长期记忆（CLAUDE.md + memdir）状态",
+    ]
+    # 共享 slash 命令（/new /compact /help 等），从注册表自动拉取
+    for name in sorted(COMMANDS_META):
+        _, doc = COMMANDS_META[name]
+        lines.append(f"  /{name:<10s} {doc}")
+    lines.append("  其它输入     发给 agent")
+    print("\n".join(lines) + "\n")
 
 
 async def run_repl() -> int:
@@ -195,21 +200,7 @@ async def run_repl() -> int:
         except Exception as exc:
             print(f"权限管理加载失败（继续无权限审批）：{exc}", file=sys.stderr)
 
-    # Phase 5：tool 栈（默认开；用户可在 .env 关）
-    tool_registry = None
-    tool_dispatcher = None
-    if settings.tools_enabled:
-        try:
-            tool_registry, tool_dispatcher = build_tool_stack(
-                prompts_dir=settings.prompts_dir,
-                cwd_root=Path.cwd(),
-                tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
-                permission=permission_manager,
-            )
-        except ConfigError as exc:
-            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
-
-    # Phase 6：skills 加载 + activator
+    # Phase 6：skills 加载 + activator（先于工具栈构造；工具栈用 activator 暴露 Skill 工具）
     skill_activator: SkillActivator | None = None
     if settings.skills_enabled:
         try:
@@ -220,6 +211,22 @@ async def run_repl() -> int:
                 _logger.info("skills 已注册", ids=[s.id for s in skills])
         except Exception as exc:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
+
+    # Phase 5：tool 栈（默认开；用户可在 .env 关）
+    tool_registry = None
+    tool_dispatcher = None
+    if settings.tools_enabled:
+        try:
+            tool_registry, tool_dispatcher = build_tool_stack(
+                prompts_dir=settings.prompts_dir,
+                cwd_root=Path.cwd(),
+                tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
+                permission=permission_manager,
+                skill_activator=skill_activator,
+                db=db,
+            )
+        except ConfigError as exc:
+            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
 
     # Phase 7：长期记忆（CLAUDE.md + memdir + auto-extract）
     claudemd_loader: ClaudeMdLoader | None = None
@@ -321,6 +328,19 @@ async def run_repl() -> int:
             if cmd == "/help":
                 _print_help()
                 continue
+
+            # 共享 slash 命令（/new /compact ...）；命中就 print reply 不走 LLM
+            if user_input.startswith("/"):
+                cmd_ctx = CommandContext(session=session, engine=engine, channel="repl")
+                result = await try_dispatch(user_input, cmd_ctx)
+                if result is not None:
+                    print(result.reply)
+                    if short_term is not None:
+                        try:
+                            await short_term.snapshot(session)
+                        except Exception as exc:
+                            _logger.warning("REPL 命令后 snapshot 失败", error=str(exc))
+                    continue
 
             print("\n贱笑> ", end="", flush=True)
             try:

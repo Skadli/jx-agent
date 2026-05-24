@@ -78,7 +78,6 @@ from sanshiliu.channels.wechat.bot import WechatBot
 from sanshiliu.channels.wechat.ilink_client import ILinkClient
 from sanshiliu.channels.wechat.ilink_poller import ILinkLongPoller
 from sanshiliu.channels.wechat.queue import WechatQueue
-from sanshiliu.channels.wechat.rate_limit import WechatRateLimiter
 from sanshiliu.channels.wechat.safety import WechatSafety
 from sanshiliu.channels.wechat.webhook import WechatWebhookProcessor
 from sanshiliu.channels.wechat.whitelist import WechatWhitelist
@@ -174,23 +173,7 @@ async def run_serve() -> int:
             print(f"权限管理加载失败（继续无权限审批）：{exc}", file=sys.stderr)
             settings_loader = None
 
-    # Phase 5：tool 栈
-    tool_registry = None
-    tool_dispatcher = None
-    if settings.tools_enabled:
-        try:
-            tool_registry, tool_dispatcher = build_tool_stack(
-                prompts_dir=settings.prompts_dir,
-                cwd_root=_Path.cwd(),
-                tavily_api_key=settings.tavily_api_key.get_secret_value()
-                if settings.tavily_api_key
-                else None,
-                permission=permission_manager,
-            )
-        except ConfigError as exc:
-            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
-
-    # Phase 6：skills
+    # Phase 6：skills（先于工具栈构造；工具栈把 Skill 暴露给 LLM 时需要 activator）
     skill_activator: SkillActivator | None = None
     skill_loader: SkillLoader | None = None
     if settings.skills_enabled:
@@ -203,6 +186,24 @@ async def run_serve() -> int:
         except Exception as exc:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
             skill_loader = None
+
+    # Phase 5：tool 栈
+    tool_registry = None
+    tool_dispatcher = None
+    if settings.tools_enabled:
+        try:
+            tool_registry, tool_dispatcher = build_tool_stack(
+                prompts_dir=settings.prompts_dir,
+                cwd_root=_Path.cwd(),
+                tavily_api_key=settings.tavily_api_key.get_secret_value()
+                if settings.tavily_api_key
+                else None,
+                permission=permission_manager,
+                skill_activator=skill_activator,
+                db=db,
+            )
+        except ConfigError as exc:
+            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
 
     # Phase 7：长期记忆（CLAUDE.md + memdir + auto-extract）
     claudemd_loader: ClaudeMdLoader | None = None
@@ -378,11 +379,6 @@ async def run_serve() -> int:
             )
         queue = WechatQueue(db)
         whitelist = WechatWhitelist.from_csv(settings.wechat_whitelist)
-        rate_limiter = WechatRateLimiter(
-            db,
-            per_user_per_day=settings.wechat_rate_per_user_per_day,
-            global_per_minute=settings.wechat_rate_global_per_minute,
-        )
         safety = WechatSafety(
             input_blacklist=settings.wechat_input_blacklist.split(","),
             output_blacklist=settings.wechat_output_blacklist.split(","),
@@ -393,7 +389,6 @@ async def run_serve() -> int:
             client=client,
             queue=queue,
             whitelist=whitelist,
-            rate_limiter=rate_limiter,
             safety=safety,
             health=health,
             short_term=short_term,

@@ -128,23 +128,7 @@ async def build_app(
         except Exception as exc:
             _logger.warning("权限管理装配失败（继续不带审批）", error=str(exc))
 
-    # L7 工具
-    tool_registry: ToolRegistry | None = None
-    tool_dispatcher: ToolDispatcher | None = None
-    if settings.tools_enabled:
-        try:
-            tool_registry, tool_dispatcher = build_tool_stack(
-                prompts_dir=settings.prompts_dir, cwd_root=cwd_root,
-                tavily_api_key=(
-                    settings.tavily_api_key.get_secret_value()
-                    if settings.tavily_api_key else None
-                ),
-                permission=permission_manager,
-            )
-        except ConfigError as exc:
-            _logger.warning("工具栈加载失败（继续不带工具）", error=str(exc))
-
-    # L6 skills
+    # L6 skills（先于 L7 工具构造，工具栈把 Skill 暴露给 LLM 时需要 activator）
     skill_loader: SkillLoader | None = None
     skill_activator: SkillActivator | None = None
     if settings.skills_enabled:
@@ -157,6 +141,24 @@ async def build_app(
                 skill_activator = SkillActivator(skill_loader)
         except Exception as exc:
             _logger.warning("skills 加载失败（继续不带 skills）", error=str(exc))
+
+    # L7 工具
+    tool_registry: ToolRegistry | None = None
+    tool_dispatcher: ToolDispatcher | None = None
+    if settings.tools_enabled:
+        try:
+            tool_registry, tool_dispatcher = build_tool_stack(
+                prompts_dir=settings.prompts_dir, cwd_root=cwd_root,
+                tavily_api_key=(
+                    settings.tavily_api_key.get_secret_value()
+                    if settings.tavily_api_key else None
+                ),
+                permission=permission_manager,
+                skill_activator=skill_activator,
+                db=db,
+            )
+        except ConfigError as exc:
+            _logger.warning("工具栈加载失败（继续不带工具）", error=str(exc))
 
     # L5 长期记忆
     claudemd_loader: ClaudeMdLoader | None = None

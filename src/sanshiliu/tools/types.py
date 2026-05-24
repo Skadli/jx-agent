@@ -56,20 +56,44 @@ class ToolResult:
         }
 
 
+def _check_required_fields(args: dict[str, Any], schema: dict[str, Any]) -> str | None:
+    """默认 validate 实现：检查 input_schema.required 中的字段都在 args 里。
+    工具自定义 validate 时可调用本函数复用默认行为，再叠加自身逻辑。"""
+    required = schema.get("required") or []
+    missing = [k for k in required if k not in args]
+    if missing:
+        return f"参数缺失：{', '.join(missing)}"
+    return None
+
+
 @runtime_checkable
 class Tool(Protocol):
-    """工具协议；所有内置/外置工具实现此协议。"""
+    """工具协议；所有内置/外置工具实现此协议。
+
+    `validate` 在权限检查 + execute 之前由 dispatcher 调用，None=通过，错误描述=失败；
+    把校验从 dispatcher 拉到工具自身（与 Claude Code SkillTool.validateInput 对齐），
+    每个工具可以表达自己的前置约束（比如 Skill 工具检查 id 已注册）。
+
+    session_id 是为审计写库（如 Skill 工具写 skill_activations）准备的；
+    无状态工具（bash / file_io / web_search）可忽略。
+    """
 
     @property
     def definition(self) -> ToolDef: ...
 
-    async def execute(self, args: dict[str, Any]) -> ToolResult: ...
+    async def validate(self, args: dict[str, Any]) -> str | None: ...
+
+    async def execute(self, args: dict[str, Any], *, session_id: str = "") -> ToolResult: ...
 
 
 # 工具执行包装：让函数式工具也能套进 Tool 协议
 @dataclass
 class FunctionTool:
-    """把一个 async 函数包成 Tool；与 ToolDef 解耦。"""
+    """把一个 async 函数包成 Tool；与 ToolDef 解耦。
+
+    `_fn` 不感知 session_id —— 接口上接但忽略，避免逐个修内置工具签名。
+    `validate` 走默认 required-field 检查；需要自定义校验的工具应实现独立类，不走本包装。
+    """
 
     _def: ToolDef
     _fn: Callable[[dict[str, Any]], Awaitable[ToolResult]]
@@ -78,7 +102,10 @@ class FunctionTool:
     def definition(self) -> ToolDef:
         return self._def
 
-    async def execute(self, args: dict[str, Any]) -> ToolResult:
+    async def validate(self, args: dict[str, Any]) -> str | None:
+        return _check_required_fields(args, self._def.input_schema)
+
+    async def execute(self, args: dict[str, Any], *, session_id: str = "") -> ToolResult:
         return await self._fn(args)
 
 

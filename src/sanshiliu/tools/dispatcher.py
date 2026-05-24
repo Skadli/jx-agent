@@ -32,12 +32,6 @@ def parse_tool_calls(raw: list[dict[str, Any]]) -> list[ToolCall]:
     return out
 
 
-def _validate_required(args: dict[str, Any], schema: dict[str, Any]) -> list[str]:
-    """极简 required 字段校验；不做完整 JSON Schema 验证。"""
-    required = schema.get("required") or []
-    return [k for k in required if k not in args]
-
-
 class ToolDispatcher:
     """注册表 + 安全壳；每次 execute 把异常变成 ToolResult(is_error=True)。"""
 
@@ -57,11 +51,19 @@ class ToolDispatcher:
                 content=f"未知工具：{call.name}", is_error=True,
             )
 
-        missing = _validate_required(call.arguments, tool.definition.input_schema)
-        if missing:
+        # 工具自我校验（Claude Code SkillTool.validateInput 等价）；
+        # 在权限检查 + execute 之前；不通过则尽早返错，省去无谓的审批弹窗。
+        try:
+            verr = await tool.validate(call.arguments)
+        except Exception as exc:
+            _logger.exception("工具 validate 抛异常", tool=call.name)
             return ToolResult(
                 call_id=call.id, name=call.name,
-                content=f"参数缺失：{', '.join(missing)}", is_error=True,
+                content=f"validate 异常 {type(exc).__name__}: {exc}", is_error=True,
+            )
+        if verr:
+            return ToolResult(
+                call_id=call.id, name=call.name, content=verr, is_error=True,
             )
 
         # Phase 8：权限审批；deny 直接出错；allow 继续
@@ -80,7 +82,7 @@ class ToolDispatcher:
                 )
 
         try:
-            result = await tool.execute(call.arguments)
+            result = await tool.execute(call.arguments, session_id=session_id)
         except Exception as exc:
             _logger.exception("工具执行异常", tool=call.name)
             return ToolResult(

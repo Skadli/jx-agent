@@ -6,10 +6,13 @@ from pathlib import Path
 
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.security.permission import PermissionManager
+from sanshiliu.skills.activator import SkillActivator
+from sanshiliu.storage.db import Database
 from sanshiliu.tools.builtin import (
     build_bash_exec_tool,
     build_file_read_tool,
     build_file_write_tool,
+    build_skill_tool,
     build_web_search_tool,
 )
 from sanshiliu.tools.dispatcher import ToolDispatcher
@@ -24,8 +27,13 @@ def build_tool_stack(
     cwd_root: Path,
     tavily_api_key: str | None = None,
     permission: PermissionManager | None = None,
+    skill_activator: SkillActivator | None = None,
+    db: Database | None = None,
 ) -> tuple[ToolRegistry, ToolDispatcher]:
-    """从 prompts/tools/ 加载描述 + 绑定内置 executor；缺描述文件抛 ConfigError。"""
+    """从 prompts/tools/ 加载描述 + 绑定内置 executor；缺描述文件抛 ConfigError。
+
+    Skill 工具仅在 skill_activator 非空时注册；prompts/tools/skill.md 缺失则跳过。
+    """
     defs = load_tool_definitions(prompts_dir / "tools")
     registry = ToolRegistry()
 
@@ -35,6 +43,8 @@ def build_tool_stack(
         "file_write": lambda d: build_file_write_tool(d, cwd_root),
         "bash_exec": lambda d: build_bash_exec_tool(d, cwd=str(cwd_root)),
     }
+    if skill_activator is not None:
+        builders["Skill"] = lambda d: build_skill_tool(d, skill_activator, db)
     for name, definition in defs.items():
         if name not in builders:
             _logger.warning("跳过未知工具", name=name)

@@ -253,7 +253,9 @@ def make_session_messages_handler(
             if len(parts) < 4 or parts[3] != "messages":
                 _write_json(req, {"error": "bad path"}, status=400)
                 return
-            session_id = parts[2]
+            # wechat session_id 形如 "wechat:user:o9...@im.wechat"，前端 encodeURIComponent
+            # 后变成 %3A / %40 等；必须先 unquote，否则 sanitize 出的文件名与写入端不一致 → 永远空数组
+            session_id = urllib.parse.unquote(parts[2])
             safe = "".join(c for c in session_id if c.isalnum() or c in "-_")[:120]
             path = data_dir / "sessions" / f"{safe}.jsonl"
             messages: list[dict[str, Any]] = []
@@ -378,7 +380,8 @@ def make_persona_file_handler(
             if len(parts) < 3:
                 _write_json(req, {"error": "bad path"}, status=400)
                 return
-            fname = parts[2]
+            # 与 write handler 保持一致：unquote URL-encoded segment
+            fname = urllib.parse.unquote(parts[2])
             # 安全：只允许 .md
             if not fname.endswith(".md") or "/" in fname or ".." in fname:
                 _write_json(req, {"error": "invalid filename"}, status=400)
