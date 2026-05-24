@@ -62,6 +62,9 @@ class WechatBot:
         self._ping_task: asyncio.Task[None] | None = None
         self._session_cache: dict[str, Session] = {}
         self._inflight: set[asyncio.Task[None]] = set()
+        # 已 spawn 但未 mark_done 的 item.id；防止 consume_loop 在 mark_done 写库前
+        # 反复捞到同一条消息触发 N 个并发 handle_one（曾导致 200+ 限流刷屏 + iLink -2 风暴）
+        self._claimed_item_ids: set[int] = set()
 
     async def start(self) -> None:
         if self._consume_task is not None:
@@ -106,6 +109,12 @@ class WechatBot:
                 await self._queue.wait_until_stop(self._stop)
                 continue
 
+            # 已 spawn 处理中 → 跳过，避免在 mark_done 写库前重复 fetch 同一条
+            # 短暂 sleep 避让 CPU 自旋；新消息进来时 wait_until_stop 自然 wake
+            if item.id in self._claimed_item_ids:
+                await self._queue.wait_until_stop(self._stop)
+                continue
+
             # 先看是不是审批回复（如 /同意 /拒绝），是则直接解决 broker future
             # 不再当成新一轮对话送进引擎；否则后台 task 处理新消息
             if (
@@ -121,11 +130,29 @@ class WechatBot:
 
             # 并行调度：handle_one 可能阻塞在 confirm() 上，sequential 会导致
             # 后续审批回复无法被 consume_loop 看到 → 死锁
+            # 先 claim 再 spawn；handle_one 写完 mark_done 后由 done_callback 释放
+            self._claimed_item_ids.add(item.id)
             task = asyncio.create_task(self._handle_one(item))
             self._inflight.add(task)
-            task.add_done_callback(self._inflight.discard)
+            item_id = item.id
+            def _release(t: asyncio.Task[None], iid: int = item_id) -> None:
+                self._inflight.discard(t)
+                self._claimed_item_ids.discard(iid)
+            task.add_done_callback(_release)
 
     async def _handle_one(self, item: QueueItem) -> None:
+        # fail-safe：未捕获异常也要把 item 推进到 processed != 0，否则 fetch_next
+        # 会一直返回它 → done_callback 释放 claim → consume_loop 再次 spawn → 无限循环
+        try:
+            await self._handle_one_inner(item)
+        except Exception as exc:
+            _logger.exception("wechat handle_one 未捕获异常", item_id=item.id, error=str(exc))
+            try:
+                await self._queue.mark_failed(item.id, f"unhandled: {type(exc).__name__}: {exc}")
+            except Exception as mark_exc:
+                _logger.error("mark_failed 也失败", item_id=item.id, error=str(mark_exc))
+
+    async def _handle_one_inner(self, item: QueueItem) -> None:
         # 白名单：非白名单只 mark_done 不调 LLM 不回复（V-4）
         if not self._whitelist.allows(item.user_id):
             await self._queue.mark_done(item.id)
