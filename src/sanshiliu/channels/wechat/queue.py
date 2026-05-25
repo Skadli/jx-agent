@@ -31,16 +31,36 @@ class WechatQueue:
         self._db = db
         self._poll_interval = poll_interval
 
-    async def fetch_next(self) -> QueueItem | None:
-        """拉一条最旧的未处理消息；无则返 None。"""
-        cur = await self._db._execute(
-            """
-            SELECT id, ts, session_id, user_id, group_id, content, msg_type
-            FROM channel_messages
-            WHERE channel = 'wechat' AND direction = 'in' AND processed = 0
-            ORDER BY id ASC LIMIT 1
-            """,
-        )
+    async def fetch_next(
+        self, *, exclude_ids: set[int] | None = None,
+    ) -> QueueItem | None:
+        """拉一条最旧的未处理消息；exclude_ids 中的不返回（用来跳过当前 in-flight 的）。
+
+        SQL 直接做排除是必要的：consume_loop 并发派发 handle_one 后，那条消息的
+        processed 仍是 0（mark_done 在 handle_one 收尾才写库），如果 fetch_next 还
+        拿同一条，新到的审批回复永远捞不到 → 死锁。
+        """
+        if exclude_ids:
+            placeholders = ",".join("?" for _ in exclude_ids)
+            cur = await self._db._execute(
+                f"""
+                SELECT id, ts, session_id, user_id, group_id, content, msg_type
+                FROM channel_messages
+                WHERE channel = 'wechat' AND direction = 'in' AND processed = 0
+                  AND id NOT IN ({placeholders})
+                ORDER BY id ASC LIMIT 1
+                """,
+                tuple(exclude_ids),
+            )
+        else:
+            cur = await self._db._execute(
+                """
+                SELECT id, ts, session_id, user_id, group_id, content, msg_type
+                FROM channel_messages
+                WHERE channel = 'wechat' AND direction = 'in' AND processed = 0
+                ORDER BY id ASC LIMIT 1
+                """,
+            )
         row = cur.fetchone()
         if row is None:
             return None

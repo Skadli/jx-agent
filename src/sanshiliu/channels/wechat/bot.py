@@ -95,18 +95,17 @@ class WechatBot:
     async def _consume_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                item = await self._queue.fetch_next()
+                # 排除已派发但未 mark_done 的，让 fetch_next 跳到 next-newer
+                # 否则当 handle_one 阻塞在 confirm 上时，fetch_next 永远返这条
+                # 在途消息 → 后续审批回复永远捞不到 → 死锁
+                item = await self._queue.fetch_next(
+                    exclude_ids=set(self._claimed_item_ids),
+                )
             except Exception as exc:
                 _logger.error("拉取队列失败", error=str(exc))
                 await self._queue.wait_until_stop(self._stop)
                 continue
             if item is None:
-                await self._queue.wait_until_stop(self._stop)
-                continue
-
-            # 已 spawn 处理中 → 跳过，避免在 mark_done 写库前重复 fetch 同一条
-            # 短暂 sleep 避让 CPU 自旋；新消息进来时 wait_until_stop 自然 wake
-            if item.id in self._claimed_item_ids:
                 await self._queue.wait_until_stop(self._stop)
                 continue
 

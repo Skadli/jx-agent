@@ -25,7 +25,8 @@ from sanshiliu.tools.types import ToolLoopState
 _logger = get_logger(__name__)
 
 # 同一 (name, args) 触发 dedupe 的次数；> 此值的同一调用拒绝执行
-_DEDUPE_THRESHOLD = 4
+# fail-fast：相同调用第 3 次直接拒（前 2 次允许，第 3 次返"重复"错误）
+_DEDUPE_THRESHOLD = 2
 
 
 class ConversationEngine:
@@ -173,7 +174,7 @@ class ConversationEngine:
         session.add_user(user_text)
         await self._touch_session(session)
 
-        loop_state = ToolLoopState(max_turns=10)
+        loop_state = ToolLoopState(max_turns=6)
         while True:
             loop_state.turn += 1
             if loop_state.turn > loop_state.max_turns:

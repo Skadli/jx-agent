@@ -241,8 +241,10 @@ function ResponsiveTable({
   }
 
   return (
-    <div ref={wrapRef} style={{ overflow: "auto" }}>
-      <table className="tbl">
+    <div ref={wrapRef} style={{ overflow: "hidden" }}>
+      {/* tableLayout: fixed —— 未设 width 的列共享剩余空间，超长内容由 td overflow:hidden 截断；
+          auto 模式下超长 JSON 会撑开列宽 → 整表 > 容器 → 横向滚动条。 */}
+      <table className="tbl" style={{ tableLayout: "fixed" }}>
         <thead>
           <tr>
             {columns.map(col => (
@@ -269,6 +271,9 @@ function ResponsiveTable({
                   <td key={col.key} style={{
                     textAlign: col.align || "left",
                     fontFamily: col.mono ? "var(--font-mono)" : undefined,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}>
                     {col.render ? col.render(row) : row[col.key]}
                   </td>
