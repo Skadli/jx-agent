@@ -206,13 +206,29 @@ class Settings(BaseSettings):
         description="单张图解码后字节上限；默认 5MB",
     )
     wechat_merge_window_ms: int = Field(
-        default=5_000,
-        ge=500,
+        default=0,
+        ge=0,
         le=60_000,
         validation_alias=AliasChoices(
             "wechat_merge_window_ms", "SANSHILIU_WECHAT_MERGE_WINDOW_MS",
         ),
-        description="wechat 多条消息静默合并窗口；最后一条 N ms 内无新消息才触发 LLM",
+        description=(
+            "wechat 静默合并窗口（默认 0 = 不等）；适用于纯文本、图文齐备、视频/文件等"
+            "完整 batch——下个 poll 周期立即触发 LLM。"
+            "只有【图已到但未配文字】的特殊情况走 wechat_merge_window_media_ms。"
+        ),
+    )
+    wechat_merge_window_media_ms: int = Field(
+        default=5_000,
+        ge=0,
+        le=120_000,
+        validation_alias=AliasChoices(
+            "wechat_merge_window_media_ms", "SANSHILIU_WECHAT_MERGE_WINDOW_MEDIA_MS",
+        ),
+        description=(
+            "wechat 图未配文等候窗口；用户发完图常会跟一句【这是什么】，5s 内文字到了立即合并发送，"
+            "5s 后没文字就单图独发。"
+        ),
     )
 
     # Phase 5 工具配置

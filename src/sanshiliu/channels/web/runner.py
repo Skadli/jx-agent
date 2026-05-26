@@ -145,7 +145,7 @@ async def run_serve() -> int:
     wechat_approval_broker = WechatApprovalBroker()
 
     # Phase 8：权限（web chat 通过 SSE + POST 做交互式工具审批；
-    # wechat 通过用户回复 /同意 /拒绝；CompositeConfirmer 根据当前 contextvar 路由）
+    # wechat 通过用户回复 /confirm /always /refuse；CompositeConfirmer 根据 contextvar 路由）
     from pathlib import Path as _Path
 
     permission_manager: PermissionManager | None = None
@@ -394,6 +394,7 @@ async def run_serve() -> int:
             short_term=short_term,
             approval_broker=wechat_approval_broker,
             merge_window_ms=settings.wechat_merge_window_ms,
+            merge_window_media_ms=settings.wechat_merge_window_media_ms,
         )
         if official_wechat:
             wechat_poller = ILinkLongPoller(

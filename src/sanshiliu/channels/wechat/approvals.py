@@ -1,4 +1,4 @@
-"""微信侧工具审批 broker；让 wechat 用户通过 /同意 /拒绝 直接批准 LLM 的工具调用。
+"""微信侧工具审批 broker；让 wechat 用户通过 /confirm /always /refuse 批准 LLM 的工具调用。
 
 设计要点：
 - `_current_wechat_user` contextvar 由 bot._handle_one 在进入引擎前 set；
@@ -7,11 +7,17 @@
 - bot.consume_loop 在派发新消息前先调 try_consume：若是审批关键词且用户有 pending，
   直接解决对应 Future，不再当成新对话发到引擎。
 - 90 秒超时；超时按拒绝处理并通知用户。
+
+命令语义：
+- /confirm：只批准本次工具调用
+- /always：本会话内同类工具调用全部放行（写 settings.json session-scope 缓存）
+- /refuse：拒绝本次
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import threading
 from collections.abc import Awaitable, Callable
@@ -24,15 +30,11 @@ _logger = get_logger(__name__)
 
 _APPROVAL_TIMEOUT_SEC = 90.0
 
-# 同意/拒绝关键词；任意命中即视为相应决策；大小写不敏感
-_ALLOW_KEYWORDS = {
-    "/同意", "/允许", "/确认", "/yes", "/y", "/ok",
-    "同意", "允许", "确认", "yes", "y", "ok",
-}
-_DENY_KEYWORDS = {
-    "/拒绝", "/否", "/取消", "/no", "/n", "/cancel",
-    "拒绝", "取消", "no", "n",
-}
+# 审批关键词；任意命中即视为相应决策；大小写不敏感、前后空白会被 strip
+# 三组语义不同：confirm=once、always=session、refuse=deny。
+_CONFIRM_KEYWORDS = {"/confirm", "confirm"}
+_ALWAYS_KEYWORDS = {"/always", "always"}
+_REFUSE_KEYWORDS = {"/refuse", "refuse"}
 
 # 当前正在处理 wechat 消息的用户 id；handle_one 进入时 set
 _current_wechat_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -79,13 +81,11 @@ class WechatApprovalBroker:
                 return ConfirmResponse(decision="deny", scope="once")
             return await asyncio.wait_for(fut, timeout=_APPROVAL_TIMEOUT_SEC)
         except TimeoutError:
-            try:
+            with contextlib.suppress(Exception):
                 await self._send_text(
                     user_id,
-                    "（90 秒未回复 /同意 或 /拒绝，已自动取消该工具调用）",
+                    "（90 秒未回复 /confirm /always /refuse，已自动取消该工具调用）",
                 )
-            except Exception:
-                pass
             return ConfirmResponse(decision="deny", scope="once")
         finally:
             with self._lock:
@@ -94,15 +94,22 @@ class WechatApprovalBroker:
     def try_consume(self, user_id: str, text: str) -> bool:
         """如果 text 是审批回复且用户有 pending，解决并返 True；否则 False。
         返回 True 时调用方应该把这条消息视为已消费，不再投递给引擎。
+
+        关键词映射：
+        - /confirm → allow once（仅本次）
+        - /always  → allow session（本会话同类工具全部放行）
+        - /refuse  → deny once
         """
         with self._lock:
             fut = self._pending.get(user_id)
         if fut is None or fut.done():
             return False
         stripped = text.strip().lower()
-        if stripped in _ALLOW_KEYWORDS:
+        if stripped in _CONFIRM_KEYWORDS:
+            response = ConfirmResponse(decision="allow", scope="once")
+        elif stripped in _ALWAYS_KEYWORDS:
             response = ConfirmResponse(decision="allow", scope="session")
-        elif stripped in _DENY_KEYWORDS:
+        elif stripped in _REFUSE_KEYWORDS:
             response = ConfirmResponse(decision="deny", scope="once")
         else:
             return False
@@ -121,7 +128,8 @@ class WechatApprovalBroker:
             f"工具：{req.canonical_name}（{req.tool_name}）\n"
             + (f"风险：{d}\n" if d else "")
             + f"参数：{req.arguments_preview[:200]}\n\n"
-            "回复 /同意 批准本次；/拒绝 取消（90 秒内有效）"
+            "回复：/confirm 批准本次；/always 本会话内全部放行；/refuse 取消"
+            "（90 秒内有效）"
         )
 
 

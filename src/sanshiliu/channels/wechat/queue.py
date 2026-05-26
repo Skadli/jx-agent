@@ -80,13 +80,21 @@ class WechatQueue:
         self,
         *,
         merge_window_ms: int,
+        merge_window_media_ms: int | None = None,
         exclude_ids: set[int] | None = None,
         now_ms: int | None = None,
     ) -> list[QueueItem] | None:
-        """Phase 10：找一个会话的全部未处理消息——前提是最近一条入站消息距今 ≥ merge_window_ms。
+        """Phase 10：找一个会话的全部未处理消息——前提是最近一条入站消息距今 ≥ window。
 
-        返回 None 表示：要么队列空，要么最旧消息所在会话仍在静默窗口内（再等等）。
-        进程重启时自然兜底：如果某会话有积压消息但已超过窗口，会被本方法一次性 flush。
+        - 完整 batch（纯文本 / 图文齐备 / 视频文件 / 任何含文字的组合）：merge_window_ms
+          默认 0 → 下个 poll 周期立即触发 LLM
+        - 仅图未配文字：merge_window_media_ms 默认 5s → 给用户打 caption 的时间；
+          5s 内文字到了自动切回短窗口立即合并发送。
+          原因：用户发图后切到输入框打字描述常需 5~10s，零等待会把图和后续描述切成
+          两个 batch，AI 自然回复两次。
+
+        返回 None 表示：队列空，或最旧消息所在会话仍在静默窗口内（再等等）。
+        进程重启时自然兜底：积压消息超过窗口会被一次性 flush。
         """
         # 先按 fetch_next 的口径取一条最旧 unprocessed，决定要看哪个 session
         oldest = await self.fetch_next(exclude_ids=exclude_ids)
@@ -95,10 +103,16 @@ class WechatQueue:
 
         ref_now = now_ms if now_ms is not None else int(time.time() * 1000)
 
-        # 该会话所有未处理消息里最大 ts；如果距 now 不到窗口，跳过让客户继续打字
+        # 同时拿 max(ts)、media 计数、纯文字行计数。
+        # 长窗口只在"有图 + 还没文字跟进"时启用——典型的"用户发图等着打 caption"。
+        # 一旦文字也到了（或本来就只有文字），用短窗口尽快回复，不让用户干等。
         cur = await self._db._execute(
             """
-            SELECT MAX(ts) AS latest FROM channel_messages
+            SELECT
+              MAX(ts) AS latest,
+              SUM(CASE WHEN media IS NOT NULL AND media != '' THEN 1 ELSE 0 END) AS media_count,
+              SUM(CASE WHEN media IS NULL OR media = '' THEN 1 ELSE 0 END) AS text_count
+            FROM channel_messages
             WHERE channel = 'wechat' AND direction = 'in' AND processed = 0
               AND session_id = ?
             """,
@@ -106,7 +120,14 @@ class WechatQueue:
         )
         row = cur.fetchone()
         latest_ts = int(row["latest"]) if row and row["latest"] is not None else oldest.ts
-        if ref_now - latest_ts < merge_window_ms:
+        has_media = bool(row and (row["media_count"] or 0) > 0)
+        has_text_followup = bool(row and (row["text_count"] or 0) > 0)
+        # 仅当"图已到但还没文字"时用长窗口；其余三种组合（文+图 / 仅文 / 多图无文）都用短
+        waiting_for_caption = (
+            has_media and not has_text_followup and merge_window_media_ms is not None
+        )
+        effective_window = merge_window_media_ms if waiting_for_caption else merge_window_ms
+        if ref_now - latest_ts < effective_window:
             return None  # 仍在静默窗口，等下个 poll
 
         # 静默：把该会话所有 unprocessed 一次性拉出来

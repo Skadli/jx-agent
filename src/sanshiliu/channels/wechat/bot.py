@@ -8,6 +8,7 @@ Phase 10：消费路径分两条——
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -50,7 +51,8 @@ class WechatBot:
         health: HealthState,
         short_term: ShortTermMemory | None = None,
         approval_broker: WechatApprovalBroker | None = None,
-        merge_window_ms: int = 5_000,
+        merge_window_ms: int = 0,
+        merge_window_media_ms: int = 5_000,
     ) -> None:
         self._db = db
         self._engine = engine
@@ -61,8 +63,11 @@ class WechatBot:
         self._health = health
         self._short_term = short_term
         self._approval_broker = approval_broker
-        # Phase 10：静默合并窗口；同会话连续消息累积到 N ms 无新消息才触发 LLM
+        # Phase 10：静默合并窗口
+        # - merge_window_ms：完整 batch 的等待时长（默认 0，立即触发 LLM）
+        # - merge_window_media_ms：仅图未配文字时的等待时长（默认 5s，给用户打 caption 的时间）
         self._merge_window_ms = merge_window_ms
+        self._merge_window_media_ms = merge_window_media_ms
         self._stop = asyncio.Event()
         self._consume_task: asyncio.Task[None] | None = None
         self._ping_task: asyncio.Task[None] | None = None
@@ -90,15 +95,23 @@ class WechatBot:
         except ChannelError as exc:
             _logger.warning("wechat 审批提示发送失败", user_id=user_id, error=str(exc))
 
-    async def stop(self, *, timeout: float = 5.0) -> None:
+    async def stop(self, *, shutdown_timeout: float = 5.0) -> None:
+        """优雅停机；shutdown_timeout 是整个停机过程的预算（不是单 task 累加）。"""
         self._stop.set()
-        for t in (self._consume_task, self._ping_task):
-            if t is None:
-                continue
-            try:
-                await asyncio.wait_for(t, timeout=timeout)
-            except TimeoutError:
-                t.cancel()
+        tasks = [t for t in (self._consume_task, self._ping_task) if t is not None]
+        try:
+            async with asyncio.timeout(shutdown_timeout):
+                for t in tasks:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await t
+        except TimeoutError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            # 给 cancel 一点点时间收尾；不再卡总预算
+            for t in tasks:
+                with contextlib.suppress(BaseException):
+                    await asyncio.wait_for(t, timeout=0.5)
         self._consume_task = None
         self._ping_task = None
         _logger.info("wechat bot 已停止")
@@ -120,7 +133,7 @@ class WechatBot:
                 await self._queue.wait_until_stop(self._stop)
                 continue
 
-            # 先看是不是审批回复（如 /同意 /拒绝），是则直接解决 broker future
+            # 先看是不是审批回复（/confirm /always /refuse），是则直接解决 broker future
             # 不再当成新一轮对话送进引擎；否则后台 task 处理新消息
             if (
                 self._approval_broker is not None
@@ -138,6 +151,7 @@ class WechatBot:
             try:
                 batch = await self._queue.fetch_ready_batch(
                     merge_window_ms=self._merge_window_ms,
+                    merge_window_media_ms=self._merge_window_media_ms,
                     exclude_ids=set(self._claimed_item_ids),
                 )
             except Exception as exc:
