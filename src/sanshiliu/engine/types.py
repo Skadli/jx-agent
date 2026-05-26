@@ -1,4 +1,4 @@
-"""引擎层公共类型；Phase 1 定义 ChatMessage 和 Role。"""
+"""引擎层公共类型；Phase 1 定义 ChatMessage 和 Role，Phase 10 起 content 支持多模态。"""
 
 from __future__ import annotations
 
@@ -7,13 +7,17 @@ from typing import Any, Literal
 
 Role = Literal["system", "user", "assistant", "tool"]
 
+# Phase 10：OpenAI 多模态格式——content 可以是 str 或 [{type, ...}, ...]
+# 例：[{"type":"text","text":"看图"}, {"type":"image_url","image_url":{"url":"data:..."}}]
+MessageContent = str | list[dict[str, Any]]
+
 
 @dataclass
 class ChatMessage:
-    """OpenAI 兼容的对话消息。"""
+    """OpenAI 兼容的对话消息；content 支持多模态。"""
 
     role: Role
-    content: str
+    content: MessageContent
     # Phase 5 工具调用字段，Phase 1 保持默认
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
@@ -33,3 +37,18 @@ class ChatMessage:
         if self.name:
             msg["name"] = self.name
         return msg
+
+    def text_only(self) -> str:
+        """提取纯文本：str 直接返；list 拼接所有 text part；其余 part 忽略。
+
+        用于 memory_extractor / 命令分发等只关心文字的场景。
+        """
+        if isinstance(self.content, str):
+            return self.content
+        out: list[str] = []
+        for part in self.content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                t = part.get("text")
+                if isinstance(t, str):
+                    out.append(t)
+        return " ".join(out)

@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_channel_user ON sessions(channel, user_id);
 
--- 通道消息表，Phase 4 使用
+-- 通道消息表，Phase 4 使用；Phase 10 起 media 列存图片/音频元数据 JSON
 CREATE TABLE IF NOT EXISTS channel_messages (
     id           INTEGER PRIMARY KEY,
     ts           INTEGER NOT NULL,
@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS channel_messages (
     user_id      TEXT,
     group_id     TEXT,
     content      TEXT    NOT NULL,
-    msg_type     TEXT    NOT NULL,           -- text / image / ...
+    msg_type     TEXT    NOT NULL,           -- text / image / mixed / ...
+    media        TEXT,                        -- JSON：[{type:image_url, image_url:{url:...}}, ...]
     processed    INTEGER NOT NULL DEFAULT 0,
     llm_call_id  INTEGER REFERENCES llm_calls(id)
 );

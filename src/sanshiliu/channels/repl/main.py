@@ -10,7 +10,7 @@ from typing import NoReturn
 from sanshiliu import __version__
 from sanshiliu.context.manager import ContextManager
 from sanshiliu.context.prompts import load_compact_prompts
-from sanshiliu.engine.commands import CommandContext, COMMANDS_META, try_dispatch
+from sanshiliu.engine.commands import COMMANDS_META, CommandContext, try_dispatch
 from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
 from sanshiliu.foundation.config import get_settings
@@ -18,7 +18,8 @@ from sanshiliu.foundation.errors import ConfigError, LLMError, SanshiliuError
 from sanshiliu.foundation.logging import configure_logging, get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.watcher import PersonaWatcher
-from sanshiliu.llm.client import LLMClient
+from sanshiliu.llm.providers import build_default_registry
+from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
@@ -164,12 +165,8 @@ async def run_repl() -> int:
         return 78
 
     db = await get_database(settings.data_dir / "sanshiliu.db")
-    llm = LLMClient(
-        api_key=settings.openai_api_key.get_secret_value(),
-        base_url=settings.openai_base_url,
-        model=settings.openai_model,
-        db=db,
-    )
+    # 同 web/wire：走多后端 router，让带 image_url 的请求按 capability 路由到豆包。
+    llm = LLMRouter(build_default_registry(settings, db=db))
     context_manager = ContextManager(
         llm=llm,
         prompts=compact_prompts,

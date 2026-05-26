@@ -48,6 +48,25 @@ _FATAL_OPENAI_EXC: tuple[type[Exception], ...] = (
 )
 
 
+def _humanize_fatal(exc: Exception, model: str) -> str:
+    """致命错误 → 人话错误信息；image_url 被拒的 deserialize 报文翻译成可操作的提示。
+
+    典型反例：Ark/DeepSeek 把 messages.content 反序列化为 enum，文本模型只识 `text`
+    变体，遇到 `image_url` 报 "unknown variant `image_url`, expected `text`"，
+    原文用户看不懂，包装一层提示去换支持视觉的模型。
+    """
+    raw = f"{type(exc).__name__}: {exc}"
+    text = str(exc).lower()
+    if "image_url" in text and ("unknown variant" in text or "expected `text`" in text or "expected \"text\"" in text):
+        return (
+            f"LLM 致命错误：当前模型 `{model}` 不支持图片输入（image_url）。"
+            f"请把模型换成支持视觉的型号（如 doubao-1-5-vision-pro-32k-250115、"
+            f"doubao-seed-1-6-250615、gpt-4o），或本轮不附图片。"
+            f"原始错误：{raw}"
+        )
+    return f"LLM 致命错误：{raw}"
+
+
 class LLMClient:
     """OpenAI 兼容 LLM 客户端封装。"""
 
@@ -102,7 +121,7 @@ class LLMClient:
         except _RETRYABLE_OPENAI_EXC as exc:
             raise LLMRetryableError(f"LLM 可重试错误：{type(exc).__name__}: {exc}") from exc
         except _FATAL_OPENAI_EXC as exc:
-            raise LLMFatalError(f"LLM 致命错误：{type(exc).__name__}: {exc}") from exc
+            raise LLMFatalError(_humanize_fatal(exc, self._model)) from exc
         except APIError as exc:
             # 未细分 APIError 按致命处理
             raise LLMFatalError(f"LLM API 未分类错误：{exc}") from exc

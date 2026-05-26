@@ -19,7 +19,8 @@ from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.watcher import PersonaWatcher
-from sanshiliu.llm.client import LLMClient
+from sanshiliu.llm.providers import build_default_registry
+from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
@@ -44,7 +45,8 @@ class App:
 
     settings: Settings
     db: Database
-    llm: LLMClient
+    # Phase 10：原 llm 字段保留为 router；engine 拿到的就是这个对象
+    llm: LLMRouter
     persona_loader: PersonaLoader
     persona_watcher: PersonaWatcher
     context_manager: ContextManager
@@ -94,13 +96,11 @@ async def build_app(
     # L0 storage
     db = await get_database(settings.data_dir / "sanshiliu.db")
 
-    # L2 LLM
-    llm = LLMClient(
-        api_key=settings.openai_api_key.get_secret_value(),
-        base_url=settings.openai_base_url,
-        model=settings.openai_model,
-        db=db,
-    )
+    # L2 LLM 多后端（Phase 10）：构造 ProviderRegistry → LLMRouter
+    # 注册逻辑收敛在 build_default_registry，runner/repl 走同一份装配，
+    # 避免单后端 LLMClient 绕开 router 直接发请求。
+    registry = build_default_registry(settings, db=db)
+    llm = LLMRouter(registry)
 
     # L4 上下文
     compact_prompts = load_compact_prompts(settings.prompts_dir)

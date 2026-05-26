@@ -46,9 +46,13 @@
 
   // 用 fetch + ReadableStream 解 SSE；data: ... 行触发 onDelta；event: done/error/approval 触发对应 cb
   // 返回 {abort: ()=>void}
-  function chatStream({ q, sessionId, onSession, onApproval, onDelta, onDone, onError }) {
+  function chatStream({ q, sessionId, images, onSession, onApproval, onDelta, onDone, onError }) {
     const ctrl = new AbortController();
-    const body = sessionId ? { q, session_id: sessionId } : { q };
+    const body = {
+      q,
+      ...(images && images.length ? { images } : {}),
+      ...(sessionId ? { session_id: sessionId } : {}),
+    };
 
     (async () => {
       try {

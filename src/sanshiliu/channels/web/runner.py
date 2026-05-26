@@ -89,7 +89,8 @@ from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.logging import configure_logging, get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.watcher import PersonaWatcher
-from sanshiliu.llm.client import LLMClient
+from sanshiliu.llm.providers import build_default_registry
+from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
@@ -131,12 +132,9 @@ async def run_serve() -> int:
         return 78
 
     db = await get_database(settings.data_dir / "sanshiliu.db")
-    llm = LLMClient(
-        api_key=settings.openai_api_key.get_secret_value(),
-        base_url=settings.openai_base_url,
-        model=settings.openai_model,
-        db=db,
-    )
+    # 走多后端 router：image 请求按 vision capability 路由到豆包，
+    # 否则全部沿用 default（openai_*）；与 wire/repl 共用同一份注册逻辑。
+    llm = LLMRouter(build_default_registry(settings, db=db))
     context_manager = ContextManager(
         llm=llm,
         prompts=compact_prompts,
@@ -268,6 +266,8 @@ async def run_serve() -> int:
     short_term = ShortTermMemory(settings.data_dir)
     router.register("POST", "/chat", make_chat_handler(
         engine, loop, health, session_store, short_term, approval_broker,
+        multimodal_max_images=settings.multimodal_max_images_per_turn,
+        multimodal_max_image_bytes=settings.multimodal_max_image_bytes,
     ))
     router.register("GET", "/healthz", make_healthz_handler(db, loop, health))
     router.register("GET", "/metrics", make_metrics_handler(context_manager))
@@ -393,6 +393,7 @@ async def run_serve() -> int:
             health=health,
             short_term=short_term,
             approval_broker=wechat_approval_broker,
+            merge_window_ms=settings.wechat_merge_window_ms,
         )
         if official_wechat:
             wechat_poller = ILinkLongPoller(

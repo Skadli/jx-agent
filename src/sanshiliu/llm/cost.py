@@ -11,7 +11,12 @@ _PRICE_TABLE: dict[str, tuple[float, float]] = {
     "deepseek-chat": (0.001, 0.002),
     "deepseek-reasoner": (0.004, 0.016),
     "glm-4-plus":    (0.05, 0.05),
+    "glm-4v-plus":   (0.05, 0.05),
     "qwen-plus":     (0.004, 0.012),
+    # Phase 10 豆包视觉系列；Ark 公开价 input 0.003 / output 0.009 CNY per 1k
+    "doubao-seed":        (0.003, 0.009),
+    "doubao-1-5-vision":  (0.003, 0.009),
+    "doubao-vision":      (0.003, 0.009),
 }
 _DEFAULT_PRICE = (0.01, 0.03)  # 未知模型保守默认
 

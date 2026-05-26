@@ -72,11 +72,20 @@ function TopBar({ active, onJump, onLogout, onToggleRail, railCollapsed }) {
           title="实例"
           onClick={() => setMenuOpen(v => !v)}
           style={{
-            border: 0, cursor: "pointer",
+            border: 0, cursor: "pointer", position: "relative",
             width: 28, height: 28, borderRadius: "50%", background: "var(--ink)",
             color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center",
-            fontSize: 11, fontWeight: 600, letterSpacing: 0
-          }}>JX</button>
+            fontFamily: "var(--font-mono)", fontSize: 11.5, fontWeight: 600, letterSpacing: "-0.02em",
+          }}>
+          JX
+          {/* health indicator — small dot top-right; mirrors topbar 通道 state */}
+          <span style={{
+            position: "absolute", top: -1, right: -1,
+            width: 8, height: 8, borderRadius: "50%",
+            background: allOk ? "var(--success-fg)" : "var(--warning)",
+            boxShadow: "0 0 0 1.5px var(--canvas)",
+          }} />
+        </button>
         {menuOpen && (
           <div className="card" style={{
             position: "absolute", right: 0, top: 36, width: 260, zIndex: 30,

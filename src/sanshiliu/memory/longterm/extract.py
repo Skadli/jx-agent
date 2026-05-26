@@ -11,6 +11,7 @@ from typing import Any
 from sanshiliu.foundation.errors import ConfigError, LLMError
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.llm.client import LLMClient
+from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.memdir import write_memory_file
 from sanshiliu.memory.types import MEMORY_TYPES, MemoryEntry, MemoryType
 
@@ -86,7 +87,7 @@ class MemoryExtractor:
     def __init__(
         self,
         *,
-        llm: LLMClient,
+        llm: LLMClient | LLMRouter,
         memdir_root: Path,
         instruction: str,
     ) -> None:

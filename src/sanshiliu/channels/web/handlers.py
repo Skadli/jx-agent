@@ -1,11 +1,17 @@
-"""三个 endpoint 实现：/chat (SSE) / /healthz / /metrics。"""
+"""三个 endpoint 实现：/chat (SSE) / /healthz / /metrics。
+
+Phase 10：/chat 支持多模态——`{"q": "...", "images": ["data:image/...;base64,..."]}`。
+"""
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import queue as q_mod
+import re
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -17,6 +23,7 @@ from sanshiliu.context.manager import ContextManager
 from sanshiliu.engine.commands import CommandContext, is_slash_command, try_dispatch
 from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
+from sanshiliu.engine.types import MessageContent
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.storage.db import Database
@@ -30,6 +37,74 @@ _logger = get_logger(__name__)
 _HEARTBEAT_INTERVAL_SEC = 15.0
 # 单次 /chat 最大时长；超过强制断开
 _CHAT_DEADLINE_SEC = 120.0
+
+# Phase 10 多模态：data: URI 白名单 + 解析正则
+# 形如 "data:image/jpeg;base64,/9j/4AAQ..."
+_DATA_URI_RE = re.compile(
+    r"^data:(image/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=\s]+)$",
+    re.IGNORECASE,
+)
+
+
+class MultimodalValidationError(ValueError):
+    """多模态 payload 解析失败；handler 捕获后回 400。"""
+
+
+def _validate_data_uri(
+    uri: str, *, max_decoded_bytes: int,
+) -> tuple[str, int]:
+    """校验 data:image 白名单类型和解码后字节数；返回 (规范化后的 URI, decoded_bytes)。
+
+    decode 后字节数超 max 抛 MultimodalValidationError。base64 非法同理。
+    """
+    if not isinstance(uri, str):
+        raise MultimodalValidationError("image must be data: URI string")
+    m = _DATA_URI_RE.match(uri.strip())
+    if m is None:
+        raise MultimodalValidationError(
+            "image must be data:image/{jpeg,png,webp};base64,..."
+        )
+    b64 = re.sub(r"\s", "", m.group(2))
+    try:
+        decoded = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise MultimodalValidationError(f"invalid base64: {exc}") from exc
+    if len(decoded) > max_decoded_bytes:
+        raise MultimodalValidationError(
+            f"image too large: {len(decoded)} bytes > limit {max_decoded_bytes}"
+        )
+    # 规范化：去掉白空白后回写
+    mime = m.group(1).lower()
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    normalized = f"data:{mime};base64,{b64}"
+    return normalized, len(decoded)
+
+
+def _build_multimodal_content(
+    question: str,
+    images: list[str],
+    *,
+    max_images: int,
+    max_image_bytes: int,
+) -> MessageContent:
+    """把 q + images 拼成 OpenAI 多模态 content。
+
+    无 image → 返 str（保持 Phase 1-9 行为）；有 image → 返 list[dict]。
+    """
+    if not images:
+        return question
+    if len(images) > max_images:
+        raise MultimodalValidationError(
+            f"too many images: {len(images)} > limit {max_images}"
+        )
+    parts: list[dict[str, Any]] = []
+    if question.strip():
+        parts.append({"type": "text", "text": question})
+    for raw in images:
+        uri, _ = _validate_data_uri(raw, max_decoded_bytes=max_image_bytes)
+        parts.append({"type": "image_url", "image_url": {"url": uri}})
+    return parts
 
 
 class HealthState:
@@ -96,13 +171,25 @@ def make_chat_handler(
     session_store: SessionStore,
     short_term: ShortTermMemory | None = None,
     approval_broker: WebApprovalBroker | None = None,
+    *,
+    multimodal_max_images: int = 4,
+    multimodal_max_image_bytes: int = 5 * 1024 * 1024,
 ) -> Callable[[BaseHTTPRequestHandler], None]:
-    """构造 /chat (POST + SSE) handler；engine / store / 持久化由外部注入。"""
+    """构造 /chat (POST + SSE) handler；engine / store / 持久化由外部注入。
+
+    Phase 10：接收 `{"q": str, "images"?: [data:URI], "session_id"?: str}`；
+    images 数量上限和单图大小上限来自 Settings。
+    """
+    # base64 比原始字节大 ~33%；预留 64KB 给 text + JSON 包装
+    body_size_limit = max(
+        64 * 1024,
+        int(multimodal_max_image_bytes * multimodal_max_images * 4 / 3) + 64 * 1024,
+    )
 
     def handler(req: BaseHTTPRequestHandler) -> None:
         length = int(req.headers.get("Content-Length", "0") or "0")
-        if length <= 0 or length > 64 * 1024:
-            req.send_error(400, "missing or oversized body")
+        if length <= 0 or length > body_size_limit:
+            req.send_error(413 if length > body_size_limit else 400, "missing or oversized body")
             return
         try:
             body = json.loads(req.rfile.read(length).decode("utf-8"))
@@ -111,9 +198,28 @@ def make_chat_handler(
             return
 
         question = (body or {}).get("q") or (body or {}).get("query") or ""
-        if not isinstance(question, str) or not question.strip():
+        if not isinstance(question, str):
             req.send_error(400, "missing field: q")
             return
+        images_raw = (body or {}).get("images") or []
+        if not isinstance(images_raw, list):
+            req.send_error(400, "field 'images' must be an array")
+            return
+        # 纯文本场景下 q 不能为空；有图片时 q 可以空
+        if not images_raw and not question.strip():
+            req.send_error(400, "missing field: q")
+            return
+
+        try:
+            user_content: MessageContent = _build_multimodal_content(
+                question, images_raw,
+                max_images=multimodal_max_images,
+                max_image_bytes=multimodal_max_image_bytes,
+            )
+        except MultimodalValidationError as exc:
+            req.send_error(400, f"invalid multimodal payload: {exc}")
+            return
+
         explicit_sid = (body or {}).get("session_id")
         if not isinstance(explicit_sid, str):
             explicit_sid = None
@@ -143,9 +249,9 @@ def make_chat_handler(
                     lambda payload: sse_q.put((APPROVAL, payload))
                 )
             try:
-                # slash 命令短路：不走 LLM，直接回 reply
+                # slash 命令短路：不走 LLM，直接回 reply（仅纯文本路径生效）
                 q = question.strip()
-                if is_slash_command(q):
+                if not images_raw and is_slash_command(q):
                     cmd_ctx = CommandContext(session=session, engine=engine, channel="web")
                     result = await try_dispatch(q, cmd_ctx)
                     if result is not None:
@@ -159,7 +265,7 @@ def make_chat_handler(
                         sse_q.put(SENTINEL)
                         return
 
-                async for delta in engine.stream_turn(session, q):
+                async for delta in engine.stream_turn(session, user_content):
                     sse_q.put(delta.text)
                 # 落 jsonl 用于回放和 dashboard 历史展示
                 if short_term is not None:

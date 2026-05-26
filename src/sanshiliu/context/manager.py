@@ -10,6 +10,7 @@ from sanshiliu.context.microcompact import MicroCompactor
 from sanshiliu.context.prompts import CompactPrompts
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.llm.client import LLMClient
+from sanshiliu.llm.router import LLMRouter
 
 if TYPE_CHECKING:
     from sanshiliu.engine.session import Session
@@ -23,7 +24,7 @@ class ContextManager:
     def __init__(
         self,
         *,
-        llm: LLMClient,
+        llm: LLMClient | LLMRouter,
         prompts: CompactPrompts,
         max_context_tokens: int,
         compact_threshold_ratio: float = 0.8,

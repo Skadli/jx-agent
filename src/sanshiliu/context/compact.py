@@ -10,6 +10,7 @@ from sanshiliu.engine.types import ChatMessage
 from sanshiliu.foundation.errors import LLMError
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.llm.client import LLMClient
+from sanshiliu.llm.router import LLMRouter
 
 if TYPE_CHECKING:
     from sanshiliu.engine.session import Session
@@ -21,12 +22,17 @@ _DEFAULT_TAIL_PAIRS = 3
 
 
 def _serialize_history(messages: list[ChatMessage]) -> str:
-    """把待压缩消息拼成一段纯文本喂给 LLM；只取 role+content，丢 tool_calls。"""
+    """把待压缩消息拼成一段纯文本喂给 LLM；只取 role+content，丢 tool_calls。
+
+    Phase 10：content 是 list[dict] 多模态时，只提取 text part；图片在摘要里不可见，
+    LLM 看到的就是文本描述（一般用户附图前都会先说"看图"等文字）。
+    """
     lines: list[str] = []
     for m in messages:
-        if not m.content:
+        text = m.text_only()
+        if not text:
             continue
-        lines.append(f"[{m.role}] {m.content}")
+        lines.append(f"[{m.role}] {text}")
     return "\n\n".join(lines)
 
 
@@ -35,7 +41,7 @@ class Compactor:
 
     def __init__(
         self,
-        llm: LLMClient,
+        llm: LLMClient | LLMRouter,
         prompts: CompactPrompts,
         budget: TokenBudget,
         *,

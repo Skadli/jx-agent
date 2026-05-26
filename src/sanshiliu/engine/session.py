@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sanshiliu.engine.prompt_builder import build_system_prompt
-from sanshiliu.engine.types import ChatMessage
+from sanshiliu.engine.types import ChatMessage, MessageContent
 from sanshiliu.identity.types import PersonaSnapshot
 
 # 注入 compact 摘要时与 persona 之间的结构性分隔；纯胶水非 prompt 内容
@@ -44,12 +44,14 @@ class Session:
             user_id=user_id,
         )
 
-    def add_user(self, text: str) -> ChatMessage:
-        msg = ChatMessage(role="user", content=text)
+    def add_user(self, content: MessageContent) -> ChatMessage:
+        """Phase 10：content 可以是 str（纯文本）或 list[dict]（OpenAI 多模态格式）。"""
+        msg = ChatMessage(role="user", content=content)
         self.messages.append(msg)
         return msg
 
     def add_assistant(self, text: str) -> ChatMessage:
+        # assistant 输出目前仍是纯文本（LLM 流式 yield 的 text）；多模态生成留给后续
         msg = ChatMessage(role="assistant", content=text)
         self.messages.append(msg)
         return msg

@@ -44,6 +44,13 @@ class Database:
         # 执行 schema
         schema_sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         conn.executescript(schema_sql)
+        # Phase 10 migration：老库给 channel_messages 加 media 列；新库 CREATE TABLE 已含
+        # ALTER TABLE ADD COLUMN 重复时抛 OperationalError("duplicate column name")，吞掉
+        try:
+            conn.execute("ALTER TABLE channel_messages ADD COLUMN media TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         self._conn = conn
 
     async def close(self) -> None:
@@ -365,6 +372,32 @@ class Database:
         cur4 = await self._execute("SELECT COUNT(*) AS n FROM sessions")
         row4 = await asyncio.to_thread(cur4.fetchone)
         agg["total_sessions"] = int(row4["n"]) if row4 else 0
+
+        # Phase 10：按 base_url 分组聚合，让 dashboard 区分 doubao / DeepSeek 等后端
+        cur5 = await self._execute(
+            """
+            SELECT
+              base_url,
+              COUNT(*)                          AS calls,
+              COALESCE(SUM(input_tokens), 0)    AS input_tokens,
+              COALESCE(SUM(output_tokens), 0)   AS output_tokens,
+              COALESCE(SUM(cost_cny), 0)        AS cost_cny
+            FROM llm_calls
+            WHERE ts >= ? AND channel != 'compact-internal'
+            GROUP BY base_url
+            """,
+            (int(since_ms),),
+        )
+        by_rows = await asyncio.to_thread(cur5.fetchall)
+        agg["by_provider"] = {
+            str(r["base_url"]): {
+                "calls":         int(r["calls"]),
+                "input_tokens":  int(r["input_tokens"]),
+                "output_tokens": int(r["output_tokens"]),
+                "cost_cny":      float(r["cost_cny"]),
+            }
+            for r in by_rows
+        }
         return agg
 
     async def insert_tool_call(

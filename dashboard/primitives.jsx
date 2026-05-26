@@ -6,13 +6,13 @@ function Icon({ name, size = 16, color = "currentColor", strokeWidth = 1.5 }) {
   switch (name) {
     case "brand":return (
       <svg viewBox="0 0 24 24" width={s} height={s} fill="none">
-        {/* Rounded chassis — echoes the boxed ASCII banner */}
-        <rect x="2.5" y="3.5" width="19" height="17" rx="3.5" stroke={c} strokeWidth="1.6"/>
-        {/* Two content lines */}
-        <line x1="6"   y1="9"    x2="18" y2="9"    stroke={c} strokeWidth="1.6" strokeLinecap="round"/>
-        <line x1="6"   y1="12.5" x2="13" y2="12.5" stroke={c} strokeWidth="1.6" strokeLinecap="round"/>
-        {/* Action-blue accent line — matches the underscore under 笑 in the wordmark */}
-        <line x1="6"   y1="16"   x2="14" y2="16"   stroke="var(--primary)" strokeWidth="1.8" strokeLinecap="round"/>
+        {/* Rounded square mark holding the 贱 glyph — application logo + 字 double signal */}
+        <rect x="2.5" y="2.5" width="19" height="19" rx="4.5" stroke={c} strokeWidth="1.6"/>
+        <text x="12" y="12" textAnchor="middle" dominantBaseline="central"
+              fontFamily="var(--font-mono)" fontSize="12" fontWeight="600"
+              fill={c} stroke="none">贱</text>
+        {/* Action-blue underscore — matches the underscore under 笑 in the wordmark */}
+        <line x1="7" y1="18.5" x2="14" y2="18.5" stroke="var(--primary)" strokeWidth="1.8" strokeLinecap="round"/>
       </svg>
     );
     case "search":return <svg {...common}><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>;
@@ -52,8 +52,22 @@ function Icon({ name, size = 16, color = "currentColor", strokeWidth = 1.5 }) {
     case "info":return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.01" /></svg>;
     case "copy":return <svg {...common}><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>;
     case "download":return <svg {...common}><path d="M12 4v12M6 12l6 6 6-6M4 20h16" /></svg>;
-    case "menu":return <svg {...common}><path d="M4 6h16M4 12h16M4 18h16" /></svg>;
-    case "menu-collapse":return <svg {...common}><path d="M4 6h16M4 12h10M4 18h16" /></svg>;
+    case "image":return <svg {...common}><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="9" cy="9" r="2" /><path d="m3 17 6-6 4 4 2-2 6 6" /></svg>;
+    case "paperclip":return <svg {...common}><path d="M21 11 11.5 20.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5L9.5 18.5a2 2 0 0 1-3-3L15 7" /></svg>;
+    case "menu":return (
+      <svg {...common} strokeWidth={1.6}>
+        {/* Modern double-line hamburger (collapsed state) + right chevron hint */}
+        <path d="M5 9h14M5 15h14" />
+        <path d="m15.5 11.5 2 .5-2 .5" stroke={c} strokeWidth="1.4" />
+      </svg>
+    );
+    case "menu-collapse":return (
+      <svg {...common} strokeWidth={1.6}>
+        {/* Modern double-line hamburger (expanded state) + left chevron hint */}
+        <path d="M5 9h14M5 15h14" />
+        <path d="m8.5 11.5-2 .5 2 .5" stroke={c} strokeWidth="1.4" />
+      </svg>
+    );
     default:return null;
   }
 }

@@ -8,10 +8,11 @@ from collections.abc import AsyncIterator
 
 from sanshiliu.context.manager import ContextManager
 from sanshiliu.engine.session import Session
-from sanshiliu.engine.types import ChatMessage
+from sanshiliu.engine.types import ChatMessage, MessageContent
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.llm.client import LLMClient
+from sanshiliu.llm.router import LLMRouter
 from sanshiliu.llm.stream import StreamDelta
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.extract import MemoryExtractor
@@ -29,12 +30,28 @@ _logger = get_logger(__name__)
 _DEDUPE_THRESHOLD = 2
 
 
+def _flatten_user_text(content: MessageContent) -> str:
+    """把多模态 content 摊成纯文本，给 skills 匹配 / memory_extractor 这类只关心文字的下游用。
+
+    str → 原样返回；list → 提取所有 type==text 的 text 字段拼接。
+    """
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            t = part.get("text")
+            if isinstance(t, str):
+                parts.append(t)
+    return " ".join(parts)
+
+
 class ConversationEngine:
     """持有 LLM / DB / PersonaLoader / ContextManager / ToolRegistry+Dispatcher。"""
 
     def __init__(
         self,
-        llm: LLMClient,
+        llm: LLMClient | LLMRouter,
         db: Database | None = None,
         persona_loader: PersonaLoader | None = None,
         context_manager: ContextManager | None = None,
@@ -45,6 +62,8 @@ class ConversationEngine:
         memdir_loader: MemdirLoader | None = None,
         memory_extractor: MemoryExtractor | None = None,
     ) -> None:
+        # Phase 10：llm 可以是单 LLMClient（Phase 1-9 行为）或 LLMRouter（多后端）
+        # 两者接口一致：chat / stream_chat / close / model / base_url
         self._llm = llm
         self._db = db
         self._persona_loader = persona_loader
@@ -57,7 +76,7 @@ class ConversationEngine:
         self._memory_extractor = memory_extractor
 
     @property
-    def llm(self) -> LLMClient:
+    def llm(self) -> LLMClient | LLMRouter:
         return self._llm
 
     @property
@@ -129,16 +148,23 @@ class ConversationEngine:
         except Exception as exc:
             _logger.error("compact 阶段异常（不阻塞主对话）", error=str(exc))
 
-    async def stream_turn(self, session: Session, user_text: str) -> AsyncIterator[StreamDelta]:
-        """流式接口；有工具时退化为整段一次性 yield（Phase 5 限制）。"""
+    async def stream_turn(
+        self, session: Session, user_text: MessageContent,
+    ) -> AsyncIterator[StreamDelta]:
+        """流式接口；有工具时退化为整段一次性 yield（Phase 5 限制）。
+
+        Phase 10：user_text 可为 str（旧）或 list[dict]（OpenAI 多模态格式）。
+        """
         if self.tools_enabled:
             msg = await self.complete_turn(session, user_text)
-            yield StreamDelta(text=msg.content)
+            content_text = msg.text_only()
+            yield StreamDelta(text=content_text)
             return
 
         self._refresh_memory(session)
         self._refresh_persona(session)
-        self._refresh_skills(session, user_text)
+        # _refresh_skills 不消费 user_text 内容（已 `del`），任何 union 类型都行
+        self._refresh_skills(session, _flatten_user_text(user_text))
         await self._maybe_compact(session)
         session.add_user(user_text)
         await self._touch_session(session)
@@ -158,18 +184,24 @@ class ConversationEngine:
             session.add_assistant(assistant_text)
             # 流式路径下 budget 反查必须在 finally，否则客户端早断不会执行
             await self._refresh_budget_from_db(session)
-            # 异步触发 auto-extract（V-7：失败不阻塞）
+            # 异步触发 auto-extract（V-7：失败不阻塞）；只用文本部分
             if assistant_text and self._memory_extractor is not None:
                 self._memory_extractor.schedule(
-                    user_text=user_text, assistant_text=assistant_text,
+                    user_text=_flatten_user_text(user_text),
+                    assistant_text=assistant_text,
                     session_id=session.session_id,
                 )
 
-    async def complete_turn(self, session: Session, user_text: str) -> ChatMessage:
-        """非流式 + tool_call 循环；返回最终 assistant 消息。"""
+    async def complete_turn(
+        self, session: Session, user_text: MessageContent,
+    ) -> ChatMessage:
+        """非流式 + tool_call 循环；返回最终 assistant 消息。
+
+        Phase 10：user_text 可为 str 或 list[dict]（OpenAI 多模态格式）。
+        """
         self._refresh_memory(session)
         self._refresh_persona(session)
-        self._refresh_skills(session, user_text)
+        self._refresh_skills(session, _flatten_user_text(user_text))
         await self._maybe_compact(session)
         session.add_user(user_text)
         await self._touch_session(session)
@@ -197,10 +229,11 @@ class ConversationEngine:
 
             if not result.tool_calls:
                 msg = session.add_assistant(result.text)
-                # 异步触发 auto-extract（V-7：失败不阻塞）
+                # 异步触发 auto-extract（V-7：失败不阻塞）；只用文本部分
                 if result.text and self._memory_extractor is not None:
                     self._memory_extractor.schedule(
-                        user_text=user_text, assistant_text=result.text,
+                        user_text=_flatten_user_text(user_text),
+                        assistant_text=result.text,
                         session_id=session.session_id,
                     )
                 return msg

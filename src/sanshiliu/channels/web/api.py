@@ -146,6 +146,8 @@ def make_overview_handler(
                     "active_sessions": int(agg.get("active_sessions", 0) or 0),
                     "total_sessions":  int(agg.get("total_sessions", 0) or 0),
                     "channels":        agg.get("channels", {}),
+                    # Phase 10：base_url → {calls, tokens, cost} 后端分账
+                    "by_provider":     agg.get("by_provider", {}),
                 },
                 "identity": {
                     "persona_chars": persona_chars,

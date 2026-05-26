@@ -54,14 +54,18 @@ class WechatWebhookProcessor:
             _logger.warning("webhook 包体非法 JSON", error=str(exc))
             return 400, "invalid json"
 
-        # iLink 上行消息格式：{type, from_wxid, group_id?, content, msg_type}
+        # iLink 上行消息格式：{type, from_wxid, group_id?, content, msg_type, image_url?, media?}
         msg_type = str(payload.get("msg_type") or payload.get("type") or "text")
         from_wxid = str(payload.get("from_wxid") or payload.get("user_id") or "")
         group_id = payload.get("group_id")
         content = str(payload.get("content") or "")
 
-        if not from_wxid or not content:
-            return 400, "missing from_wxid or content"
+        # Phase 10：image 消息允许 content 为空，但 image_url / media 必填
+        media_json = _extract_media(payload, msg_type)
+        if not from_wxid:
+            return 400, "missing from_wxid"
+        if not content and media_json is None:
+            return 400, "missing content or media"
 
         # 入队：写一行 channel_messages，processed=0 等 bot 拉
         session_id = _session_id_for(from_wxid, group_id)
@@ -69,8 +73,8 @@ class WechatWebhookProcessor:
             await self._db._execute(
                 """
                 INSERT INTO channel_messages
-                  (ts, channel, direction, session_id, user_id, group_id, content, msg_type, processed)
-                VALUES (?,?,?,?,?,?,?,?,0)
+                  (ts, channel, direction, session_id, user_id, group_id, content, msg_type, media, processed)
+                VALUES (?,?,?,?,?,?,?,?,?,0)
                 """,
                 (
                     int(time.time() * 1000),
@@ -81,6 +85,7 @@ class WechatWebhookProcessor:
                     group_id,
                     content,
                     msg_type,
+                    media_json,
                 ),
             )
         except Exception as exc:
@@ -95,3 +100,31 @@ def _session_id_for(wxid: str, group_id: str | None) -> str:
     if group_id:
         return f"wechat:group:{group_id}:{wxid}"
     return f"wechat:user:{wxid}"
+
+
+def _extract_media(payload: dict[str, Any], msg_type: str) -> str | None:
+    """Phase 10：从 iLink payload 抽出图片/媒体描述，序列化成 JSON 存 channel_messages.media。
+
+    iLink 历史 payload 兼容多个字段名：
+    - `image_url` / `media_url`：单图 URL
+    - `media`：list[dict]，每条 {type, url}
+    返回 None 表示纯文本。
+    """
+    if msg_type in ("text",) and "media" not in payload and "image_url" not in payload:
+        return None
+    parts: list[dict[str, Any]] = []
+    raw_media = payload.get("media")
+    if isinstance(raw_media, list):
+        for item in raw_media:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("url") or item.get("image_url")
+            if isinstance(url, str) and url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+    for key in ("image_url", "media_url"):
+        url = payload.get(key)
+        if isinstance(url, str) and url:
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+    if not parts:
+        return None
+    return json.dumps(parts, ensure_ascii=False)

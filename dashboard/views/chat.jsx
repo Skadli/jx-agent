@@ -3,11 +3,17 @@
  * 解决"工具调用 / 审批卡片固定在底部"和"刷新后工具调用消失"的两个 bug。
  */
 
+// 与后端保持一致；见 src/sanshiliu/foundation/config.py 的
+// multimodal_max_images_per_turn / multimodal_max_image_bytes
+const IMG_MIME_WHITELIST = ["image/jpeg", "image/png", "image/webp"];
+const IMG_MAX_PER_TURN   = 4;
+const IMG_MAX_BYTES      = 5 * 1024 * 1024;
+
 function Chat() {
   const [sessions, setSessions]   = React.useState([]);
   const [activeId, setActiveId]   = React.useState(null);
   // 统一时间线；元素形如:
-  //   { kind: "user", content }
+  //   { kind: "user", content, images?: [dataUri] }
   //   { kind: "assistant", content }
   //   { kind: "tool", id, name, arguments, result, is_error }
   //   { kind: "approval", id, payload, decision?, scope? }
@@ -16,7 +22,11 @@ function Chat() {
   const [composer, setComposer]   = React.useState("");
   const [streaming, setStreaming] = React.useState(false);
   const [streamText, setStreamText] = React.useState("");
+  const [pendingImages, setPendingImages] = React.useState([]);
+  const [isDragOver, setIsDragOver] = React.useState(false);
   const streamCtrl = React.useRef(null);
+  const fileInputRef = React.useRef(null);
+  const dropZoneRef = React.useRef(null);
 
   // 拉会话列表（5s 轮询）
   React.useEffect(() => {
@@ -75,9 +85,16 @@ function Chat() {
 
   const send = () => {
     const text = composer.trim();
-    if (!text || streaming) return;
+    // 只发已读完 base64 的图；未读完的（极短窗口内点发送）先拦掉
+    const imgs = pendingImages.filter(p => p.dataUri).map(p => p.dataUri);
+    if (streaming) return;
+    if (!text && imgs.length === 0) return;
+    if (pendingImages.length > 0 && imgs.length < pendingImages.length) {
+      alert("还有图片正在读取中，请稍候再发");
+      return;
+    }
     const sessionForSend = activeId && (!active || active.channel === "web") ? activeId : null;
-    setTimeline(t => [...t, { kind: "user", content: text }]);
+    setTimeline(t => [...t, { kind: "user", content: text, images: imgs }]);
     setComposer("");
     setStreaming(true);
     setStreamText("");
@@ -85,6 +102,7 @@ function Chat() {
     streamCtrl.current = API.chatStream({
       q: text,
       sessionId: sessionForSend,
+      images: imgs,
       onSession: (sid) => {
         if (!sid) return;
         setActiveId(sid);
@@ -98,6 +116,7 @@ function Chat() {
         if (buf) setTimeline(t => [...t, { kind: "assistant", content: buf }]);
         setStreamText("");
         setStreaming(false);
+        setPendingImages([]);
         streamCtrl.current = null;
         // 触发会话列表刷新 + 重拉本会话历史消息（取回工具调用记录）
         API.get("/api/sessions?limit=50").then(r => { if (!r.error) setSessions(r.sessions || []); });
@@ -112,6 +131,7 @@ function Chat() {
         setTimeline(t => [...t, { kind: "assistant", content: `[错误] ${msg}` }]);
         setStreamText("");
         setStreaming(false);
+        setPendingImages([]);
         streamCtrl.current = null;
       },
     });
@@ -178,6 +198,123 @@ function Chat() {
     e.preventDefault();
     if (streaming) stop();
     else send();
+  };
+
+  const openFilePicker = () => {
+    if (fileInputRef.current) fileInputRef.current.click();
+  };
+
+  // 共享的 File[] 校验 + 读取逻辑：被文件选择器 / 拖拽 / 粘贴三个入口复用
+  const addFiles = (files) => {
+    const list = Array.from(files || []);
+    if (list.length === 0) return;
+
+    setPendingImages(prev => {
+      const next = prev.slice();
+      for (const f of list) {
+        if (next.length >= IMG_MAX_PER_TURN) {
+          alert(`最多附 ${IMG_MAX_PER_TURN} 张图，已忽略剩余文件`);
+          break;
+        }
+        if (!IMG_MIME_WHITELIST.includes(f.type)) {
+          alert(`不支持的文件类型：${f.type || "未知"}（仅支持 jpeg/png/webp）`);
+          continue;
+        }
+        if (f.size > IMG_MAX_BYTES) {
+          alert(`图片过大：${f.name} ${(f.size/1024/1024).toFixed(2)}MB > 5MB`);
+          continue;
+        }
+        const reader = new FileReader();
+        const entry = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          dataUri: "",
+          name: f.name,
+          sizeBytes: f.size,
+        };
+        next.push(entry);
+        reader.onload = () => {
+          const uri = String(reader.result || "");
+          setPendingImages(curr => curr.map(p => p.id === entry.id ? { ...p, dataUri: uri } : p));
+        };
+        reader.onerror = () => {
+          alert(`读取失败：${f.name}`);
+          setPendingImages(curr => curr.filter(p => p.id !== entry.id));
+        };
+        reader.readAsDataURL(f);
+      }
+      return next;
+    });
+  };
+
+  const handleFilesPicked = (e) => {
+    const files = Array.from(e.target.files || []);
+    // 清空 input value 以便下次选同名文件仍能触发 onChange
+    e.target.value = "";
+    addFiles(files);
+  };
+
+  const canAcceptMore = () => !streaming && pendingImages.length < IMG_MAX_PER_TURN;
+
+  const handleDragEnter = (e) => {
+    if (!canAcceptMore()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  };
+
+  const handleDragOver = (e) => {
+    if (!canAcceptMore()) return;
+    // 必须每次 preventDefault 否则浏览器拒绝 drop
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e) => {
+    // 只在离开容器本身（非内部子元素切换）时置 false，避免子元素 drag 触发抖动
+    if (e.currentTarget === e.target) {
+      setIsDragOver(false);
+      return;
+    }
+    const related = e.relatedTarget;
+    if (!related || !(e.currentTarget instanceof Node) || !(related instanceof Node) || !e.currentTarget.contains(related)) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    if (!canAcceptMore()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    const dropped = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    const images = dropped.filter(f => f.type && f.type.startsWith("image/"));
+    if (images.length > 0) addFiles(images);
+  };
+
+  const handlePaste = (e) => {
+    if (!canAcceptMore()) return;
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    const files = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length === 0) return; // 没图片项不拦截，让默认粘贴文本继续
+    e.preventDefault();
+    addFiles(files);
+  };
+
+  const removePendingImage = (id) => {
+    setPendingImages(prev => prev.filter(p => p.id !== id));
+  };
+
+  const openImageInNewTab = (dataUri) => {
+    const w = window.open();
+    if (w) w.document.write(`<img src="${dataUri}" style="max-width:100%;height:auto"/>`);
   };
 
   const totals = sessions.reduce((acc, s) => ({
@@ -270,7 +407,7 @@ function Chat() {
               )}
               {timeline.map((it, i) => {
                 if (it.kind === "user" || it.kind === "assistant") {
-                  return <Bubble key={i} role={it.kind} text={it.content} />;
+                  return <Bubble key={i} role={it.kind} text={it.content} images={it.images} />;
                 }
                 if (it.kind === "tool") {
                   return <ToolEventCard key={i} event={it} />;
@@ -292,15 +429,87 @@ function Chat() {
 
           {/* Composer */}
           <div style={{ borderTop: "1px solid var(--hairline)", padding: "12px 16px", background: "var(--pearl)" }}>
-            <div style={{
-              border: "1px solid var(--hairline)",
-              borderRadius: 12,
-              background: "var(--canvas)",
-              padding: "10px 14px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-            }}>
+            <div
+              ref={dropZoneRef}
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              style={{
+                position: "relative",
+                border: isDragOver ? "2px dashed var(--primary)" : "1px solid var(--hairline)",
+                borderRadius: 12,
+                background: "var(--canvas)",
+                padding: isDragOver ? "9px 13px" : "10px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}>
+              {isDragOver && (
+                <div style={{
+                  position: "absolute",
+                  top: 6, left: 0, right: 0,
+                  textAlign: "center",
+                  color: "var(--primary)",
+                  fontSize: 13,
+                  pointerEvents: "none",
+                }}>释放以附加图片</div>
+              )}
+              {pendingImages.length > 0 && (
+                <div style={{
+                  display: "flex", flexWrap: "wrap", gap: 8,
+                  padding: "6px 0", borderBottom: "1px dashed var(--hairline)",
+                }}>
+                  {pendingImages.map(p => (
+                    <div key={p.id} style={{
+                      display: "flex", alignItems: "center", gap: 6,
+                      padding: "4px 6px", background: "var(--pearl)",
+                      border: "1px solid var(--hairline)", borderRadius: 8,
+                    }}>
+                      {p.dataUri ? (
+                        <img
+                          src={p.dataUri}
+                          onClick={() => openImageInNewTab(p.dataUri)}
+                          style={{
+                            width: 32, height: 32, objectFit: "cover",
+                            borderRadius: 4, cursor: "pointer",
+                          }}
+                          title="点击查看大图"
+                          alt={p.name}
+                        />
+                      ) : (
+                        <div style={{
+                          width: 32, height: 32, borderRadius: 4,
+                          background: "var(--canvas)", border: "1px dashed var(--hairline)",
+                          display: "inline-flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 10, color: "var(--ink-60)",
+                        }}>…</div>
+                      )}
+                      <span className="t-meta" style={{
+                        maxWidth: 140, overflow: "hidden",
+                        textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        color: "var(--ink-80)",
+                      }} title={`${p.name} · ${(p.sizeBytes/1024).toFixed(1)}KB`}>{p.name}</span>
+                      <button
+                        className="btn-icon"
+                        onClick={() => removePendingImage(p.id)}
+                        title="移除"
+                        style={{
+                          width: 18, height: 18, padding: 0,
+                          color: "var(--ink-60)", fontSize: 12, lineHeight: 1,
+                        }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleFilesPicked}
+              />
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                 <textarea
                   rows={2}
@@ -309,22 +518,42 @@ function Chat() {
                     background: "transparent", fontFamily: "var(--font-mono)",
                     fontSize: 14, lineHeight: 1.5, color: "var(--ink)", padding: "4px 0",
                   }}
-                  placeholder="说人话，Enter 发送 / Shift+Enter 换行 / 输入 /help 看可用命令"
+                  placeholder={"说人话，Enter 发送 / Shift+Enter 换行 / 输入 /help 看可用命令\n拖入或粘贴图片可附图"}
                   value={composer}
                   onChange={e => setComposer(e.target.value)}
                   onKeyDown={handleComposerKeyDown}
+                  onPaste={handlePaste}
                 />
                 <button
                   className="btn-icon"
                   onClick={streaming ? stop : send}
-                  disabled={!streaming && !composer.trim()}
+                  disabled={!streaming && !composer.trim() && pendingImages.length === 0}
                   title={streaming ? "停止生成（Enter）" : "发送（Enter）"}
                   style={{ color: streaming ? "var(--danger)" : "var(--ink-60)", fontSize: 14, lineHeight: 1, padding: 4 }}>
-                  {streaming ? <Icon name="stop" size={13} /> : "↵"}
+                  {streaming ? <Icon name="stop" size={13} /> : <Icon name="send" size={14} />}
                 </button>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span className="t-meta" style={{ color: "var(--ink-60)" }}>web 通道</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={openFilePicker}
+                    disabled={streaming || pendingImages.length >= IMG_MAX_PER_TURN}
+                    title={`添加图片（≤ ${IMG_MAX_PER_TURN} 张，单张 ≤ 5MB）`}
+                    style={{
+                      height: 28, padding: "0 10px", fontSize: 12,
+                      color: "var(--ink-80)",
+                    }}>
+                    <Icon name="image" size={13} />
+                    <span>添加图片</span>
+                    {pendingImages.length > 0 && (
+                      <span className="t-meta" style={{ color: "var(--ink-60)", marginLeft: 2 }}>
+                        {pendingImages.length}/{IMG_MAX_PER_TURN}
+                      </span>
+                    )}
+                  </button>
+                  <span className="t-meta" style={{ color: "var(--ink-60)" }}>web 通道</span>
+                </div>
                 <span className="t-meta">流式 · SSE</span>
               </div>
             </div>
@@ -448,8 +677,13 @@ function ApprovalCard({ approval, onResolve, resolved }) {
   );
 }
 
-function Bubble({ role, text, streaming, t }) {
+function Bubble({ role, text, images, streaming, t }) {
   const isAgent = role === "assistant" || role === "agent";
+  const imgs = Array.isArray(images) ? images.slice(0, 4) : [];
+  const openImg = (url) => {
+    const w = window.open();
+    if (w) w.document.write(`<img src="${url}" style="max-width:100%;height:auto"/>`);
+  };
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
@@ -470,14 +704,34 @@ function Bubble({ role, text, streaming, t }) {
         border: isAgent ? "1px solid var(--hairline)" : "none",
         borderRadius: 10,
       }}>
-        <div style={{
-          fontFamily: "var(--font-text)",
-          fontSize: 14, lineHeight: 1.55, letterSpacing: "-0.012em",
-          color: "var(--ink)", whiteSpace: "pre-wrap",
-        }}>
-          {text || "—"}
-          {streaming && <span className="blink-cursor" style={{ color: "var(--primary)", marginLeft: 2 }}>▮</span>}
-        </div>
+        {imgs.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: text ? 8 : 0 }}>
+            {imgs.map((url, i) => (
+              <img
+                key={i}
+                src={url}
+                onClick={() => openImg(url)}
+                style={{
+                  width: 64, height: 64, objectFit: "cover",
+                  borderRadius: 6, border: "1px solid var(--hairline)",
+                  cursor: "pointer",
+                }}
+                title="点击查看大图"
+                alt={`图 ${i + 1}`}
+              />
+            ))}
+          </div>
+        )}
+        {(text || imgs.length === 0 || streaming) && (
+          <div style={{
+            fontFamily: "var(--font-text)",
+            fontSize: 14, lineHeight: 1.55, letterSpacing: "-0.012em",
+            color: "var(--ink)", whiteSpace: "pre-wrap",
+          }}>
+            {text || (imgs.length > 0 ? "" : "—")}
+            {streaming && <span className="blink-cursor" style={{ color: "var(--primary)", marginLeft: 2 }}>▮</span>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -495,7 +749,23 @@ function buildTimelineFromMessages(msgs) {
   for (const m of msgs) {
     const role = m.role;
     if (role === "user") {
-      items.push({ kind: "user", content: m.content || "" });
+      // content 可能是 str（Phase 1-9）或 list-of-parts（Phase 10 多模态历史）
+      if (Array.isArray(m.content)) {
+        let contentText = "";
+        const imageUrls = [];
+        for (const part of m.content) {
+          if (!part || typeof part !== "object") continue;
+          if (part.type === "text" && typeof part.text === "string") {
+            contentText += (contentText ? "\n" : "") + part.text;
+          } else if (part.type === "image_url") {
+            const url = part.image_url && part.image_url.url;
+            if (typeof url === "string") imageUrls.push(url);
+          }
+        }
+        items.push({ kind: "user", content: contentText, images: imageUrls });
+      } else {
+        items.push({ kind: "user", content: m.content || "" });
+      }
     } else if (role === "assistant") {
       const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
       for (const tc of calls) {

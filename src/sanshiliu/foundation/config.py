@@ -169,6 +169,52 @@ class Settings(BaseSettings):
         description="逗号分隔的输出关键词；命中则替换为话术",
     )
 
+    # Phase 10 豆包多模态后端（可选；缺则 router 降级单后端走 openai_*）
+    doubao_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("doubao_api_key", "DOUBAO_API_KEY"),
+        description="火山引擎 Ark API Key；缺则不注册豆包 provider，纯文本场景不受影响",
+    )
+    doubao_base_url: str = Field(
+        default="https://ark.cn-beijing.volces.com/api/v3",
+        validation_alias=AliasChoices("doubao_base_url", "DOUBAO_BASE_URL"),
+        description="火山引擎 Ark base URL；本身 OpenAI 兼容，直接走 openai SDK",
+    )
+    doubao_model: str = Field(
+        default="doubao-seed-2-0-pro-260215",
+        validation_alias=AliasChoices("doubao_model", "DOUBAO_MODEL"),
+        description="豆包模型 ID 或 endpoint ID（ep-xxx）；vision-pro 默认值见此",
+    )
+
+    # Phase 10 多模态消息上限（同时约束 web /chat 和 wechat 入队）
+    multimodal_max_images_per_turn: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        validation_alias=AliasChoices(
+            "multimodal_max_images_per_turn", "SANSHILIU_MULTIMODAL_MAX_IMAGES",
+        ),
+        description="单轮请求最多接受多少张图；超过返回 400",
+    )
+    multimodal_max_image_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=64 * 1024,
+        le=20 * 1024 * 1024,
+        validation_alias=AliasChoices(
+            "multimodal_max_image_bytes", "SANSHILIU_MULTIMODAL_MAX_IMAGE_BYTES",
+        ),
+        description="单张图解码后字节上限；默认 5MB",
+    )
+    wechat_merge_window_ms: int = Field(
+        default=5_000,
+        ge=500,
+        le=60_000,
+        validation_alias=AliasChoices(
+            "wechat_merge_window_ms", "SANSHILIU_WECHAT_MERGE_WINDOW_MS",
+        ),
+        description="wechat 多条消息静默合并窗口；最后一条 N ms 内无新消息才触发 LLM",
+    )
+
     # Phase 5 工具配置
     tools_enabled: bool = Field(
         default=True,
@@ -245,7 +291,10 @@ class Settings(BaseSettings):
         """persona_dir/prompts_dir 只解析路径不强建——对应 loader 内会校验文件齐不齐。"""
         return v.expanduser().resolve()
 
-    @field_validator("openai_base_url", "ilink_base_url", "weixin_base_url", mode="after")
+    @field_validator(
+        "openai_base_url", "doubao_base_url", "ilink_base_url", "weixin_base_url",
+        mode="after",
+    )
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         """base_url 末尾不带 /，与 openai SDK 内部拼接一致，避免双斜杠 404。"""
