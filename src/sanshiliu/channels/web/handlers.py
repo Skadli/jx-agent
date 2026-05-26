@@ -25,6 +25,7 @@ from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
 from sanshiliu.engine.types import MessageContent
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.foundation.msg_split import StreamingSplitter
 from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.storage.db import Database
 
@@ -237,6 +238,7 @@ def make_chat_handler(
         SENTINEL = object()
         ERROR = object()
         APPROVAL = object()
+        MSG_BREAK = object()  # <MSG> 切到的段边界；前端收到 event=msg_break 时开新气泡
 
         session = session_store.get_or_create(explicit_sid, channel="web")
         # 先把 session_id 推到客户端，便于前端跟踪
@@ -265,8 +267,19 @@ def make_chat_handler(
                         sse_q.put(SENTINEL)
                         return
 
+                sp = StreamingSplitter()
+                first_segment = True
                 async for delta in engine.stream_turn(session, user_content):
-                    sse_q.put(delta.text)
+                    for seg in sp.feed(delta.text):
+                        if not first_segment:
+                            sse_q.put(MSG_BREAK)
+                        sse_q.put(seg)
+                        first_segment = False
+                for seg in sp.close():
+                    if not first_segment:
+                        sse_q.put(MSG_BREAK)
+                    sse_q.put(seg)
+                    first_segment = False
                 # 落 jsonl 用于回放和 dashboard 历史展示
                 if short_term is not None:
                     try:
@@ -304,6 +317,12 @@ def make_chat_handler(
                 if item is SENTINEL:
                     safe_write(req.wfile, format_event("", event="done"))
                     break
+                if item is MSG_BREAK:
+                    # 多消息拆分边界；前端按此事件开新气泡
+                    if not safe_write(req.wfile, format_event("", event="msg_break")):
+                        break
+                    last_beat = time.monotonic()
+                    continue
                 if isinstance(item, tuple) and item[0] is ERROR:
                     safe_write(req.wfile, format_event(str(item[1]), event="error"))
                     break

@@ -30,6 +30,14 @@ class Session:
     active_skills_text: str = ""
     # Phase 7 起：CLAUDE.md（全局+项目）+ memdir 索引块，拼到 prompt 最顶部
     memory_block_text: str = ""
+    # 2026-05-26 起：本轮命中的 persona module 正文（含 header）；engine 在每轮前刷新
+    active_module_text: str = ""
+    # 本轮注入的 persona modules listing 段（不含正文，是常驻目录提示给 LLM）
+    persona_modules_listing: str = ""
+    # 本轮已注入正文的 module id；LoadPersonaModule 工具用来做去重
+    active_module_ids: set[str] = field(default_factory=set)
+    # 上一轮最后注入的 module id（仅信息用途，给 REPL /stats 看）
+    last_active_module_id: str = ""
 
     def __post_init__(self) -> None:
         # 占位 system 行；真实内容由 engine 在每轮前调 refresh_system_prompt 注入
@@ -57,12 +65,17 @@ class Session:
         return msg
 
     def _effective_system(self) -> str:
-        """合并：memory_block > persona > active skills > compact_summary；空段跳过。"""
+        """合并顺序（空段跳过）：
+        memory_block → core_persona(messages[0]) → persona_modules_listing
+        → active_module(正文) → active_skills → compact_summary
+        """
         persona = self.messages[0].content if self.messages and self.messages[0].role == "system" else ""
         parts = [
             p for p in (
                 self.memory_block_text,
                 persona,
+                self.persona_modules_listing,
+                self.active_module_text,
                 self.active_skills_text,
                 self.compact_summary,
             ) if p

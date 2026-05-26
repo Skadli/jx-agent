@@ -88,6 +88,8 @@ from sanshiliu.foundation.config import get_settings
 from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.logging import configure_logging, get_logger
 from sanshiliu.identity.loader import PersonaLoader
+from sanshiliu.identity.module_activator import PersonaModuleActivator
+from sanshiliu.identity.module_loader import PersonaModuleLoader
 from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.providers import build_default_registry
 from sanshiliu.llm.router import LLMRouter
@@ -124,6 +126,13 @@ async def run_serve() -> int:
     except ConfigError as exc:
         print(f"人设加载失败：{exc}", file=sys.stderr)
         return 78
+
+    # persona modules（可选）
+    module_loader = PersonaModuleLoader(settings.persona_dir)
+    module_loader.load()
+    module_activator = (
+        PersonaModuleActivator(module_loader) if module_loader.list() else None
+    )
 
     try:
         compact_prompts = load_compact_prompts(settings.prompts_dir)
@@ -198,6 +207,7 @@ async def run_serve() -> int:
                 else None,
                 permission=permission_manager,
                 skill_activator=skill_activator,
+                persona_module_activator=module_activator,
                 db=db,
             )
         except ConfigError as exc:
@@ -251,8 +261,9 @@ async def run_serve() -> int:
         claudemd_loader=claudemd_loader,
         memdir_loader=memdir_loader,
         memory_extractor=memory_extractor,
+        persona_module_activator=module_activator,
     )
-    persona_watcher = PersonaWatcher(loader)
+    persona_watcher = PersonaWatcher(loader, module_loader=module_loader)
 
     health = HealthState()
     health.set("llm", "up")

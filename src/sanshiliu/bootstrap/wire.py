@@ -18,6 +18,8 @@ from sanshiliu.foundation.config import Settings
 from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
+from sanshiliu.identity.module_activator import PersonaModuleActivator
+from sanshiliu.identity.module_loader import PersonaModuleLoader
 from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.providers import build_default_registry
 from sanshiliu.llm.router import LLMRouter
@@ -48,6 +50,8 @@ class App:
     # Phase 10：原 llm 字段保留为 router；engine 拿到的就是这个对象
     llm: LLMRouter
     persona_loader: PersonaLoader
+    persona_module_loader: PersonaModuleLoader
+    persona_module_activator: PersonaModuleActivator | None
     persona_watcher: PersonaWatcher
     context_manager: ContextManager
     engine: ConversationEngine
@@ -88,10 +92,16 @@ async def build_app(
     """一份完整可运行的 App；confirmer 由通道传入（REPL 给 ReplConfirmer）。"""
     cwd_root = (cwd or Path.cwd()).resolve()
 
-    # L3 身份
+    # L3 身份：core 强制存在；modules 目录可选（不存在/空 → 无 listing 也无注入）
     persona_loader = PersonaLoader(settings.persona_dir)
     persona_loader.load()
-    persona_watcher = PersonaWatcher(persona_loader)
+    persona_module_loader = PersonaModuleLoader(settings.persona_dir)
+    persona_module_loader.load()
+    persona_module_activator = (
+        PersonaModuleActivator(persona_module_loader)
+        if persona_module_loader.list() else None
+    )
+    persona_watcher = PersonaWatcher(persona_loader, module_loader=persona_module_loader)
 
     # L0 storage
     db = await get_database(settings.data_dir / "sanshiliu.db")
@@ -155,6 +165,7 @@ async def build_app(
                 ),
                 permission=permission_manager,
                 skill_activator=skill_activator,
+                persona_module_activator=persona_module_activator,
                 db=db,
             )
         except ConfigError as exc:
@@ -198,6 +209,7 @@ async def build_app(
         claudemd_loader=claudemd_loader,
         memdir_loader=memdir_loader,
         memory_extractor=memory_extractor,
+        persona_module_activator=persona_module_activator,
     )
 
     # 横幅状态汇总
@@ -229,7 +241,10 @@ async def build_app(
     return App(
         settings=settings,
         db=db, llm=llm,
-        persona_loader=persona_loader, persona_watcher=persona_watcher,
+        persona_loader=persona_loader,
+        persona_module_loader=persona_module_loader,
+        persona_module_activator=persona_module_activator,
+        persona_watcher=persona_watcher,
         context_manager=context_manager,
         engine=engine,
         tool_registry=tool_registry, tool_dispatcher=tool_dispatcher,

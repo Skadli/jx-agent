@@ -165,9 +165,23 @@ python -m sanshiliu [--version] <command>
 
 defaultMode：`allow` / `deny` / `ask`（ask 在 REPL 弹确认；wechat/web 通道默认拒绝）。用户选"always"会自动追加到 `permissions.allow` 持久化。
 
-### `persona/*.md`（人设）
+### `persona/`（人设）
 
-5 个 md 必填齐：`root.md` / `personality.md` / `beliefs.md` / `style.md` / `examples.md`。当前默认为博主"三十六贱笑"分身（基于公开作品提炼）；换成自己写的 5 份 md 即可换 persona。改完保存即生效（watcher 5s 轮询 mtime）。
+分两层加载：
+
+- `persona/core/`：全量常驻进 system prompt 的核心人格，**按字母序拼接**。默认 5 份 md（建议总长 ≤ 2k tokens）：
+  - `identity.md` — 我是谁 / 背景 / 红线
+  - `style.md` — 说话风格硬约束 + anti-pattern + `<MSG>` 拆分规则
+  - `personality.md` — 性格八维 + OCEAN
+  - `beliefs.md` — 价值观底线与红线
+  - `fewshot_short.md` — 短样本（微信节奏 ≤ 30 字）
+- `persona/modules/`：按需注入的扩展模块，每份 md 含 frontmatter（`name` / `description` / `trigger_keywords`）。默认 8 份：
+  - 作品：`works_dubbing.md`（配音短剧）/ `works_vlog.md`（真人 Vlog）
+  - 知识：`knowledge_timeline.md`（公开数据 / 平台 / 时间线）/ `advisor_methodology.md`（5 心智模型 + 8 启发式）
+  - 长样本：`fewshot_advisor.md`（创作顾问）/ `fewshot_emotion.md`（情绪接住）/ `fewshot_roleplay.md`（配音剧扮演）
+  - 风格补充：`style_phrases.md`（控场口头禅扩展）
+
+加载策略：core/ 全量常驻；modules/ 由引擎按 user_text 命中 `trigger_keywords` 注入 0-1 个，或由 LLM 主动调 `LoadPersonaModule` 工具按 `name` 拉取。换 persona 直接改 md 即可，watcher 5s 轮询 mtime 自动 reload。
 
 ### `memdir/`（长期记忆）
 
@@ -203,12 +217,22 @@ jx-agent/
 ├── settings.json.example      # Claude 风格权限示例
 ├── CLAUDE.md                  # 项目级长期记忆（启动注入 system prompt 顶部）
 │
-├── persona/                   # L3 人设；5 份 md 拼成 system prompt
-│   ├── root.md                # 身份 + 时间线 + 用户态度 + 不会做的事
-│   ├── personality.md         # 8 维度 + OCEAN 参考值 + 情绪状态
-│   ├── beliefs.md             # 5 心智模型 + 8 决策启发式 + 红线
-│   ├── style.md               # 表达 DNA + 27 段 few-shot
-│   └── examples.md            # 6 个完整对话样本
+├── persona/                   # L3 人设；core/ 全量常驻 + modules/ 按需注入
+│   ├── core/                  # 常驻 system prompt，按字母序拼接
+│   │   ├── identity.md        # 我是谁 / 背景 / 红线
+│   │   ├── style.md           # 说话风格硬约束 + anti-pattern + <MSG> 规则
+│   │   ├── personality.md     # 性格八维 + OCEAN
+│   │   ├── beliefs.md         # 价值观底线 / 红线
+│   │   └── fewshot_short.md   # 短样本（微信节奏 ≤ 30 字）
+│   └── modules/               # 按需注入；frontmatter 含 name/description/trigger_keywords
+│       ├── works_dubbing.md   # 配音短剧节目知识
+│       ├── works_vlog.md      # 真人 Vlog/整蛊节目知识
+│       ├── knowledge_timeline.md   # 公开数据 / 平台 / 时间线
+│       ├── advisor_methodology.md  # 5 心智模型 + 8 决策启发式
+│       ├── fewshot_advisor.md      # 创作顾问长样本
+│       ├── fewshot_emotion.md      # 情绪接住样本
+│       ├── fewshot_roleplay.md     # 配音剧扮演样本
+│       └── style_phrases.md        # 控场口头禅扩展
 │
 ├── memdir/                    # L5 长期记忆；MEMORY.md 索引 + 4 类 md
 ├── skills/                    # L6 仓库内自带 SKILL.md

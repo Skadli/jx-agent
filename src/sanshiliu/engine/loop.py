@@ -11,6 +11,7 @@ from sanshiliu.engine.session import Session
 from sanshiliu.engine.types import ChatMessage, MessageContent
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
+from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.llm.client import LLMClient
 from sanshiliu.llm.router import LLMRouter
 from sanshiliu.llm.stream import StreamDelta
@@ -61,6 +62,7 @@ class ConversationEngine:
         claudemd_loader: ClaudeMdLoader | None = None,
         memdir_loader: MemdirLoader | None = None,
         memory_extractor: MemoryExtractor | None = None,
+        persona_module_activator: PersonaModuleActivator | None = None,
     ) -> None:
         # Phase 10：llm 可以是单 LLMClient（Phase 1-9 行为）或 LLMRouter（多后端）
         # 两者接口一致：chat / stream_chat / close / model / base_url
@@ -74,6 +76,7 @@ class ConversationEngine:
         self._claudemd_loader = claudemd_loader
         self._memdir_loader = memdir_loader
         self._memory_extractor = memory_extractor
+        self._persona_module_activator = persona_module_activator
 
     @property
     def llm(self) -> LLMClient | LLMRouter:
@@ -127,6 +130,31 @@ class ConversationEngine:
                 _logger.warning("memdir 读失败（不阻塞）", error=str(exc))
         session.memory_block_text = "\n\n---\n\n".join(parts) if parts else ""
 
+    def _refresh_persona_modules(self, session: Session, user_text: str) -> None:
+        """关键词命中 0-1 个 persona module 注入正文 + 总是写 listing 段（如有 module）。
+
+        清空 active_module_ids 是每轮的起点——本轮 LoadPersonaModule 工具
+        通过这个集合判断「引擎是否已经注入过 X」做去重。
+        """
+        session.active_module_ids = set()
+        session.active_module_text = ""
+        session.persona_modules_listing = ""
+        if self._persona_module_activator is None:
+            session.last_active_module_id = ""
+            return
+        try:
+            listing = self._persona_module_activator.list_for_prompt()
+            session.persona_modules_listing = listing
+            picked = self._persona_module_activator.pick(user_text)
+            if picked is not None:
+                session.active_module_text = self._persona_module_activator.render_body(picked)
+                session.active_module_ids.add(picked.id)
+                session.last_active_module_id = picked.id
+            else:
+                session.last_active_module_id = ""
+        except Exception as exc:
+            _logger.error("persona module 激活失败（保留旧 listing/module）", error=str(exc))
+
     def _refresh_skills(self, session: Session, user_text: str) -> None:
         """注入 skills listing 到 system prompt；和 Claude Code 一致——
         listing 只给 name+description，正文由 LLM 主动调 Skill 工具拿。
@@ -161,10 +189,12 @@ class ConversationEngine:
             yield StreamDelta(text=content_text)
             return
 
+        flat_text = _flatten_user_text(user_text)
         self._refresh_memory(session)
         self._refresh_persona(session)
+        self._refresh_persona_modules(session, flat_text)
         # _refresh_skills 不消费 user_text 内容（已 `del`），任何 union 类型都行
-        self._refresh_skills(session, _flatten_user_text(user_text))
+        self._refresh_skills(session, flat_text)
         await self._maybe_compact(session)
         session.add_user(user_text)
         await self._touch_session(session)
@@ -199,9 +229,11 @@ class ConversationEngine:
 
         Phase 10：user_text 可为 str 或 list[dict]（OpenAI 多模态格式）。
         """
+        flat_text = _flatten_user_text(user_text)
         self._refresh_memory(session)
         self._refresh_persona(session)
-        self._refresh_skills(session, _flatten_user_text(user_text))
+        self._refresh_persona_modules(session, flat_text)
+        self._refresh_skills(session, flat_text)
         await self._maybe_compact(session)
         session.add_user(user_text)
         await self._touch_session(session)

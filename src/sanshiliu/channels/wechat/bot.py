@@ -27,6 +27,7 @@ from sanshiliu.engine.session import Session
 from sanshiliu.engine.types import MessageContent
 from sanshiliu.foundation.errors import ChannelError
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.foundation.msg_split import split_messages
 from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.storage.db import Database
 
@@ -265,20 +266,31 @@ class WechatBot:
         )
 
     async def _send_safe(self, item: QueueItem, text: str) -> None:
-        """发出 + 落出站日志；iLink 故障不阻塞队列消费。"""
-        target = item.group_id or item.user_id
-        try:
-            await self._client.send_text(target, text)
-        except ChannelError as exc:
-            _logger.error("iLink 发送失败", target=target, error=str(exc))
+        """发出 + 落出站日志；iLink 故障不阻塞队列消费。
+
+        若 text 含 <MSG> sentinel，按段拆成多条独立消息背靠背发送（无延迟）。
+        每段独立落出站日志，便于回放对应原始消息。
+        """
+        if not text:
             return
-        await self._queue.record_outbound(
-            session_id=item.session_id,
-            user_id=item.user_id,
-            group_id=item.group_id,
-            content=text,
-            llm_call_id=None,
-        )
+        target = item.group_id or item.user_id
+        segments = split_messages(text)
+        if not segments:
+            return
+        for seg in segments:
+            try:
+                await self._client.send_text(target, seg)
+            except ChannelError as exc:
+                _logger.error("iLink 发送失败", target=target, error=str(exc))
+                # 任一段发送失败即停；已发的段不回滚
+                return
+            await self._queue.record_outbound(
+                session_id=item.session_id,
+                user_id=item.user_id,
+                group_id=item.group_id,
+                content=seg,
+                llm_call_id=None,
+            )
 
     async def _ping_loop(self) -> None:
         # 官方模式下 client.ping() 是 no-op 总返 True，盲写 "up" 会覆盖长轮询设的 "expired"

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from sanshiliu.channels.web.handlers import HealthState
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
+from sanshiliu.identity.types import MODULES_DIRNAME
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.security.settings_loader import SettingsLoader
@@ -333,11 +334,11 @@ def make_tools_handler(
 # ────────── /api/persona ──────────
 
 _PERSONA_SUMMARY = {
-    "root.md":        "总纲：身份 / 目标 / 绝对禁忌",
-    "personality.md": "性格画像：OCEAN 五大、表达 DNA",
-    "beliefs.md":     "价值观与决策启发式",
-    "style.md":       "语言风格：句式 / 词汇 / 禁词",
-    "examples.md":    "Few-shot：示例对话",
+    "identity.md":      "我是谁 · 背景 · 红线",
+    "style.md":         "说话风格硬约束 + anti-pattern",
+    "personality.md":   "性格八维 + OCEAN",
+    "beliefs.md":       "价值观底线 · 红线",
+    "fewshot_short.md": "短样本 (微信节奏)",
 }
 
 
@@ -368,6 +369,27 @@ def make_persona_handler(
     return handler
 
 
+def resolve_persona_file(persona_loader: PersonaLoader, fname: str) -> Path | None:
+    """按 basename 查 core/ 优先、modules/ fallback；通过 .resolve() 校验仍在 persona_dir 之下，
+    防 `..` path traversal。找不到返回 None。"""
+    persona_root = persona_loader.persona_dir.resolve()
+    for candidate in (
+        persona_loader.core_dir / fname,
+        persona_loader.persona_dir / MODULES_DIRNAME / fname,
+    ):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        try:
+            resolved.relative_to(persona_root)
+        except ValueError:
+            continue
+        if resolved.is_file():
+            return resolved
+    return None
+
+
 def make_persona_file_handler(
     persona_loader: PersonaLoader | None,
 ) -> Callable[[BaseHTTPRequestHandler], None]:
@@ -388,8 +410,8 @@ def make_persona_file_handler(
             if not fname.endswith(".md") or "/" in fname or ".." in fname:
                 _write_json(req, {"error": "invalid filename"}, status=400)
                 return
-            path = persona_loader.persona_dir / fname
-            if not path.is_file():
+            path = resolve_persona_file(persona_loader, fname)
+            if path is None:
                 _write_json(req, {"error": "not found"}, status=404)
                 return
             body = path.read_text(encoding="utf-8")

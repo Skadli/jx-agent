@@ -57,8 +57,8 @@ function Persona({ onJump }) {
   };
 
   const exportPrompt = () => {
-    // 顺序拼装 5 份 md
-    const order = ["root.md", "personality.md", "beliefs.md", "style.md", "examples.md"];
+    // 顺序拼装 core/ 下 5 份 md
+    const order = ["identity.md", "personality.md", "beliefs.md", "style.md", "fewshot_short.md"];
     Promise.all(order.map(n => API.get(`/api/persona/${encodeURIComponent(n)}`))).then(results => {
       const parts = results.filter(r => !r.error).map(r => r.body);
       API.download("persona-prompt.md", parts.join("\n\n---\n\n"));

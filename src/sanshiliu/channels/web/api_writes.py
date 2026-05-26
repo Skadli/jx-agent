@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sanshiliu.channels.web.api import resolve_persona_file
 from sanshiliu.channels.web.handlers import SessionStore
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
@@ -157,11 +158,16 @@ def make_persona_write_handler(
         body = _read_json(req)
         if body is None or "body" not in body:
             _write_json(req, {"error": "missing body"}, status=400); return
-        path = persona_loader.persona_dir / fname
+        # 已存在的文件就地写（不论 core/ 还是 modules/）；不存在默认落 core/
+        path = resolve_persona_file(persona_loader, fname) or (persona_loader.core_dir / fname)
+        is_core = path.parent.resolve() == persona_loader.core_dir.resolve()
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(str(body["body"]), encoding="utf-8")
-            persona_loader.invalidate()
-            persona_loader.load()
+            # core/ 下的改动由 watcher 5s 内 invalidate；这里只对 core 同步触发一次重读，保证立即一致
+            if is_core:
+                persona_loader.invalidate()
+                persona_loader.load()
         except OSError as exc:
             _write_json(req, {"error": str(exc)}, status=500); return
         _write_json(req, {"ok": True, "path": str(path), "chars": len(str(body["body"]))})

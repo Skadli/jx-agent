@@ -16,7 +16,10 @@ from sanshiliu.engine.session import Session
 from sanshiliu.foundation.config import get_settings
 from sanshiliu.foundation.errors import ConfigError, LLMError, SanshiliuError
 from sanshiliu.foundation.logging import configure_logging, get_logger
+from sanshiliu.foundation.msg_split import StreamingSplitter
 from sanshiliu.identity.loader import PersonaLoader
+from sanshiliu.identity.module_activator import PersonaModuleActivator
+from sanshiliu.identity.module_loader import PersonaModuleLoader
 from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.providers import build_default_registry
 from sanshiliu.llm.router import LLMRouter
@@ -82,15 +85,31 @@ async def _print_stats(
     print()
 
 
-async def _print_persona(loader: PersonaLoader) -> None:
+async def _print_persona(
+    loader: PersonaLoader,
+    module_loader: PersonaModuleLoader | None = None,
+) -> None:
     snap = loader.get()
-    print("── 当前人设 ──")
-    print(f"  目录       : {loader.persona_dir}")
-    print(f"  总字数     : {snap.total_chars()}")
+    print("── 当前人设（core，全量常驻）──")
+    print(f"  根目录     : {loader.persona_dir}")
+    print(f"  core 总字数: {snap.total_chars()}")
     print(f"  最近 mtime : {snap.latest_mtime():.0f}")
-    for name, content in snap.sections.items():
-        print(f"    {name:<18} {len(content):>6} 字")
+    for name in snap.file_order:
+        print(f"    {name:<22} {len(snap.sections.get(name, '')):>6} 字")
+    if module_loader is not None:
+        mods = module_loader.list()
+        print()
+        print(f"── persona modules（按需加载，共 {len(mods)} 个）──")
+        for m in mods:
+            kws = "/".join(m.trigger_keywords[:5]) if m.trigger_keywords else "(无关键词)"
+            print(f"  - {m.id:<22} {len(m.body):>5} 字  ← {kws}")
     print()
+
+
+async def _print_stats_persona(session: Session) -> None:
+    """/stats 末尾输出本会话上一轮命中的 persona module。"""
+    last = session.last_active_module_id or "(none)"
+    print(f"  上一轮命中 module       : {last}")
 
 
 def _print_memory(
@@ -157,6 +176,13 @@ async def run_repl() -> int:
         print(f"人设加载失败：{exc}", file=sys.stderr)
         return 78
 
+    # persona modules（可选；目录不存在/为空返空列表，不报错）
+    module_loader = PersonaModuleLoader(settings.persona_dir)
+    module_loader.load()
+    module_activator = (
+        PersonaModuleActivator(module_loader) if module_loader.list() else None
+    )
+
     # Phase 3：compact prompts 也走 markdown 外置
     try:
         compact_prompts = load_compact_prompts(settings.prompts_dir)
@@ -220,6 +246,7 @@ async def run_repl() -> int:
                 tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
                 permission=permission_manager,
                 skill_activator=skill_activator,
+                persona_module_activator=module_activator,
                 db=db,
             )
         except ConfigError as exc:
@@ -267,10 +294,11 @@ async def run_repl() -> int:
         claudemd_loader=claudemd_loader,
         memdir_loader=memdir_loader,
         memory_extractor=memory_extractor,
+        persona_module_activator=module_activator,
     )
     session = Session.new(channel="repl")
-    # 懒失效模式：watcher 仅 invalidate loader 缓存，engine 每轮拉新 snapshot；不挂 on_change
-    watcher = PersonaWatcher(loader)
+    # 懒失效模式：watcher 同时监控 core/ 和 modules/
+    watcher = PersonaWatcher(loader, module_loader=module_loader)
 
     if claudemd_loader is not None and memdir_loader is not None:
         mem_summary = (
@@ -315,9 +343,11 @@ async def run_repl() -> int:
                 break
             if cmd == "/stats":
                 await _print_stats(db, session, context_manager)
+                await _print_stats_persona(session)
+                print()
                 continue
             if cmd == "/persona":
-                await _print_persona(loader)
+                await _print_persona(loader, module_loader)
                 continue
             if cmd == "/memory":
                 _print_memory(claudemd_loader, memdir_loader, memory_extractor)
@@ -340,9 +370,20 @@ async def run_repl() -> int:
                     continue
 
             print("\n贱笑> ", end="", flush=True)
+            sp = StreamingSplitter()
+            first = True
             try:
                 async for delta in engine.stream_turn(session, user_input):
-                    print(delta.text, end="", flush=True)
+                    for seg in sp.feed(delta.text):
+                        if not first:
+                            print("\n贱笑> ", end="", flush=True)
+                        print(seg, end="", flush=True)
+                        first = False
+                for seg in sp.close():
+                    if not first:
+                        print("\n贱笑> ", end="", flush=True)
+                    print(seg, end="", flush=True)
+                    first = False
                 print()
             except LLMError as exc:
                 print(f"\n[LLM 错误] {exc}", file=sys.stderr)

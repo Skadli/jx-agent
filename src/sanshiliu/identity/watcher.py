@@ -1,4 +1,4 @@
-"""人设热重载 watcher；5s 轮询 mtime，变化时 invalidate loader。"""
+"""人设热重载 watcher；5s 轮询 mtime，变化时 invalidate loader（含 modules）。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
+from sanshiliu.identity.module_loader import PersonaModuleLoader
 
 _logger = get_logger(__name__)
 
@@ -15,34 +16,44 @@ _DEFAULT_INTERVAL_SEC = 5.0
 
 
 class PersonaWatcher:
-    """异步 watcher；start() 起后台任务，stop() 优雅退出。"""
+    """异步 watcher；start() 起后台任务，stop() 优雅退出。
+
+    同时监控 core/*.md（PersonaLoader 管）和 modules/*.md（可选 PersonaModuleLoader 管）。
+    任一目录有变更 → invalidate 对应 loader → 下次 get/list 重读。
+    """
 
     def __init__(
         self,
         loader: PersonaLoader,
         *,
+        module_loader: PersonaModuleLoader | None = None,
         interval: float = _DEFAULT_INTERVAL_SEC,
         on_change: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._loader = loader
+        self._module_loader = module_loader
         self._interval = interval
         self._on_change = on_change
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
-        self._last_mtimes: dict[str, float] = {}
+        self._last_core_mtimes: dict[str, float] = {}
+        self._last_module_mtimes: dict[str, float] = {}
 
     async def start(self) -> None:
-        """启动后台轮询任务；幂等。"""
         if self._task is not None and not self._task.done():
             return
-        # 取首次基线，避免启动瞬间就误报变更
-        self._last_mtimes = self._loader.current_mtimes()
+        self._last_core_mtimes = self._loader.current_mtimes()
+        if self._module_loader is not None:
+            self._last_module_mtimes = self._module_loader.current_mtimes()
         self._stopping.clear()
         self._task = asyncio.create_task(self._run(), name="persona-watcher")
-        _logger.info("persona watcher 启动", interval_sec=self._interval)
+        _logger.info(
+            "persona watcher 启动",
+            interval_sec=self._interval,
+            watches_modules=self._module_loader is not None,
+        )
 
     async def stop(self) -> None:
-        """请求停止并等待任务结束。"""
         self._stopping.set()
         if self._task is not None:
             try:
@@ -62,23 +73,38 @@ class PersonaWatcher:
             await self._check_once()
 
     async def _check_once(self) -> None:
-        """采新 mtime，与基线对比；任何差异即触发 invalidate + on_change。"""
-        try:
-            current = self._loader.current_mtimes()
-        except Exception as exc:
-            _logger.error("watcher 采 mtime 失败（不阻塞）", error=str(exc))
-            return
+        """同时采 core + modules 当前 mtime；任一目录有差异即 invalidate 对应 loader。"""
+        any_changed = False
 
-        if current != self._last_mtimes:
-            changed = [
-                name for name, ts in current.items()
-                if self._last_mtimes.get(name) != ts
-            ]
-            _logger.info("检测到 persona 变更", files=changed)
-            self._last_mtimes = current
+        try:
+            cur_core = self._loader.current_mtimes()
+        except Exception as exc:
+            _logger.error("watcher 采 core mtime 失败（不阻塞）", error=str(exc))
+            cur_core = self._last_core_mtimes
+        if cur_core != self._last_core_mtimes:
+            changed = [n for n, ts in cur_core.items() if self._last_core_mtimes.get(n) != ts]
+            removed = [n for n in self._last_core_mtimes if n not in cur_core]
+            _logger.info("检测到 persona core 变更", changed=changed, removed=removed)
+            self._last_core_mtimes = cur_core
             self._loader.invalidate()
-            if self._on_change is not None:
-                try:
-                    await self._on_change()
-                except Exception as exc:
-                    _logger.error("on_change 回调失败（不阻塞）", error=str(exc))
+            any_changed = True
+
+        if self._module_loader is not None:
+            try:
+                cur_mod = self._module_loader.current_mtimes()
+            except Exception as exc:
+                _logger.error("watcher 采 modules mtime 失败（不阻塞）", error=str(exc))
+                cur_mod = self._last_module_mtimes
+            if cur_mod != self._last_module_mtimes:
+                changed = [n for n, ts in cur_mod.items() if self._last_module_mtimes.get(n) != ts]
+                removed = [n for n in self._last_module_mtimes if n not in cur_mod]
+                _logger.info("检测到 persona modules 变更", changed=changed, removed=removed)
+                self._last_module_mtimes = cur_mod
+                self._module_loader.invalidate()
+                any_changed = True
+
+        if any_changed and self._on_change is not None:
+            try:
+                await self._on_change()
+            except Exception as exc:
+                _logger.error("on_change 回调失败（不阻塞）", error=str(exc))

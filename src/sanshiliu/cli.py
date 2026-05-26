@@ -84,6 +84,9 @@ def _run_doctor() -> int:
         print(f"  [{mark}] {d.pip_spec}  {d.detail}")
     missing = [d for d in deps if not d.installed]
 
+    print("\n── Persona ──")
+    _print_persona_doctor_section()
+
     if report.has_failures:
         print("\n[ERROR] preflight 有阻塞项；请按提示修复后重试")
         return 78
@@ -93,6 +96,51 @@ def _run_doctor() -> int:
 
     print("\n[OK] 所有检查通过")
     return 0
+
+
+def _print_persona_doctor_section() -> None:
+    """doctor 命令的 persona 段输出；任何异常都吞掉不阻塞 doctor。"""
+    try:
+        from sanshiliu.foundation.config import get_settings
+        from sanshiliu.identity.loader import PersonaLoader
+        from sanshiliu.identity.module_loader import PersonaModuleLoader
+    except Exception as exc:  # pragma: no cover
+        print(f"  [ERROR] 模块导入失败：{exc}")
+        return
+
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        print(f"  [WARN] 无法解析 settings（很可能缺 OPENAI_API_KEY）：{exc}")
+        print("         persona 段需要 settings.persona_dir，跳过")
+        return
+
+    persona_dir = settings.persona_dir
+    print(f"  根目录       : {persona_dir}")
+
+    try:
+        loader = PersonaLoader(persona_dir)
+        snap = loader.load()
+    except Exception as exc:
+        print(f"  [FAIL] core 加载失败：{exc}")
+        return
+    print(f"  core/        : {len(snap.sections)} 个文件 / {snap.total_chars()} 字")
+    for name in snap.file_order:
+        print(f"    {name:<24} {len(snap.sections.get(name, '')):>6} 字")
+
+    try:
+        module_loader = PersonaModuleLoader(persona_dir)
+        mods = module_loader.load()
+    except Exception as exc:
+        print(f"  [WARN] modules 加载失败：{exc}")
+        return
+    if not mods:
+        print("  modules/     : (无；按需加载未启用)")
+        return
+    print(f"  modules/     : {len(mods)} 个文件")
+    for m in mods:
+        kws = ", ".join(m.trigger_keywords[:5]) or "(无)"
+        print(f"    {m.id:<24} {len(m.body):>5} 字  ← {kws}")
 
 
 async def _run_setup(*, skip_if_complete: bool = False) -> int:
