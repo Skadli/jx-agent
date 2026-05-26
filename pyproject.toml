@@ -25,6 +25,8 @@ dependencies = [
     "httpx>=0.27.0",
     "pyyaml>=6.0.0",
     "qrcode>=7.4.0",
+    # wechat 通道图片消息 AES-128-ECB 解密；hermes-agent 同款依赖
+    "cryptography>=43.0.0",
 ]
 
 [project.optional-dependencies]

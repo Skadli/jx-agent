@@ -46,6 +46,9 @@ class ILinkInboundMessage:
     message_id: str
     dedup_key: str
     text: str
+    # 原始 image_item dict（未下载/未解密）；poller 拿到后异步走 client.download_image
+    # 转 base64 data URI 再写入 channel_messages.media。frozenset 不可哈希 dict，用 tuple。
+    image_items: tuple[dict[str, Any], ...] = ()
 
 
 class ILinkLongPoller:
@@ -162,7 +165,8 @@ class ILinkLongPoller:
         for message in messages:
             if message.dedup_key in self._seen or await self._has_seen(message.dedup_key):
                 continue
-            await self._enqueue(message)
+            media_json = await self._download_media_parts(message.image_items)
+            await self._enqueue(message, media=media_json)
             await self._mark_seen(message.dedup_key)
             self._remember_seen(message.dedup_key)
         if messages:
@@ -172,13 +176,42 @@ class ILinkLongPoller:
             await self._save_sync_buf(sync_buf)
         return False
 
-    async def _enqueue(self, message: ILinkInboundMessage) -> None:
+    async def _download_media_parts(
+        self, image_items: tuple[dict[str, Any], ...],
+    ) -> str | None:
+        """逐个下载 image_item → base64 data URI；拼成 OpenAI 多模态 parts JSON 串。
+
+        单张失败不阻塞剩下；全部失败返 None（content 仍是 "[图片]" 占位让消息能回复）。
+        """
+        if not image_items:
+            return None
+        import base64 as _b64
+        import json as _json
+        parts: list[dict[str, Any]] = []
+        for img in image_items:
+            try:
+                data = await self._client.download_image(img)
+            except Exception as exc:
+                _logger.warning("下载 image_item 异常（跳过）", error=str(exc))
+                continue
+            if data is None:
+                continue
+            uri = "data:image/jpeg;base64," + _b64.b64encode(data).decode("ascii")
+            parts.append({"type": "image_url", "image_url": {"url": uri}})
+        if not parts:
+            return None
+        return _json.dumps(parts, ensure_ascii=False)
+
+    async def _enqueue(
+        self, message: ILinkInboundMessage, *, media: str | None = None,
+    ) -> None:
         session_id = _session_id_for(message.user_id, message.group_id)
+        msg_type = "image" if media else "text"
         await self._db._execute(
             """
             INSERT INTO channel_messages
-              (ts, channel, direction, session_id, user_id, group_id, content, msg_type, processed)
-            VALUES (?,?,?,?,?,?,?,?,0)
+              (ts, channel, direction, session_id, user_id, group_id, content, msg_type, media, processed)
+            VALUES (?,?,?,?,?,?,?,?,?,0)
             """,
             (
                 int(time.time() * 1000),
@@ -188,7 +221,8 @@ class ILinkLongPoller:
                 message.user_id,
                 message.group_id,
                 message.text,
-                "text",
+                msg_type,
+                media,
             ),
         )
 
@@ -290,7 +324,9 @@ def _parse_inbound_message(value: Any, account_id: str) -> ILinkInboundMessage |
         return None
 
     text = _extract_message_text(message)
-    if not text.strip():
+    image_items = _extract_image_items(message)
+    # 没文字也没图就丢；有图无文字时用 text="[图片]" 占位（_extract_message_text 已处理）
+    if not text.strip() and not image_items:
         return None
 
     room_id = _string_field(message, ("room_id", "chat_room_id", "group_id"))
@@ -317,8 +353,25 @@ def _parse_inbound_message(value: Any, account_id: str) -> ILinkInboundMessage |
         group_id=group_id,
         message_id=message_id,
         dedup_key=dedup_key,
-        text=text,
+        text=text or "[图片]",  # 图片消息没文字时给占位，避免 batch 拼接出现空字符串
+        image_items=tuple(image_items),
     )
+
+
+def _extract_image_items(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """从 item_list 抽出所有 image_item（已 _ITEM_IMAGE=2 类型过滤），保留原始 dict 给下载用。"""
+    out: list[dict[str, Any]] = []
+    items = message.get("item_list")
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = _number_field(item, ("type",)) or 0
+        image_item = item.get("image_item")
+        if item_type == _ITEM_IMAGE and isinstance(image_item, dict):
+            out.append(image_item)
+    return out
 
 
 def _message_object(value: Any) -> dict[str, Any] | None:
