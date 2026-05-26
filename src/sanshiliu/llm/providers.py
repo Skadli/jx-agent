@@ -105,13 +105,17 @@ def build_default_registry(settings: object, db: object | None = None) -> Provid
     豆包视觉后端（preferred_for=vision，cost_tier=2）。注册逻辑必须收敛在一处，否则
     web/repl 各自构造单后端 LLMClient 会导致图片请求绕开 router 直击文本模型。
     """
+    # reasoning capability：deepseek-reasoner / doubao-seed-2-0-pro 这类 thinking-mode
+    # 模型 stream 时会返 reasoning_content，引擎必须把它原样回传，否则下一轮 400。
+    # OpenAI 兼容协议下，非 reasoner 模型对该字段是 ignore 不是拒绝，所以两个 provider
+    # 都声明 reasoning 是安全的。
     specs: list[ProviderSpec] = [
         ProviderSpec(
             name="default",
             api_key=settings.openai_api_key.get_secret_value(),  # type: ignore[attr-defined]
             base_url=settings.openai_base_url,  # type: ignore[attr-defined]
             model=settings.openai_model,  # type: ignore[attr-defined]
-            capabilities=frozenset({"text", "tool_calls"}),
+            capabilities=frozenset({"text", "tool_calls", "reasoning"}),
             cost_tier=1,
         ),
     ]
@@ -123,7 +127,7 @@ def build_default_registry(settings: object, db: object | None = None) -> Provid
                 api_key=doubao_key.get_secret_value(),
                 base_url=settings.doubao_base_url,  # type: ignore[attr-defined]
                 model=settings.doubao_model,  # type: ignore[attr-defined]
-                capabilities=frozenset({"text", "vision", "tool_calls"}),
+                capabilities=frozenset({"text", "vision", "tool_calls", "reasoning"}),
                 cost_tier=2,
                 preferred_for=frozenset({"vision"}),
             )

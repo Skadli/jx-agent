@@ -366,17 +366,30 @@ class LLMClient:
         stop_reason: str | None,
         error: str | None,
     ) -> None:
-        """落 llm_calls 表（验收 1-V5）。db=None 时只打日志、不抛。"""
+        """落 llm_calls 表（验收 1-V5）。db=None 时只打日志、不抛。
+
+        每次调用都打一行 INFO（成功）或 WARNING（失败），含模型 / base_url /
+        token / 成本 / 延迟，方便 stdout/journalctl 直接看到调用流。
+        """
         cost = estimate_cost(self._model, input_tokens, output_tokens)
+        log_fields = {
+            "model": self._model,
+            "base_url": self._base_url,
+            "session": (session_id[:8] + "...") if len(session_id) > 8 else session_id,
+            "channel": channel,
+            "in_tok": input_tokens,
+            "out_tok": output_tokens,
+            "total_tok": input_tokens + output_tokens,
+            "cost_cny": round(cost, 6),
+            "latency_ms": latency_ms,
+            "stop": stop_reason,
+        }
+        if error:
+            _logger.warning("LLM 调用失败", error=error[:200], **log_fields)
+        else:
+            _logger.info("LLM 调用完成", **log_fields)
+
         if self._db is None:
-            _logger.debug(
-                "LLM 调用完成（无 DB，跳过落表）",
-                model=self._model,
-                tokens=(input_tokens, output_tokens),
-                cost_cny=cost,
-                latency_ms=latency_ms,
-                error=error,
-            )
             return
         try:
             await self._db.insert_llm_call(

@@ -18,7 +18,21 @@ from sanshiliu.storage.db import Database
 _logger = get_logger(__name__)
 
 _ITEM_TEXT = 1
+_ITEM_IMAGE = 2
 _ITEM_VOICE = 3
+_ITEM_VIDEO = 4
+_ITEM_FILE = 6
+_ITEM_LINK = 7
+
+# 非文本类型 → 占位文本；agent 看到占位至少能回复"看不到图/听不到语音"，
+# 不会让消息静默丢掉（iLink 暂无媒体下载接口，真·多模态等加上后再说）
+_NON_TEXT_PLACEHOLDERS: dict[int, str] = {
+    _ITEM_IMAGE: "[图片]",
+    _ITEM_VOICE: "[语音]",  # 仅 fallback：iLink 已 ASR 出 text 时优先走 text 分支
+    _ITEM_VIDEO: "[视频]",
+    _ITEM_FILE: "[文件]",
+    _ITEM_LINK: "[链接]",
+}
 _POLL_RETRY_DELAY_SECONDS = 2.0
 # session-expired 后的退避：避免对 iLink 发起持续无效请求 + 给用户重新扫码留时间
 _EXPIRED_BACKOFF_SECONDS = 60.0
@@ -367,6 +381,14 @@ def _extract_text_from_items(items: list[Any]) -> str:
             text = _string_field(voice_item, ("text",))
             if text:
                 return text
+    # 兜底：图片/视频/文件/链接等暂不支持下载，返回占位让消息能入队
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_type = _number_field(item, ("type",)) or 0
+        placeholder = _NON_TEXT_PLACEHOLDERS.get(int(item_type))
+        if placeholder:
+            return placeholder
     return ""
 
 
