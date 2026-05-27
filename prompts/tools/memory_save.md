@@ -1,20 +1,9 @@
 ---
 name: SaveMemory
 description: |
-  主动写入一条新的长期记忆到 memdir，让自己在未来对话中能记住。
-  使用场景（4 类对齐 Claude memdir）：
-    - user：用户的偏好 / 习惯 / 背景信息（例：希望被称呼方式、工作领域、口味）
-    - feedback：用户对你回答的纠正或确认（例：上次回答方式被批评/被表扬的原因和修正方向）
-    - project：当前项目的关键决策 / 约束 / 进度（例：架构选型、deadline、依赖）
-    - reference：可复用的资料 / 公式 / 模板（例：常用配置、命令片段、外部链接）
-  不要：
-    - 把临时上下文当记忆存（一次性的对话内容不应进长期）；
-    - 与既有索引条目重复（先看 system prompt memory_block 是否已有同主题）；
-    - 把敏感信息（口令/密钥/隐私）写入；
-  feedback / project 类型建议 body 用以下结构：
-    **Why:** <为什么记这一条>
-    **How to apply:** <下次怎么应用>
-  相对日期一律转绝对日期。
+  主动写入一条新的长期记忆到 memdir；下一轮起 name + description 出现在
+  system prompt memory_block 索引，body 通过 LoadMemory 取。
+  使用场景：用户表达稳定偏好/反馈/项目决策时主动调；不要存一次性的临时上下文。
 parameters:
   type: object
   properties:
@@ -43,14 +32,10 @@ parameters:
 
 # SaveMemory 工具
 
-把当前对话里值得长期记住的事实主动落到 memdir。索引行自动追加到 MEMORY.md，
-下一轮起这条记忆的 name + description 就会出现在 system prompt memory_block，body 通过 LoadMemory 取。
-
 ## 校验
 
-- name 不能含中文/特殊字符，只允许字母/数字/短横线/下划线，长度 5-40；
-- type 必须是 user / feedback / project / reference 四选一；
-- 同名条目会作为新文件追加（不覆盖），但索引段不去重——务必先确认未重复。
+- name 只允许字母/数字/短横线/下划线，长度 5-40，不能含中文；
+- 同名条目会追加为新文件不覆盖，索引段不去重——先确认未重复。
 
 ## 典型示例
 

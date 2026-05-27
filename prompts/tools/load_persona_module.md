@@ -22,9 +22,7 @@ parameters:
 
 # LoadPersonaModule 工具
 
-按需加载一个 persona module 的正文。常驻 system prompt 里只有 module 的 name+description 列表（节省 token）；
-当 LLM 判断需要某个 module 的正文（如对话进入配音剧创作、需要创作顾问长样本、用户问到具体作品时），
-调本工具拉正文。
+常驻 system prompt 里只有 module 的 name+description 列表（节省 token）；需要正文时用本工具按需拉。
 
 ## 典型示例
 
