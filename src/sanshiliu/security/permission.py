@@ -310,6 +310,9 @@ def _is_auto_allowable(
     # 3. file_read 在 cwd 内、没命中任何路径黑名单
     if tool_name in ("file_read", "Read") and path_guard_hit is None:
         return True
+    # 4. memory 工具（LoadMemory 只读；SaveMemory 是 agent 自治写入，ADR 决定默认 allow）
+    if tool_name in ("LoadMemory", "SaveMemory"):
+        return True
     return False
 
 

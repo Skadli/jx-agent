@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -19,11 +20,11 @@ from sanshiliu.memory.types import (
 
 _logger = get_logger(__name__)
 
-# MEMORY.md 文件名固定；超出 200 行追加在头部的 WARNING 标记
+# MEMORY.md 文件名固定
 _INDEX_FILE = "MEMORY.md"
-_WARNING_HEADER = (
-    "<!-- WARNING: 索引超出 200 行已被截断；旧条目仍在磁盘但需手工合并 -->\n"
-)
+
+# 旧索引格式探测：`- name :: description`（无 markdown 链接前缀）
+_LEGACY_INDEX_RE = re.compile(r"^- [^\[\(]+\s::\s.+")
 
 
 def _resolve_type(raw: Any) -> MemoryType | None:
@@ -93,6 +94,12 @@ class MemdirLoader:
                 if entry is not None:
                     entries.append(entry)
         index_text = self._read_index()
+        # 检测旧索引格式并就地迁移；失败不阻塞启动
+        if index_text and any(
+            _LEGACY_INDEX_RE.match(ln) for ln in index_text.splitlines()
+        ):
+            self._migrate_index(entries)
+            index_text = self._read_index()
         snap = MemorySnapshot(entries=entries, index_text=index_text, memdir_root=self._root)
         self._cache = snap
         _logger.info("memdir 加载", count=len(entries), root=str(self._root))
@@ -114,19 +121,69 @@ class MemdirLoader:
             _logger.warning("MEMORY.md 读失败", path=str(path), error=str(exc))
             return ""
 
+    def _migrate_index(self, entries: list[MemoryEntry]) -> None:
+        """把旧格式 `- name :: description` 重写成新格式 `- [name](file) — description`。
+
+        按 entries 列表反查 name → entry.index_line()。entry name 找不到的旧行
+        原样保留，并打 warning 日志，不阻塞启动。注释行（<!-- ... -->）保留。
+        """
+        path = self._root / _INDEX_FILE
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            _logger.warning("MEMORY.md 迁移读失败", path=str(path), error=str(exc))
+            return
+
+        by_name = {e.name: e for e in entries}
+        out_lines: list[str] = []
+        migrated = 0
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("<!--"):
+                out_lines.append(line)
+                continue
+            m = _LEGACY_INDEX_RE.match(line)
+            if not m:
+                out_lines.append(line)
+                continue
+            # 旧格式：- {name} :: {description}
+            try:
+                head, _, _ = line[2:].partition(" :: ")
+                name = head.strip()
+            except ValueError:
+                out_lines.append(line)
+                continue
+            entry = by_name.get(name)
+            if entry is None:
+                _logger.warning("MEMORY.md 旧索引迁移失败（未找到对应 entry）", name=name)
+                out_lines.append(line)
+                continue
+            out_lines.append(entry.index_line())
+            migrated += 1
+
+        if migrated == 0:
+            return
+        try:
+            path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+        except OSError as exc:
+            _logger.warning("MEMORY.md 迁移写失败", path=str(path), error=str(exc))
+            return
+        _logger.info("MEMORY.md 索引格式迁移完成", migrated=migrated)
+
 
 def append_index_line(memdir_root: Path, line: str) -> None:
-    """追加一行到 MEMORY.md；超过 200 行截断并加 WARNING（prd 7-V5）。"""
+    """追加一行到 MEMORY.md；超过 200 行只打日志 warning 建议 consolidate，不硬截断。"""
     memdir_root.mkdir(parents=True, exist_ok=True)
     path = memdir_root / _INDEX_FILE
     existing = path.read_text(encoding="utf-8") if path.is_file() else ""
     lines = [ln for ln in existing.splitlines() if ln.strip() and not ln.startswith("<!--")]
     lines.append(line.rstrip())
     if len(lines) > MEMORY_INDEX_MAX_LINES:
-        kept = lines[-MEMORY_INDEX_MAX_LINES:]
-        body = _WARNING_HEADER + "\n".join(kept) + "\n"
-    else:
-        body = "\n".join(lines) + "\n"
+        _logger.warning(
+            "MEMORY.md 索引超 200 行，建议跑 /memory consolidate",
+            lines=len(lines),
+        )
+    body = "\n".join(lines) + "\n"
     path.write_text(body, encoding="utf-8")
 
 
