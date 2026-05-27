@@ -63,10 +63,14 @@ class ShortTermMemory:
             _logger.warning("append_message 失败（不阻塞）", session_id=session_id, error=str(exc))
 
     async def reload(self, session_id: str) -> list[ChatMessage]:
-        """读回 session 的 messages；jsonl 不存在或全坏返回空列表。
+        """读回 session 的 messages；兼容两种 jsonl 行格式：
 
-        约定：jsonl 仅含 message 行；compact_summary 存 sqlite sessions 表。
-        调用方负责把第 0 个 system 占位补上（如有）。
+        - per-message：{ts, role, content, tool_calls, ...}（PR1 之后默认写入）
+        - session-level snapshot：{ts, type:"snapshot", messages:[...]}
+          （cmd_new 的封档格式 / d8a6ffb 之前 web 通道唯一写出的格式）
+
+        两种格式可在同一 jsonl 混合（snapshot 后又有 per-message append），
+        都能正确还原。调用方负责把第 0 个 system 占位补上（如有）。
         """
         try:
             rows = await self._writer.read_all(session_id)
@@ -75,14 +79,29 @@ class ShortTermMemory:
             return []
         out: list[ChatMessage] = []
         for r in rows:
+            # 分支 1：旧 snapshot 行——展开 messages 数组
+            if r.get("type") == "snapshot" and isinstance(r.get("messages"), list):
+                for m in r["messages"]:
+                    if not isinstance(m, dict):
+                        continue
+                    role = m.get("role")
+                    if role not in ("system", "user", "assistant", "tool"):
+                        continue
+                    content = m.get("content")
+                    out.append(ChatMessage(
+                        role=role,
+                        content=content if content is not None else "",
+                        tool_calls=m.get("tool_calls"),
+                        tool_call_id=m.get("tool_call_id"),
+                        name=m.get("name"),
+                        reasoning_content=m.get("reasoning_content"),
+                    ))
+                continue
+            # 分支 2：per-message 行（PR1 之后的新写法）
             role = r.get("role")
             if role not in ("system", "user", "assistant", "tool"):
                 continue
             content = r.get("content")
-            # 兼容旧版（session-level snapshot）：'messages' 字段套娃
-            if content is None and "messages" in r:
-                # 旧记录是整 session dump，跳过——按 PR1 后语义只接受 per-message
-                continue
             out.append(ChatMessage(
                 role=role,
                 content=content if content is not None else "",
