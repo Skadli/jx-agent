@@ -96,6 +96,13 @@ class MemdirLoader:
         index_text = self._read_index()
         snap = MemorySnapshot(entries=entries, index_text=index_text, memdir_root=self._root)
         self._cache = snap
+        # 膨胀告警：超阈值仅日志提醒，不阻塞启动；提醒用户跑 /memory consolidate
+        if len(entries) >= 50 or len(index_text.splitlines()) >= 150:
+            _logger.warning(
+                "memdir 已积累较多，建议跑 /memory consolidate 整理",
+                entries=len(entries),
+                index_lines=len(index_text.splitlines()),
+            )
         _logger.info("memdir 加载", count=len(entries), root=str(self._root))
         return snap
 

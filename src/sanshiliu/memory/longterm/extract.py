@@ -18,7 +18,7 @@ from sanshiliu.memory.types import MEMORY_TYPES, MemoryEntry, MemoryType
 _logger = get_logger(__name__)
 
 # 候选记忆置信度门槛；低于此值 drop（与 prompts/memory_extract.md 中约定一致）
-_MIN_CONFIDENCE = 0.6
+_MIN_CONFIDENCE = 0.7
 _EXTRACT_FILE = "memory_extract.md"
 # 把对话片段送给 LLM 时单字段长度上限，防止 prompt 爆炸
 _MAX_TURN_CHARS = 2000
