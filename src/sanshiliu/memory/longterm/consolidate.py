@@ -27,9 +27,8 @@ _MAX_OPS = 10
 # MEMORY.md 文件名固定（与 memdir.py 保持一致）
 _INDEX_FILE = "MEMORY.md"
 
-# 索引行兼容两种格式：新 `- [name](file.md) — desc`、旧 `- name :: desc`
+# 索引行格式：`- [name](file.md) — desc`
 _NEW_INDEX_RE = re.compile(r"^- \[([^\]]+)\]\(")
-_LEGACY_INDEX_RE = re.compile(r"^- ([^\[\(].*?)\s::\s")
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 
 
@@ -177,11 +176,8 @@ def _dump_entries_for_llm(entries: list[MemoryEntry]) -> str:
 
 
 def _index_line_matches_name(line: str, name: str) -> bool:
-    """判断 MEMORY.md 中某一行是否对应给定 name（兼容新旧两种索引格式）。"""
+    """判断 MEMORY.md 中某一行是否对应给定 name（新索引格式 `- [name](file.md)`）。"""
     m = _NEW_INDEX_RE.match(line)
-    if m:
-        return m.group(1).strip() == name
-    m = _LEGACY_INDEX_RE.match(line)
     if m:
         return m.group(1).strip() == name
     return False
