@@ -2,7 +2,7 @@
 name: bash_exec
 description: |
   执行 shell 命令；30s 超时；stdout/stderr 截断到 8000 字符。
-  Phase 8 启用后危险命令需要用户交互确认；Phase 5 阶段直接执行。
+  危险命令需要用户交互确认。
 parameters:
   type: object
   properties:
