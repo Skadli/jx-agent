@@ -31,6 +31,8 @@ env/
 .env.local
 data/
 !data/.gitkeep
+memdir/
+!memdir/.gitkeep
 
 # 操作系统
 .DS_Store
