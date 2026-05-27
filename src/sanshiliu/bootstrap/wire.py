@@ -207,6 +207,7 @@ async def build_app(
                 skill_activator=skill_activator,
                 persona_module_activator=persona_module_activator,
                 memdir_loader=memdir_loader,
+                short_term=short_term,
                 db=db,
             )
         except ConfigError as exc:

@@ -9,6 +9,7 @@ from typing import Any
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.memory.longterm.memdir import MemdirLoader
+from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.security.permission import PermissionManager
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.storage.db import Database
@@ -38,6 +39,7 @@ def build_tool_stack(
     skill_activator: SkillActivator | None = None,
     persona_module_activator: PersonaModuleActivator | None = None,
     memdir_loader: MemdirLoader | None = None,
+    short_term: ShortTermMemory | None = None,
     db: Database | None = None,
 ) -> tuple[ToolRegistry, ToolDispatcher]:
     """从 prompts/tools/ 加载描述 + 绑定内置 executor；缺描述文件抛 ConfigError。
@@ -62,7 +64,9 @@ def build_tool_stack(
             d, persona_module_activator,
         )
     if memdir_loader is not None:
-        builders["LoadMemory"] = lambda d: build_load_memory_tool(d, memdir_loader)
+        builders["LoadMemory"] = lambda d: build_load_memory_tool(
+            d, memdir_loader, short_term=short_term, db=db,
+        )
         builders["SaveMemory"] = lambda d: build_save_memory_tool(d, memdir_loader)
     for name, definition in defs.items():
         if name not in builders:

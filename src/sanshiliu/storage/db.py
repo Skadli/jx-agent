@@ -204,6 +204,41 @@ class Database:
         row = await asyncio.to_thread(cur.fetchone)
         return str(row["id"]) if row else None
 
+    async def list_recent_sessions_for_prompt(
+        self,
+        *,
+        channel: str,
+        user_id: str | None,
+        limit: int = 5,
+        exclude_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """LoadMemory 扩展（2026-05-27）：返同 channel + user_id 最近活跃 sessions。
+
+        - user_id IS NULL 严格匹配（REPL 场景）vs 给定 user_id 等值匹配——
+          复用 find_recent_session_id 同样的语义；
+        - exclude_id 非 None 时排除当前 session（注入 Recent Sessions 段时用）；
+        - 返 list[{id, channel, user_id, created_at, last_active_at, compact_summary}]。
+        """
+        # 拼 SQL：user_id 分支 + 可选 exclude_id 分支
+        params: list[Any] = [channel]
+        user_clause = "user_id IS NULL" if user_id is None else "user_id = ?"
+        if user_id is not None:
+            params.append(user_id)
+        exclude_clause = ""
+        if exclude_id is not None:
+            exclude_clause = " AND id != ?"
+            params.append(exclude_id)
+        params.append(int(limit))
+        sql = (
+            "SELECT id, channel, user_id, created_at, last_active_at, compact_summary "
+            "FROM sessions "
+            f"WHERE channel = ? AND {user_clause}{exclude_clause} "
+            "ORDER BY last_active_at DESC LIMIT ?"
+        )
+        cur = await self._execute(sql, tuple(params))
+        rows = await asyncio.to_thread(cur.fetchall)
+        return [dict(r) for r in rows]
+
     # Phase 8 权限决策
     async def insert_permission_decision(
         self,

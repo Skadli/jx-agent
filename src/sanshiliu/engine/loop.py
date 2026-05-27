@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any
 
 from sanshiliu.context.manager import ContextManager
@@ -131,8 +132,12 @@ class ConversationEngine:
             return
         session.refresh_system_prompt(snap)
 
-    def _refresh_memory(self, session: Session) -> None:
-        """拼装全局 CLAUDE.md + 项目 CLAUDE.md + memdir MEMORY.md 索引到 memory_block。"""
+    async def _refresh_memory(self, session: Session) -> None:
+        """拼装全局 CLAUDE.md + 项目 CLAUDE.md + memdir 索引 + Recent Sessions 到 memory_block。
+
+        2026-05-27：新增 Recent Sessions 段——同 channel+user_id 最近 5 个 session
+        曝光给 LLM，让它能调 LoadMemory({"name":"<uuid>" | "recent"}) 读历史对话。
+        """
         parts: list[str] = []
         if self._claudemd_loader is not None:
             try:
@@ -151,6 +156,35 @@ class ConversationEngine:
                     )
             except Exception as exc:
                 _logger.warning("memdir 读失败（不阻塞）", error=str(exc))
+        # Recent Sessions：仅在 db 装配时尝试；任何异常都不阻塞主对话
+        if self._db is not None:
+            try:
+                recent = await self._db.list_recent_sessions_for_prompt(
+                    channel=session.channel,
+                    user_id=session.user_id,
+                    limit=5,
+                    exclude_id=session.session_id,
+                )
+                if recent:
+                    lines = ["## Recent Sessions (last 5)"]
+                    for r in recent:
+                        last_ts = r.get("last_active_at")
+                        ts_str = ""
+                        if isinstance(last_ts, int):
+                            ts_str = datetime.fromtimestamp(
+                                last_ts / 1000,
+                            ).strftime("%Y-%m-%d %H:%M")
+                        lines.append(
+                            f"- {r['id']} · channel={r['channel']} · {ts_str}"
+                        )
+                    lines.append("")
+                    lines.append(
+                        '可调 `LoadMemory({"name":"<uuid>"})` 或 '
+                        '`LoadMemory({"name":"recent"})` 读取。'
+                    )
+                    parts.append("\n".join(lines))
+            except Exception as exc:
+                _logger.warning("Recent Sessions 注入失败（不阻塞）", error=str(exc))
         session.memory_block_text = "\n\n---\n\n".join(parts) if parts else ""
 
     def _refresh_persona_modules(self, session: Session, user_text: str) -> None:
@@ -244,7 +278,7 @@ class ConversationEngine:
             return
 
         flat_text = _flatten_user_text(user_text)
-        self._refresh_memory(session)
+        await self._refresh_memory(session)
         self._refresh_persona(session)
         self._refresh_persona_modules(session, flat_text)
         # _refresh_skills 不消费 user_text 内容（已 `del`），任何 union 类型都行
@@ -286,7 +320,7 @@ class ConversationEngine:
         Phase 10：user_text 可为 str 或 list[dict]（OpenAI 多模态格式）。
         """
         flat_text = _flatten_user_text(user_text)
-        self._refresh_memory(session)
+        await self._refresh_memory(session)
         self._refresh_persona(session)
         self._refresh_persona_modules(session, flat_text)
         self._refresh_skills(session, flat_text)
