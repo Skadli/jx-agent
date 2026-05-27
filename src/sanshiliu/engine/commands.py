@@ -9,15 +9,19 @@ handler 签名：async def(ctx: CommandContext, args: str) -> CommandResult
 
 from __future__ import annotations
 
+import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sanshiliu.engine.types import ChatMessage
 from sanshiliu.foundation.logging import get_logger
 
 if TYPE_CHECKING:
     from sanshiliu.engine.loop import ConversationEngine
     from sanshiliu.engine.session import Session
+    from sanshiliu.memory.shortterm import ShortTermMemory
 
 _logger = get_logger(__name__)
 
@@ -29,6 +33,8 @@ class CommandContext:
     session: Session
     engine: ConversationEngine
     channel: str  # "web" | "wechat" | "repl"
+    # /new 用来在重置前把旧会话落盘；None 表示通道未挂短期记忆，跳过快照
+    short_term: ShortTermMemory | None = None
 
 
 @dataclass
@@ -78,19 +84,53 @@ async def try_dispatch(text: str, ctx: CommandContext) -> CommandResult | None:
 # ────────── 命令实现 ──────────
 
 async def cmd_new(ctx: CommandContext, args: str) -> CommandResult:
-    """清空当前会话上下文；保留 system 消息和 session_id。"""
+    """开新会话；旧会话先快照落盘，再原地分配新 session_id 并清空所有上下文。
+
+    保留 channel / user_id（标识会话归属，不属于"会话内容"）；
+    其余字段——messages / compact_summary / active_skills_text /
+    memory_block_text / active_module_text / persona_modules_listing /
+    active_module_ids / last_active_module_id——全部重置为初始态。
+    """
     sess = ctx.session
-    # 保留 [0] system；其它一律清掉
-    if sess.messages and sess.messages[0].role == "system":
-        sess.messages = [sess.messages[0]]
-    else:
-        sess.messages = []
+    old_sid = sess.session_id
+
+    # 1) 旧会话落盘；失败不阻塞重置（jsonl 写入是 best-effort）
+    if ctx.short_term is not None:
+        try:
+            await ctx.short_term.snapshot(sess)
+        except Exception as exc:
+            _logger.warning(
+                "/new 旧会话 snapshot 失败（继续重置）",
+                old_session_id=old_sid,
+                error=str(exc),
+            )
+
+    # 2) 原地"重生"——同 Session 对象，但分配新 id、清掉一切会话内状态。
+    #    原地改而不是 new Session()，是为了让各 channel 持有的局部 session 引用继续有效。
+    new_sid = str(uuid.uuid4())
+    sess.session_id = new_sid
+    sess.created_at = time.time()
+    # 占位 system 行；下一轮 engine.refresh_system_prompt 会用最新 persona 填充
+    sess.messages = [ChatMessage(role="system", content="")]
     sess.compact_summary = ""
     sess.active_skills_text = ""
-    # memory_block_text 是每轮 engine 自己刷新的，不动
-    _logger.info("slash /new 已清空会话", session_id=sess.session_id, channel=ctx.channel)
+    sess.memory_block_text = ""
+    sess.active_module_text = ""
+    sess.persona_modules_listing = ""
+    sess.active_module_ids.clear()
+    sess.last_active_module_id = ""
+
+    _logger.info(
+        "slash /new 已新建会话",
+        old_session_id=old_sid,
+        new_session_id=new_sid,
+        channel=ctx.channel,
+    )
     return CommandResult(
-        reply="[新对话] 已清空当前会话上下文。",
+        reply=(
+            f"[新对话] 旧会话已保存（{old_sid[:8]}…），"
+            f"现已切换到新会话 {new_sid[:8]}…"
+        ),
         session_reset=True,
     )
 
@@ -129,7 +169,7 @@ async def cmd_help(ctx: CommandContext, args: str) -> CommandResult:
 # ────────── 注册表 ──────────
 # 新加命令：append 一行即可
 COMMANDS_META: dict[str, tuple[CommandHandler, str]] = {
-    "new":     (cmd_new,     "开新对话，清空当前会话上下文"),
+    "new":     (cmd_new,     "开新对话；旧会话快照保存，分配新 session_id"),
     "compact": (cmd_compact, "立即压缩上下文为摘要"),
     "help":    (cmd_help,    "列出可用命令"),
 }

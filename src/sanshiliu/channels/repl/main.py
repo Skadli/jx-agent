@@ -358,10 +358,15 @@ async def run_repl() -> int:
 
             # 共享 slash 命令（/new /compact ...）；命中就 print reply 不走 LLM
             if user_input.startswith("/"):
-                cmd_ctx = CommandContext(session=session, engine=engine, channel="repl")
+                cmd_ctx = CommandContext(
+                    session=session, engine=engine, channel="repl",
+                    short_term=short_term,
+                )
                 result = await try_dispatch(user_input, cmd_ctx)
                 if result is not None:
                     print(result.reply)
+                    # /new 已在 handler 内对旧会话做过快照；这里再写一次记录的是"新会话初始态"，
+                    # 用于 dashboard 历史能反映重置结果。失败不阻塞。
                     if short_term is not None:
                         try:
                             await short_term.snapshot(session)

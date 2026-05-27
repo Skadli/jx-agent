@@ -254,7 +254,10 @@ def make_chat_handler(
                 # slash 命令短路：不走 LLM，直接回 reply（仅纯文本路径生效）
                 q = question.strip()
                 if not images_raw and is_slash_command(q):
-                    cmd_ctx = CommandContext(session=session, engine=engine, channel="web")
+                    cmd_ctx = CommandContext(
+                        session=session, engine=engine, channel="web",
+                        short_term=short_term,
+                    )
                     result = await try_dispatch(q, cmd_ctx)
                     if result is not None:
                         sse_q.put(result.reply)

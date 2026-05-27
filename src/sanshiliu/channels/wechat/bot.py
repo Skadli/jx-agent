@@ -215,7 +215,10 @@ class WechatBot:
             and not head.has_media()
             and is_slash_command(head.content)
         ):
-            cmd_ctx = CommandContext(session=session, engine=self._engine, channel="wechat")
+            cmd_ctx = CommandContext(
+                session=session, engine=self._engine, channel="wechat",
+                short_term=self._short_term,
+            )
             result = await try_dispatch(head.content, cmd_ctx)
             if result is not None:
                 await self._send_safe(head, result.reply)
