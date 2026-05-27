@@ -251,7 +251,7 @@ async def run_repl() -> int:
             claudemd_loader.load()
             memdir_loader = MemdirLoader(settings.memdir_dir)
             memdir_loader.load()
-            short_term = ShortTermMemory(settings.data_dir / "shortterm")
+            short_term = ShortTermMemory(settings.data_dir)
             _logger.info(
                 "memory 已加载",
                 claudemd_chars=claudemd_loader.get().total_chars(),

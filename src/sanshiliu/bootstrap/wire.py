@@ -167,7 +167,7 @@ async def build_app(
             claudemd_loader.load()
             memdir_loader = MemdirLoader(settings.memdir_dir)
             memdir_loader.load()
-            short_term = ShortTermMemory(settings.data_dir / "shortterm")
+            short_term = ShortTermMemory(settings.data_dir)
         except Exception as exc:
             _logger.warning("memory 加载失败（继续不带 memory）", error=str(exc))
             claudemd_loader = None

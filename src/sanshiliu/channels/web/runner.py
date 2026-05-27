@@ -243,7 +243,7 @@ async def run_serve() -> int:
 
     # 与 wire.py / repl 统一到 data_dir/shortterm 子目录下；
     # 提前构造（build_tool_stack 需要它注入 LoadMemory 的 session 查询路径）
-    short_term = ShortTermMemory(settings.data_dir / "shortterm")
+    short_term = ShortTermMemory(settings.data_dir)
 
     # Phase 5：tool 栈
     # PR2：memdir_loader 已构造好，build_tool_stack 会注册 LoadMemory / SaveMemory
