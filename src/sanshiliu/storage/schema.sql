@@ -24,14 +24,19 @@ CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(ts);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id);
 
 -- 会话表
+-- PR1（2026-05-27 起）：加 compact_summary / active_module_ids 列，支持 Session 持久化 reload
+-- messages 不在此表，per-message 写到 <data_dir>/sessions/<session_id>.jsonl（Claude Code 风格）
 CREATE TABLE IF NOT EXISTS sessions (
-    id              TEXT PRIMARY KEY,
-    channel         TEXT    NOT NULL,
-    user_id         TEXT,
-    created_at      INTEGER NOT NULL,
-    last_active_at  INTEGER NOT NULL
+    id                  TEXT PRIMARY KEY,
+    channel             TEXT    NOT NULL,
+    user_id             TEXT,
+    created_at          INTEGER NOT NULL,
+    last_active_at      INTEGER NOT NULL,
+    compact_summary     TEXT    NOT NULL DEFAULT '',
+    active_module_ids   TEXT    NOT NULL DEFAULT ''     -- 逗号分隔
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_channel_user ON sessions(channel, user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at);
 
 -- 通道消息表，Phase 4 使用；Phase 10 起 media 列存图片/音频元数据 JSON
 CREATE TABLE IF NOT EXISTS channel_messages (

@@ -24,6 +24,7 @@ from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.providers import build_default_registry
 from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
+from sanshiliu.memory.longterm.consolidate import load_consolidate_instruction
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
@@ -235,28 +236,12 @@ async def run_repl() -> int:
         except Exception as exc:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
 
-    # Phase 5：tool 栈（默认开；用户可在 .env 关）
-    tool_registry = None
-    tool_dispatcher = None
-    if settings.tools_enabled:
-        try:
-            tool_registry, tool_dispatcher = build_tool_stack(
-                prompts_dir=settings.prompts_dir,
-                cwd_root=Path.cwd(),
-                tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
-                permission=permission_manager,
-                skill_activator=skill_activator,
-                persona_module_activator=module_activator,
-                db=db,
-            )
-        except ConfigError as exc:
-            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
-
-    # Phase 7：长期记忆（CLAUDE.md + memdir + auto-extract）
+    # Phase 7：长期记忆（先于 L7 工具栈构造；LoadMemory/SaveMemory 工具需要 memdir_loader）
     claudemd_loader: ClaudeMdLoader | None = None
     memdir_loader: MemdirLoader | None = None
     memory_extractor: MemoryExtractor | None = None
     short_term: ShortTermMemory | None = None
+    consolidate_instruction: str | None = None
     if settings.memory_enabled:
         try:
             claudemd_loader = ClaudeMdLoader(
@@ -287,6 +272,35 @@ async def run_repl() -> int:
             except ConfigError as exc:
                 print(f"auto-extract 加载失败（继续不带 extract）：{exc}", file=sys.stderr)
 
+        # PR4：/memory consolidate 指令；缺失就 None，命令运行时给提示
+        if memdir_loader is not None:
+            try:
+                consolidate_instruction = load_consolidate_instruction(settings.prompts_dir)
+            except ConfigError as exc:
+                print(
+                    f"memory_consolidate 指令加载失败（/memory consolidate 不可用）：{exc}",
+                    file=sys.stderr,
+                )
+
+    # Phase 5：tool 栈（默认开；用户可在 .env 关）
+    # PR2：memdir_loader 已构造好，build_tool_stack 会注册 LoadMemory / SaveMemory
+    tool_registry = None
+    tool_dispatcher = None
+    if settings.tools_enabled:
+        try:
+            tool_registry, tool_dispatcher = build_tool_stack(
+                prompts_dir=settings.prompts_dir,
+                cwd_root=Path.cwd(),
+                tavily_api_key=settings.tavily_api_key.get_secret_value() if settings.tavily_api_key else None,
+                permission=permission_manager,
+                skill_activator=skill_activator,
+                persona_module_activator=module_activator,
+                memdir_loader=memdir_loader,
+                db=db,
+            )
+        except ConfigError as exc:
+            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
+
     engine = ConversationEngine(
         llm=llm, db=db, persona_loader=loader, context_manager=context_manager,
         tool_registry=tool_registry, tool_dispatcher=tool_dispatcher,
@@ -295,8 +309,41 @@ async def run_repl() -> int:
         memdir_loader=memdir_loader,
         memory_extractor=memory_extractor,
         persona_module_activator=module_activator,
+        short_term=short_term,
+        consolidate_instruction=consolidate_instruction,
     )
-    session = Session.new(channel="repl")
+    # PR1：尝试 reload 最近一次 repl 会话；失败/无记录 → 新建
+    session: Session | None = None
+    reloaded_msg_count = 0
+    if short_term is not None:
+        try:
+            recent_sid = await db.find_recent_session_id(channel="repl", user_id=None)
+        except Exception as exc:
+            _logger.warning("查找最近 repl 会话失败（走新建）", error=str(exc))
+            recent_sid = None
+        if recent_sid:
+            try:
+                reloaded = await short_term.reload(recent_sid)
+            except Exception as exc:
+                _logger.warning("reload jsonl 失败（走新建）", error=str(exc))
+                reloaded = []
+            try:
+                row = await db.get_session(recent_sid)
+            except Exception as exc:
+                _logger.warning("读取 session 元信息失败（走新建）", error=str(exc))
+                row = None
+            session = Session(session_id=recent_sid, channel="repl")
+            if reloaded:
+                session.messages.extend(reloaded)
+                reloaded_msg_count = len(reloaded)
+            if row:
+                session.compact_summary = str(row.get("compact_summary") or "")
+                ids_raw = str(row.get("active_module_ids") or "")
+                session.active_module_ids = {
+                    s for s in (x.strip() for x in ids_raw.split(",")) if s
+                }
+    if session is None:
+        session = Session.new(channel="repl")
     # 懒失效模式：watcher 同时监控 core/ 和 modules/
     watcher = PersonaWatcher(loader, module_loader=module_loader)
 
@@ -319,12 +366,18 @@ async def run_repl() -> int:
             memory=mem_summary,
         )
     )
+    # PR1：banner 后再补一行 session 状态
+    if reloaded_msg_count > 0:
+        print(f"  已加载上次会话 {session.session_id[:8]}... ({reloaded_msg_count} 条消息)\n")
+    else:
+        print(f"  新会话 {session.session_id[:8]}...\n")
     _logger.info(
         "REPL 启动",
         session_id=session.session_id,
         model=settings.openai_model,
         persona_chars=loader.get().total_chars(),
         max_context_tokens=settings.max_context_tokens,
+        reloaded_msgs=reloaded_msg_count,
     )
 
     await watcher.start()

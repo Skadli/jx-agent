@@ -23,7 +23,7 @@ from sanshiliu.context.manager import ContextManager
 from sanshiliu.engine.commands import CommandContext, is_slash_command, try_dispatch
 from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.engine.session import Session
-from sanshiliu.engine.types import MessageContent
+from sanshiliu.engine.types import ChatMessage, MessageContent
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.foundation.msg_split import StreamingSplitter
 from sanshiliu.memory.shortterm import ShortTermMemory
@@ -135,11 +135,21 @@ class HealthState:
 
 
 class SessionStore:
-    """进程内会话缓存；按 session_id 复用 Session 对象，支持多轮上下文。"""
+    """进程内会话缓存；按 session_id 复用 Session 对象，支持多轮上下文。
 
-    def __init__(self) -> None:
+    PR1（2026-05-27）：可选注入 ``short_term`` + ``db``，让 ``get_or_reload`` 在
+    会话不在内存时从 jsonl + sqlite 反序列化。原 ``get_or_create`` 同步接口保留兼容。
+    """
+
+    def __init__(
+        self,
+        short_term: ShortTermMemory | None = None,
+        db: Database | None = None,
+    ) -> None:
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+        self._short_term = short_term
+        self._db = db
 
     def get_or_create(self, session_id: str | None, channel: str = "web") -> Session:
         with self._lock:
@@ -151,6 +161,88 @@ class SessionStore:
                 sess = Session.new(channel=channel)
             self._sessions[sess.session_id] = sess
             return sess
+
+    async def get_or_reload(
+        self,
+        session_id: str | None,
+        channel: str = "web",
+        user_id: str | None = None,
+    ) -> Session:
+        """PR1：尝试从 jsonl + sqlite 还原 session；找不到则新建。
+
+        语义：
+        - session_id 已在内存 → 直接返
+        - session_id 给定但不在内存 → reload jsonl + sqlite；无数据则按指定 id 新建
+        - session_id 为 None → 用 ``db.find_recent_session_id`` 找最近一条；找不到 ``Session.new``
+        """
+        # fast-path：内存命中直接返
+        with self._lock:
+            if session_id and session_id in self._sessions:
+                return self._sessions[session_id]
+
+        sid = session_id
+        if sid is None and self._db is not None:
+            try:
+                sid = await self._db.find_recent_session_id(
+                    channel=channel, user_id=user_id,
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "find_recent_session_id 失败（走新建）",
+                    channel=channel, error=str(exc),
+                )
+                sid = None
+
+        if sid is None:
+            sess = Session.new(channel=channel, user_id=user_id)
+            with self._lock:
+                self._sessions[sess.session_id] = sess
+            return sess
+
+        # 再检查一次内存（user 没给 id 但 find_recent 拿到的 id 可能已经在内存）
+        with self._lock:
+            if sid in self._sessions:
+                return self._sessions[sid]
+
+        # 尝试 reload jsonl + sqlite
+        reloaded_msgs: list[ChatMessage] = []
+        compact_summary = ""
+        active_module_ids: set[str] = set()
+        if self._short_term is not None:
+            try:
+                reloaded_msgs = await self._short_term.reload(sid)
+            except Exception as exc:
+                _logger.warning(
+                    "reload jsonl 失败（继续新建）",
+                    session_id=sid, error=str(exc),
+                )
+        if self._db is not None:
+            try:
+                row = await self._db.get_session(sid)
+            except Exception as exc:
+                _logger.warning(
+                    "get_session 失败（继续）",
+                    session_id=sid, error=str(exc),
+                )
+                row = None
+            if row:
+                compact_summary = str(row.get("compact_summary") or "")
+                ids_raw = str(row.get("active_module_ids") or "")
+                active_module_ids = {
+                    s for s in (x.strip() for x in ids_raw.split(",")) if s
+                }
+
+        # 构造 Session；先让 __post_init__ 加 system 占位，再 extend 反序列化出的 messages
+        sess = Session(
+            session_id=sid, channel=channel, user_id=user_id,
+        )
+        if reloaded_msgs:
+            sess.messages.extend(reloaded_msgs)
+        sess.compact_summary = compact_summary
+        sess.active_module_ids = active_module_ids
+        with self._lock:
+            self._sessions[sid] = sess
+        return sess
 
     def get(self, session_id: str) -> Session | None:
         with self._lock:
@@ -240,7 +332,16 @@ def make_chat_handler(
         APPROVAL = object()
         MSG_BREAK = object()  # <MSG> 切到的段边界；前端收到 event=msg_break 时开新气泡
 
-        session = session_store.get_or_create(explicit_sid, channel="web")
+        # PR1：跨线程 await get_or_reload，让进程重启后的首轮请求能拿回历史
+        try:
+            session = asyncio.run_coroutine_threadsafe(
+                session_store.get_or_reload(explicit_sid, channel="web"), loop,
+            ).result(timeout=5.0)
+        except Exception as exc:
+            _logger.warning(
+                "get_or_reload 失败，回退到内存新建", error=str(exc),
+            )
+            session = session_store.get_or_create(explicit_sid, channel="web")
         # 先把 session_id 推到客户端，便于前端跟踪
         safe_write(req.wfile, format_event(session.session_id, event="session"))
 

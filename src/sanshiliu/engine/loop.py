@@ -16,8 +16,10 @@ from sanshiliu.llm.client import LLMClient
 from sanshiliu.llm.router import LLMRouter
 from sanshiliu.llm.stream import StreamDelta
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
+from sanshiliu.memory.longterm.consolidate import MemoryConsolidator
 from sanshiliu.memory.longterm.extract import MemoryExtractor
 from sanshiliu.memory.longterm.memdir import MemdirLoader
+from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.storage.db import Database
 from sanshiliu.tools.dispatcher import ToolDispatcher, parse_tool_calls
@@ -63,6 +65,8 @@ class ConversationEngine:
         memdir_loader: MemdirLoader | None = None,
         memory_extractor: MemoryExtractor | None = None,
         persona_module_activator: PersonaModuleActivator | None = None,
+        short_term: ShortTermMemory | None = None,
+        consolidate_instruction: str | None = None,
     ) -> None:
         # Phase 10：llm 可以是单 LLMClient（Phase 1-9 行为）或 LLMRouter（多后端）
         # 两者接口一致：chat / stream_chat / close / model / base_url
@@ -77,10 +81,28 @@ class ConversationEngine:
         self._memdir_loader = memdir_loader
         self._memory_extractor = memory_extractor
         self._persona_module_activator = persona_module_activator
+        # PR1：每条新 message 后调 short_term.append_message 落 jsonl
+        self._short_term = short_term
+        # PR4：/memory consolidate 用；lazy 构造，命令首次触发时缓存
+        self._consolidate_instruction = consolidate_instruction
+        self._consolidator: MemoryConsolidator | None = None
 
     @property
     def llm(self) -> LLMClient | LLMRouter:
         return self._llm
+
+    def get_memory_consolidator(self) -> MemoryConsolidator | None:
+        """lazy 构造 MemoryConsolidator；缺少 memdir_loader 或 instruction 时返 None。"""
+        if self._consolidator is not None:
+            return self._consolidator
+        if self._memdir_loader is None or self._consolidate_instruction is None:
+            return None
+        self._consolidator = MemoryConsolidator(
+            llm=self._llm,
+            memdir_loader=self._memdir_loader,
+            instruction=self._consolidate_instruction,
+        )
+        return self._consolidator
 
     @property
     def persona_loader(self) -> PersonaLoader | None:
@@ -172,9 +194,40 @@ class ConversationEngine:
         if self._context_manager is None:
             return
         try:
-            await self._context_manager.ensure_within_budget(session)
+            compacted = await self._context_manager.ensure_within_budget(session)
         except Exception as exc:
             _logger.error("compact 阶段异常（不阻塞主对话）", error=str(exc))
+            return
+        # PR1：真发生 compact 时把 summary 落到 sqlite，确保进程重启后能 reload
+        if compacted:
+            await self.persist_session_state(session)
+
+    async def persist_session_state(self, session: Session) -> None:
+        """PR1：把 compact_summary + active_module_ids 落到 sqlite sessions 表。
+
+        messages 走 shortterm jsonl；这里只存"非消息"的会话状态。失败不阻塞。
+        commands.py 的 /compact 命令也会调用此方法。
+        """
+        if self._db is None:
+            return
+        try:
+            await self._db.save_session_state(
+                session_id=session.session_id,
+                compact_summary=session.compact_summary,
+                active_module_ids=",".join(sorted(session.active_module_ids)),
+            )
+        except Exception as exc:
+            _logger.warning("save_session_state 失败（不阻塞）", error=str(exc))
+
+    async def _persist_message(self, session: Session, msg: ChatMessage) -> None:
+        """PR1：把新增 message 异步落到 shortterm jsonl（per-message append）。
+
+        short_term 内部已 try/except，这里 await 不会因 IO 失败影响主对话。
+        compact 时被裁掉的 messages 不再 append（compact_summary 走 sqlite）。
+        """
+        if self._short_term is None:
+            return
+        await self._short_term.append_message(session.session_id, msg)
 
     async def stream_turn(
         self, session: Session, user_text: MessageContent,
@@ -196,7 +249,8 @@ class ConversationEngine:
         # _refresh_skills 不消费 user_text 内容（已 `del`），任何 union 类型都行
         self._refresh_skills(session, flat_text)
         await self._maybe_compact(session)
-        session.add_user(user_text)
+        user_msg = session.add_user(user_text)
+        await self._persist_message(session, user_msg)
         await self._touch_session(session)
 
         chunks: list[str] = []
@@ -211,7 +265,8 @@ class ConversationEngine:
                 yield delta
         finally:
             assistant_text = "".join(chunks)
-            session.add_assistant(assistant_text)
+            assistant_msg = session.add_assistant(assistant_text)
+            await self._persist_message(session, assistant_msg)
             # 流式路径下 budget 反查必须在 finally，否则客户端早断不会执行
             await self._refresh_budget_from_db(session)
             # 异步触发 auto-extract（V-7：失败不阻塞）；只用文本部分
@@ -235,7 +290,8 @@ class ConversationEngine:
         self._refresh_persona_modules(session, flat_text)
         self._refresh_skills(session, flat_text)
         await self._maybe_compact(session)
-        session.add_user(user_text)
+        user_msg = session.add_user(user_text)
+        await self._persist_message(session, user_msg)
         await self._touch_session(session)
 
         loop_state = ToolLoopState(max_turns=6)
@@ -243,7 +299,9 @@ class ConversationEngine:
             loop_state.turn += 1
             if loop_state.turn > loop_state.max_turns:
                 _logger.warning("tool_call 循环超限", session_id=session.session_id, turn=loop_state.turn)
-                return session.add_assistant("[已达 tool 调用上限，请缩小问题范围或重试]")
+                limit_msg = session.add_assistant("[已达 tool 调用上限，请缩小问题范围或重试]")
+                await self._persist_message(session, limit_msg)
+                return limit_msg
 
             tools = self._tool_registry.to_openai_tools() if self.tools_enabled else None
             result = await self._llm.chat(
@@ -261,6 +319,7 @@ class ConversationEngine:
 
             if not result.tool_calls:
                 msg = session.add_assistant(result.text)
+                await self._persist_message(session, msg)
                 # 异步触发 auto-extract（V-7：失败不阻塞）；只用文本部分
                 if result.text and self._memory_extractor is not None:
                     self._memory_extractor.schedule(
@@ -272,12 +331,14 @@ class ConversationEngine:
 
             # 有 tool_calls：追加 assistant 占位 + 执行每个 call → tool 消息
             # DeepSeek reasoner 系列要求 reasoning_content 原样回传，否则下轮 400
-            session.messages.append(ChatMessage(
+            asst_with_tools = ChatMessage(
                 role="assistant",
                 content=result.text or "",
                 tool_calls=result.tool_calls,
                 reasoning_content=result.reasoning_content or None,
-            ))
+            )
+            session.messages.append(asst_with_tools)
+            await self._persist_message(session, asst_with_tools)
             parsed_calls = parse_tool_calls(result.tool_calls)
             for tc in parsed_calls:
                 tool_started = time.monotonic()
@@ -304,12 +365,14 @@ class ConversationEngine:
                     "tool 调用完成",
                     tool=tc.name, turn=loop_state.turn, is_error=is_error,
                 )
-                session.messages.append(ChatMessage(
+                tool_msg = ChatMessage(
                     role="tool",
                     content=tool_result_text,
                     tool_call_id=tc.id,
                     name=tc.name,
-                ))
+                )
+                session.messages.append(tool_msg)
+                await self._persist_message(session, tool_msg)
 
             # 下一轮 LLM 调用前再压一次：折叠超长 tool_result + 超阈值时整段 compact。
             # 与 Claude Code 在 tool 循环内做 microcompact 的策略一致；

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from sanshiliu.engine.types import ChatMessage
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.memory.longterm.consolidate import ConsolidateDiff
 
 if TYPE_CHECKING:
     from sanshiliu.engine.loop import ConversationEngine
@@ -24,6 +25,11 @@ if TYPE_CHECKING:
     from sanshiliu.memory.shortterm import ShortTermMemory
 
 _logger = get_logger(__name__)
+
+# PR4：/memory consolidate 的 draft 缓存；按 session_id 暂存上次 dry-run 结果
+# 5 分钟过期；不同 session 互不影响；同 session 多次 consolidate 只保留最新
+_CONSOLIDATE_DRAFTS: dict[str, tuple[float, ConsolidateDiff]] = {}
+_DRAFT_TTL_SEC = 300.0
 
 
 @dataclass
@@ -151,9 +157,133 @@ async def cmd_compact(ctx: CommandContext, args: str) -> CommandResult:
     after = len(sess.messages)
     if not ok:
         return CommandResult(reply="[压缩] 上下文消息太少或失败，本次未压缩。")
+    # PR1：手动压缩成功后也把 compact_summary 落 sqlite，确保 reload 不丢摘要
+    try:
+        await ctx.engine.persist_session_state(sess)
+    except Exception as exc:
+        _logger.warning("/compact 后持久化 session state 失败（不阻塞）", error=str(exc))
     return CommandResult(
         reply=f"[压缩] 消息 {before} -> {after} 条，"
               f"摘要 {len(sess.compact_summary)} 字。",
+    )
+
+
+def _format_diff_reply(diff: ConsolidateDiff) -> str:
+    """把 ConsolidateDiff 渲染成对人友好的多段文本；用于 /memory consolidate dry-run 回复。"""
+    if diff.is_empty:
+        return "[consolidate] memdir 没有需要合并/删除/重写的条目。"
+    parts: list[str] = [
+        f"[consolidate dry-run] 共 {diff.total_ops} 项变更：",
+        "",
+    ]
+    if diff.merge:
+        parts.append(f"## 合并 {len(diff.merge)} 组")
+        for m in diff.merge:
+            drop_str = ", ".join(m.drop)
+            preview = m.new_body.replace("\n", " ")[:60]
+            parts.append(f"  - keep [{m.keep}]，drop [{drop_str}]")
+            parts.append(f"    new_body: {preview}...")
+        parts.append("")
+    if diff.delete:
+        parts.append(f"## 删除 {len(diff.delete)} 条")
+        for d in diff.delete:
+            parts.append(f"  - {d.name}：{d.reason}")
+        parts.append("")
+    if diff.rewrite:
+        parts.append(f"## 重写 {len(diff.rewrite)} 条")
+        for r in diff.rewrite:
+            preview = r.new_body.replace("\n", " ")[:60]
+            parts.append(f"  - {r.name}：{preview}...")
+        parts.append("")
+    if diff.warnings:
+        parts.append("## 警告")
+        for w in diff.warnings:
+            parts.append(f"  - {w}")
+        parts.append("")
+    parts.append("输入 /memory apply 落盘 / /memory cancel 取消（5 分钟内有效）")
+    return "\n".join(parts)
+
+
+async def cmd_memory(ctx: CommandContext, args: str) -> CommandResult:
+    """记忆维护：consolidate (dry-run) / apply (落盘) / cancel / help。"""
+    sub, _, _rest = args.strip().partition(" ")
+    sub = sub.lower().strip() or "help"
+
+    if sub == "help":
+        lines = [
+            "── /memory 子命令 ──",
+            "  /memory consolidate  扫描 memdir，给出合并/删除/重写 diff（不落盘）",
+            "  /memory apply        落盘上次 dry-run 的 diff",
+            "  /memory cancel       取消未应用的 dry-run",
+            "  /memory help         本帮助",
+        ]
+        return CommandResult(reply="\n".join(lines))
+
+    sid = ctx.session.session_id
+
+    if sub == "cancel":
+        _CONSOLIDATE_DRAFTS.pop(sid, None)
+        return CommandResult(reply="[consolidate] 已取消未应用的 dry-run（如有）。")
+
+    if sub == "consolidate":
+        consolidator = ctx.engine.get_memory_consolidator()
+        if consolidator is None:
+            return CommandResult(
+                reply=(
+                    "[consolidate] 不可用：缺少 memdir_loader 或 prompts/memory_consolidate.md。"
+                    "检查 settings.memory_enabled 与 prompts 目录。"
+                ),
+            )
+        try:
+            diff = await consolidator.dry_run(session_id=sid)
+        except Exception as exc:
+            _logger.exception("/memory consolidate 失败", error=str(exc))
+            return CommandResult(reply=f"[consolidate] 失败：{type(exc).__name__}: {exc}")
+        if diff.is_empty:
+            return CommandResult(reply=_format_diff_reply(diff))
+        _CONSOLIDATE_DRAFTS[sid] = (time.time(), diff)
+        return CommandResult(reply=_format_diff_reply(diff))
+
+    if sub == "apply":
+        entry = _CONSOLIDATE_DRAFTS.get(sid)
+        if entry is None:
+            return CommandResult(
+                reply="[consolidate] 无可应用的 diff；请先跑 /memory consolidate。",
+            )
+        created_at, diff = entry
+        if time.time() - created_at > _DRAFT_TTL_SEC:
+            _CONSOLIDATE_DRAFTS.pop(sid, None)
+            return CommandResult(
+                reply=(
+                    "[consolidate] 上次 dry-run 已过期（>5 分钟），"
+                    "请重新跑 /memory consolidate。"
+                ),
+            )
+        consolidator = ctx.engine.get_memory_consolidator()
+        if consolidator is None:
+            _CONSOLIDATE_DRAFTS.pop(sid, None)
+            return CommandResult(reply="[consolidate] 不可用，无法落盘。")
+        try:
+            res = await consolidator.apply(diff)
+        except Exception as exc:
+            _logger.exception("/memory apply 失败", error=str(exc))
+            return CommandResult(reply=f"[consolidate apply] 失败：{type(exc).__name__}: {exc}")
+        _CONSOLIDATE_DRAFTS.pop(sid, None)
+        lines = [
+            "[consolidate apply] 完成：",
+            (
+                f"  合并 {res.merged_count} 组 / 删除 {res.deleted_count} 条 / "
+                f"重写 {res.rewritten_count} 条"
+            ),
+        ]
+        if res.errors:
+            lines.append(f"  错误 {len(res.errors)} 条：")
+            for err in res.errors:
+                lines.append(f"    - {err}")
+        return CommandResult(reply="\n".join(lines))
+
+    return CommandResult(
+        reply=f"未知子命令：/memory {sub}。输入 /memory help 查看子命令。",
     )
 
 
@@ -171,6 +301,7 @@ async def cmd_help(ctx: CommandContext, args: str) -> CommandResult:
 COMMANDS_META: dict[str, tuple[CommandHandler, str]] = {
     "new":     (cmd_new,     "开新对话；旧会话快照保存，分配新 session_id"),
     "compact": (cmd_compact, "立即压缩上下文为摘要"),
+    "memory":  (cmd_memory,  "记忆维护：/memory consolidate | apply | cancel | help"),
     "help":    (cmd_help,    "列出可用命令"),
 }
 

@@ -24,6 +24,7 @@ from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.providers import build_default_registry
 from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
+from sanshiliu.memory.longterm.consolidate import load_consolidate_instruction
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
@@ -152,30 +153,12 @@ async def build_app(
         except Exception as exc:
             _logger.warning("skills 加载失败（继续不带 skills）", error=str(exc))
 
-    # L7 工具
-    tool_registry: ToolRegistry | None = None
-    tool_dispatcher: ToolDispatcher | None = None
-    if settings.tools_enabled:
-        try:
-            tool_registry, tool_dispatcher = build_tool_stack(
-                prompts_dir=settings.prompts_dir, cwd_root=cwd_root,
-                tavily_api_key=(
-                    settings.tavily_api_key.get_secret_value()
-                    if settings.tavily_api_key else None
-                ),
-                permission=permission_manager,
-                skill_activator=skill_activator,
-                persona_module_activator=persona_module_activator,
-                db=db,
-            )
-        except ConfigError as exc:
-            _logger.warning("工具栈加载失败（继续不带工具）", error=str(exc))
-
-    # L5 长期记忆
+    # L5 长期记忆（先于 L7 工具构造，LoadMemory/SaveMemory 需要 memdir_loader）
     claudemd_loader: ClaudeMdLoader | None = None
     memdir_loader: MemdirLoader | None = None
     memory_extractor: MemoryExtractor | None = None
     short_term: ShortTermMemory | None = None
+    consolidate_instruction: str | None = None
     if settings.memory_enabled:
         try:
             claudemd_loader = ClaudeMdLoader(
@@ -199,6 +182,36 @@ async def build_app(
             except ConfigError as exc:
                 _logger.warning("auto-extract 加载失败", error=str(exc))
 
+        # PR4：/memory consolidate 的 LLM 指令；缺失就 None，命令运行时给提示
+        if memdir_loader is not None:
+            try:
+                consolidate_instruction = load_consolidate_instruction(settings.prompts_dir)
+            except ConfigError as exc:
+                _logger.warning(
+                    "memory_consolidate 指令加载失败（/memory consolidate 不可用）",
+                    error=str(exc),
+                )
+
+    # L7 工具
+    tool_registry: ToolRegistry | None = None
+    tool_dispatcher: ToolDispatcher | None = None
+    if settings.tools_enabled:
+        try:
+            tool_registry, tool_dispatcher = build_tool_stack(
+                prompts_dir=settings.prompts_dir, cwd_root=cwd_root,
+                tavily_api_key=(
+                    settings.tavily_api_key.get_secret_value()
+                    if settings.tavily_api_key else None
+                ),
+                permission=permission_manager,
+                skill_activator=skill_activator,
+                persona_module_activator=persona_module_activator,
+                memdir_loader=memdir_loader,
+                db=db,
+            )
+        except ConfigError as exc:
+            _logger.warning("工具栈加载失败（继续不带工具）", error=str(exc))
+
     # L2 engine
     engine = ConversationEngine(
         llm=llm, db=db,
@@ -210,6 +223,8 @@ async def build_app(
         memdir_loader=memdir_loader,
         memory_extractor=memory_extractor,
         persona_module_activator=persona_module_activator,
+        short_term=short_term,
+        consolidate_instruction=consolidate_instruction,
     )
 
     # 横幅状态汇总

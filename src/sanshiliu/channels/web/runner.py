@@ -94,6 +94,7 @@ from sanshiliu.identity.watcher import PersonaWatcher
 from sanshiliu.llm.providers import build_default_registry
 from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
+from sanshiliu.memory.longterm.consolidate import load_consolidate_instruction
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
@@ -194,32 +195,12 @@ async def run_serve() -> int:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
             skill_loader = None
 
-    # Phase 5：tool 栈
-    tool_registry = None
-    tool_dispatcher = None
-    if settings.tools_enabled:
-        try:
-            tool_registry, tool_dispatcher = build_tool_stack(
-                prompts_dir=settings.prompts_dir,
-                cwd_root=_Path.cwd(),
-                tavily_api_key=settings.tavily_api_key.get_secret_value()
-                if settings.tavily_api_key
-                else None,
-                permission=permission_manager,
-                skill_activator=skill_activator,
-                persona_module_activator=module_activator,
-                db=db,
-            )
-        except ConfigError as exc:
-            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
-
-    # Phase 7：长期记忆（CLAUDE.md + memdir + auto-extract）
+    # Phase 7：长期记忆（先于 L7 工具栈构造；LoadMemory/SaveMemory 工具需要 memdir_loader）
     claudemd_loader: ClaudeMdLoader | None = None
     memdir_loader: MemdirLoader | None = None
     memory_extractor: MemoryExtractor | None = None
+    consolidate_instruction: str | None = None
     if settings.memory_enabled:
-        from pathlib import Path as _Path
-
         try:
             claudemd_loader = ClaudeMdLoader(
                 global_home=settings.home_dir,
@@ -250,6 +231,37 @@ async def run_serve() -> int:
             except ConfigError as exc:
                 print(f"auto-extract 加载失败（继续不带 extract）：{exc}", file=sys.stderr)
 
+        # PR4：/memory consolidate 指令；缺失就 None，命令运行时给提示
+        if memdir_loader is not None:
+            try:
+                consolidate_instruction = load_consolidate_instruction(settings.prompts_dir)
+            except ConfigError as exc:
+                print(
+                    f"memory_consolidate 指令加载失败（/memory consolidate 不可用）：{exc}",
+                    file=sys.stderr,
+                )
+
+    # Phase 5：tool 栈
+    # PR2：memdir_loader 已构造好，build_tool_stack 会注册 LoadMemory / SaveMemory
+    tool_registry = None
+    tool_dispatcher = None
+    if settings.tools_enabled:
+        try:
+            tool_registry, tool_dispatcher = build_tool_stack(
+                prompts_dir=settings.prompts_dir,
+                cwd_root=_Path.cwd(),
+                tavily_api_key=settings.tavily_api_key.get_secret_value()
+                if settings.tavily_api_key
+                else None,
+                permission=permission_manager,
+                skill_activator=skill_activator,
+                persona_module_activator=module_activator,
+                memdir_loader=memdir_loader,
+                db=db,
+            )
+        except ConfigError as exc:
+            print(f"工具栈加载失败（继续不带工具）：{exc}", file=sys.stderr)
+
     engine = ConversationEngine(
         llm=llm,
         db=db,
@@ -262,6 +274,7 @@ async def run_serve() -> int:
         memdir_loader=memdir_loader,
         memory_extractor=memory_extractor,
         persona_module_activator=module_activator,
+        consolidate_instruction=consolidate_instruction,
     )
     persona_watcher = PersonaWatcher(loader, module_loader=module_loader)
 
@@ -272,9 +285,10 @@ async def run_serve() -> int:
 
     loop = asyncio.get_running_loop()
     router = Router()
-    session_store = SessionStore()
     # ShortTermMemory 内部会在 base_dir 下再建 sessions/；这里直接给 data_dir
     short_term = ShortTermMemory(settings.data_dir)
+    # PR1：SessionStore 注入 short_term + db，让进程重启后能从 jsonl + sqlite reload
+    session_store = SessionStore(short_term=short_term, db=db)
     router.register("POST", "/chat", make_chat_handler(
         engine, loop, health, session_store, short_term, approval_broker,
         multimodal_max_images=settings.multimodal_max_images_per_turn,

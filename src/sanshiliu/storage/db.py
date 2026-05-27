@@ -46,11 +46,17 @@ class Database:
         conn.executescript(schema_sql)
         # Phase 10 migration：老库给 channel_messages 加 media 列；新库 CREATE TABLE 已含
         # ALTER TABLE ADD COLUMN 重复时抛 OperationalError("duplicate column name")，吞掉
-        try:
-            conn.execute("ALTER TABLE channel_messages ADD COLUMN media TEXT")
-        except sqlite3.OperationalError as exc:
-            if "duplicate column name" not in str(exc).lower():
-                raise
+        for alter_sql in (
+            "ALTER TABLE channel_messages ADD COLUMN media TEXT",
+            # PR1（2026-05-27）：sessions 表加 compact_summary / active_module_ids
+            "ALTER TABLE sessions ADD COLUMN compact_summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE sessions ADD COLUMN active_module_ids TEXT NOT NULL DEFAULT ''",
+        ):
+            try:
+                conn.execute(alter_sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         self._conn = conn
 
     async def close(self) -> None:
@@ -138,6 +144,63 @@ class Database:
         cur = await self._execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = await asyncio.to_thread(cur.fetchone)
         return dict(row) if row else None
+
+    async def save_session_state(
+        self,
+        *,
+        session_id: str,
+        compact_summary: str,
+        active_module_ids: str,
+    ) -> None:
+        """PR1：刷新会话非消息状态（compact_summary + 活跃模块 id 列表）。
+
+        messages 不在 sqlite，落到 <data_dir>/sessions/<id>.jsonl。
+        active_module_ids 用逗号分隔的字符串表示；reload 时按 split(",") 还原 set。
+        """
+        await self._execute(
+            """
+            UPDATE sessions
+            SET compact_summary = ?, active_module_ids = ?, last_active_at = ?
+            WHERE id = ?
+            """,
+            (
+                compact_summary,
+                active_module_ids,
+                int(time.time() * 1000),
+                session_id,
+            ),
+        )
+
+    async def find_recent_session_id(
+        self,
+        *,
+        channel: str,
+        user_id: str | None,
+    ) -> str | None:
+        """PR1：按 channel + user_id 找最近活跃的 session_id；用于通道启动 reload。
+
+        user_id 为 None 时严格匹配 user_id IS NULL（REPL 单用户场景）。
+        """
+        if user_id is None:
+            cur = await self._execute(
+                """
+                SELECT id FROM sessions
+                WHERE channel = ? AND user_id IS NULL
+                ORDER BY last_active_at DESC LIMIT 1
+                """,
+                (channel,),
+            )
+        else:
+            cur = await self._execute(
+                """
+                SELECT id FROM sessions
+                WHERE channel = ? AND user_id = ?
+                ORDER BY last_active_at DESC LIMIT 1
+                """,
+                (channel, user_id),
+            )
+        row = await asyncio.to_thread(cur.fetchone)
+        return str(row["id"]) if row else None
 
     # Phase 8 权限决策
     async def insert_permission_decision(
