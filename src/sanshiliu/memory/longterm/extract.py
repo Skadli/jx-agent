@@ -70,11 +70,15 @@ def _coerce_entry(item: dict[str, Any]) -> MemoryEntry | None:
         return None
     if conf is None or conf < _MIN_CONFIDENCE:
         return None
+    body = str(item.get("body") or "").strip()
+    # feedback / project 协议要求 body 含 **Why:** 段；缺失只观测、不丢弃（LLM 侧 prompt 已约束）
+    if mtype in ("feedback", "project") and "**Why:**" not in body:
+        _logger.info("extract: feedback/project 记忆缺 Why 段（容忍）", name=name.strip())
     return MemoryEntry(
         name=name.strip(),
         description=description.strip(),
         memory_type=mtype,
-        body=str(item.get("body") or "").strip(),
+        body=body,
         confidence=conf,
         source="auto-extract",
         protected=False,
