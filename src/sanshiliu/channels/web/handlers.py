@@ -14,7 +14,7 @@ import queue as q_mod
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from sanshiliu.channels.web.approvals import WebApprovalBroker
@@ -505,7 +505,7 @@ def make_metrics_handler(
 
 
 def make_webhook_handler(
-    process_fn: Callable[[bytes, dict[str, str]], Awaitable[tuple[int, str]]],
+    process_fn: Callable[[bytes, dict[str, str]], Coroutine[Any, Any, tuple[int, str]]],
     loop: asyncio.AbstractEventLoop,
 ) -> Callable[[BaseHTTPRequestHandler], None]:
     """构造 /wechat/webhook handler；HMAC 校验由 process_fn 内部完成。"""

@@ -150,7 +150,7 @@ async def cmd_compact(ctx: CommandContext, args: str) -> CommandResult:
     before = len(sess.messages)
     try:
         # 直接调内部 compactor，跳过 should_compact 阈值检查
-        ok = await cm._compactor.compact(sess)  # type: ignore[attr-defined]
+        ok = await cm._compactor.compact(sess)
     except Exception as exc:
         _logger.exception("/compact 失败", error=str(exc))
         return CommandResult(reply=f"压缩失败：{type(exc).__name__}: {exc}")

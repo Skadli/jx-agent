@@ -126,7 +126,10 @@ class WechatQueue:
         waiting_for_caption = (
             has_media and not has_text_followup and merge_window_media_ms is not None
         )
-        effective_window = merge_window_media_ms if waiting_for_caption else merge_window_ms
+        effective_window: int = (
+            merge_window_media_ms if waiting_for_caption and merge_window_media_ms is not None
+            else merge_window_ms
+        )
         if ref_now - latest_ts < effective_window:
             return None  # 仍在静默窗口，等下个 poll
 

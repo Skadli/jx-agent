@@ -69,7 +69,12 @@ class Session:
         memory_block → core_persona(messages[0]) → persona_modules_listing
         → active_module(正文) → active_skills → compact_summary
         """
-        persona = self.messages[0].content if self.messages and self.messages[0].role == "system" else ""
+        if self.messages and self.messages[0].role == "system":
+            raw = self.messages[0].content
+            # system 消息 content 协议上是 str；多模态仅出现在 user 角色 —— 这里做一次防御性 str 化
+            persona = raw if isinstance(raw, str) else ""
+        else:
+            persona = ""
         parts = [
             p for p in (
                 self.memory_block_text,

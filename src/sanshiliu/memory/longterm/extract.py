@@ -62,7 +62,7 @@ def _coerce_entry(item: dict[str, Any]) -> MemoryEntry | None:
     mtype_raw = metadata.get("type") if isinstance(metadata, dict) else None
     if not isinstance(mtype_raw, str) or mtype_raw not in MEMORY_TYPES:
         return None
-    mtype: MemoryType = mtype_raw  # type: ignore[assignment]
+    mtype: MemoryType = mtype_raw
     conf_raw = item.get("confidence")
     try:
         conf = float(conf_raw) if conf_raw is not None else None

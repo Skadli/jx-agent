@@ -38,9 +38,10 @@ def _read_json(req: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     if length <= 0 or length > 1024 * 1024:
         return None
     try:
-        return json.loads(req.rfile.read(length).decode("utf-8"))
+        parsed = json.loads(req.rfile.read(length).decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
@@ -194,7 +195,7 @@ def make_memory_create_handler(
             _write_json(req, {"error": f"type 必须是 {MEMORY_TYPES}"}, status=400); return
         try:
             entry = MemoryEntry(
-                name=name, description=desc, memory_type=mtype,  # type: ignore[arg-type]
+                name=name, description=desc, memory_type=mtype,
                 body=text, file_path=Path(),
             )
             path = write_memory_file(memdir_loader.root, entry, body=text)
@@ -249,7 +250,7 @@ def make_memory_modify_handler(
 
 def _rebuild_memdir_index(memdir_loader: MemdirLoader) -> None:
     """删除后重建 MEMORY.md 索引；逐条 entry 重新写。"""
-    from sanshiliu.memory.longterm.memdir import _INDEX_FILE  # type: ignore[attr-defined]
+    from sanshiliu.memory.longterm.memdir import _INDEX_FILE
     memdir_loader.invalidate()
     snap = memdir_loader.load()
     lines = [e.index_line() for e in snap.entries]

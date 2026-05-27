@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.security.types import (
@@ -20,7 +21,7 @@ _logger = get_logger(__name__)
 _SETTINGS_FILENAME = "settings.json"
 
 
-def _read_one(path: Path) -> dict | None:
+def _read_one(path: Path) -> dict[str, Any] | None:
     """读单个 settings.json；缺/坏文件返回 None 不抛。"""
     if not path.is_file():
         return None
@@ -46,11 +47,14 @@ def _coerce_list(raw: object) -> list[str]:
 def _coerce_default_mode(raw: object) -> DefaultMode:
     """defaultMode 强制成合法字面量；非法→ask。"""
     if isinstance(raw, str) and raw in DEFAULT_MODES:
-        return raw  # type: ignore[return-value]
+        return raw
     return "ask"
 
 
-def _merge(global_data: dict | None, project_data: dict | None) -> tuple[DefaultMode, list[str], list[str]]:
+def _merge(
+    global_data: dict[str, Any] | None,
+    project_data: dict[str, Any] | None,
+) -> tuple[DefaultMode, list[str], list[str]]:
     """合并两份 permissions：项目级覆盖 defaultMode；allow/deny 拼接去重保序。"""
     g_perm = (global_data or {}).get("permissions") or {}
     p_perm = (project_data or {}).get("permissions") or {}
@@ -125,7 +129,7 @@ def append_allow_pattern(project_path: Path, pattern: str) -> None:
 
     8-V3：用户选择 "always" 时写盘；不存在就建新文件，保持 JSON 缩进风格。
     """
-    data: dict = {}
+    data: dict[str, Any] = {}
     if project_path.is_file():
         try:
             text = project_path.read_text(encoding="utf-8")

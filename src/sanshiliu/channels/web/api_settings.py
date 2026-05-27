@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,9 +52,10 @@ def _read_json(req: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     if length <= 0 or length > 256 * 1024:
         return None
     try:
-        return json.loads(req.rfile.read(length).decode("utf-8"))
+        parsed = json.loads(req.rfile.read(length).decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
@@ -99,7 +100,7 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
-def _write_env_file(path: Path, updates: dict[str, str | None]) -> None:
+def _write_env_file(path: Path, updates: Mapping[str, str | None]) -> None:
     """就地更新 .env：key 已存在则替换该行，否则追加到文件末尾。
     value 为 None 表示删除该行。
     """

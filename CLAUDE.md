@@ -35,7 +35,7 @@ Exit codes: `0` success, `78` config error, `130` user interrupt.
 ```powershell
 python -m ruff check src/sanshiliu        # ruff (RUF001/2/3 ignored — full-width punctuation OK)
 python -m ruff format src/sanshiliu
-python -m mypy src/sanshiliu              # strict mode; ~26 errors are known-debt (see README "已知缺口")
+python -m mypy src/sanshiliu              # strict mode; 0 errors (baseline 清零，禁止再漂)
 python -m py_compile src/sanshiliu/<path>.py   # quick syntax check before commit
 ```
 
@@ -120,6 +120,5 @@ Sub-agent audit from 2026-05-23 — relevant when touching these areas:
 - `PermissionManager._session_cache` is unlocked — concurrent channels can double-prompt or double-write `settings.json`
 - iLink webhook HMAC has **no timestamp/replay window** — add 5min skew when fixing
 - `channels/web/handlers.py healthz` reports wechat status hardcoded to `disabled`
-- `mypy --strict` has 26 errors; `tools/registry.py` uses `list` as a type-annotation method name in 4 places
 
 The README's "已知缺口" section is the authoritative checklist before tagging `v1.0.0`.

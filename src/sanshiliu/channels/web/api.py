@@ -10,7 +10,7 @@ import asyncio
 import json
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -67,7 +67,7 @@ def _range_seconds(q: dict[str, str]) -> int:
     return _RANGE_MAP.get(raw, _DEFAULT_RANGE_SEC)
 
 
-def _run(loop: asyncio.AbstractEventLoop, coro) -> Any:
+def _run(loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any]) -> Any:
     fut = asyncio.run_coroutine_threadsafe(coro, loop)
     return fut.result(timeout=10.0)
 
@@ -453,13 +453,13 @@ def make_memory_handler(
             claude_md: dict[str, Any] | None = None
             if claudemd_loader is not None:
                 try:
-                    snap = claudemd_loader.get()
+                    cmd_snap = claudemd_loader.get()
                     claude_md = {
-                        "global_chars":  len(snap.global_text),
-                        "project_chars": len(snap.project_text),
-                        "global_path":   str(snap.global_path),
-                        "project_path":  str(snap.project_path),
-                        "total_chars":   snap.total_chars(),
+                        "global_chars":  len(cmd_snap.global_text),
+                        "project_chars": len(cmd_snap.project_text),
+                        "global_path":   str(cmd_snap.global_path),
+                        "project_path":  str(cmd_snap.project_path),
+                        "total_chars":   cmd_snap.total_chars(),
                     }
                 except Exception:
                     pass

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import BinaryIO
+from io import BufferedIOBase
 
 
 def format_event(data: str, *, event: str | None = None, event_id: str | None = None) -> bytes:
@@ -22,7 +22,7 @@ def format_heartbeat() -> bytes:
     return b": heartbeat\n\n"
 
 
-def safe_write(stream: BinaryIO, payload: bytes) -> bool:
+def safe_write(stream: BufferedIOBase, payload: bytes) -> bool:
     """向 SSE 客户端写一帧；BrokenPipe/ConnectionReset 返回 False 让调用方退出。"""
     try:
         stream.write(payload)

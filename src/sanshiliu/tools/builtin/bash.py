@@ -26,7 +26,7 @@ def _decode_output(b: bytes | None) -> str:
             return b.decode("utf-8")
         except UnicodeDecodeError:
             return b.decode("mbcs", errors="replace")
-    return b.decode("utf-8", errors="replace")
+    return b.decode("utf-8", errors="replace")  # type: ignore[unreachable]
 
 
 def build_bash_exec_tool(definition: ToolDef, cwd: str | None = None) -> FunctionTool:

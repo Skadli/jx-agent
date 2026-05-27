@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 from sanshiliu.context.manager import ContextManager
 from sanshiliu.engine.session import Session
@@ -303,7 +304,12 @@ class ConversationEngine:
                 await self._persist_message(session, limit_msg)
                 return limit_msg
 
-            tools = self._tool_registry.to_openai_tools() if self.tools_enabled else None
+            # tools_enabled 已确保 self._tool_registry is not None；mypy 看不出
+            if self.tools_enabled:
+                assert self._tool_registry is not None
+                tools: list[dict[str, Any]] | None = self._tool_registry.to_openai_tools()
+            else:
+                tools = None
             result = await self._llm.chat(
                 messages=session.to_openai_messages(),
                 session_id=session.session_id,

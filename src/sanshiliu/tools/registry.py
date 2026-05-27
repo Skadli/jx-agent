@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.frontmatter import parse
@@ -27,7 +28,7 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
-    def list(self) -> list[Tool]:
+    def as_list(self) -> list[Tool]:
         return list(self._tools.values())
 
     def names(self) -> list[str]:
@@ -36,7 +37,7 @@ class ToolRegistry:
     def definitions(self) -> list[ToolDef]:
         return [t.definition for t in self._tools.values()]
 
-    def to_openai_tools(self) -> list[dict]:
+    def to_openai_tools(self) -> list[dict[str, Any]]:
         return [d.to_openai() for d in self.definitions()]
 
     @property

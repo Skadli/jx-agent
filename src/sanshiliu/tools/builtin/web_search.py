@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -152,10 +153,10 @@ async def _ddg_search(query: str) -> str:
 
 # ────────── Provider chain ──────────
 
-async def _try(provider_name: str, coro_fn) -> str:
+async def _try(provider_name: str, coro_fn: Callable[[], Awaitable[str]]) -> str:
     """跑一个 provider；返回非空字符串视为成功；空 / 异常都视为失败。"""
     try:
-        text = await coro_fn()
+        text: str = await coro_fn()
         if text and text.strip():
             return text
         _logger.info("web_search provider 无结果，尝试下一个", provider=provider_name)
@@ -171,9 +172,9 @@ def _provider_chain(tavily_api_key: str | None) -> list[tuple[str, Any]]:
     """根据 env / key 决定 provider 顺序；返回 [(name, async_callable)]。"""
     override = (os.environ.get("SANSHILIU_WEB_SEARCH_PROVIDER") or "").strip().lower()
 
-    def _t(query): return _tavily_search(query, tavily_api_key or "")
-    def _s(query): return _sogou_search(query)
-    def _d(query): return _ddg_search(query)
+    def _t(query: str) -> Awaitable[str]: return _tavily_search(query, tavily_api_key or "")
+    def _s(query: str) -> Awaitable[str]: return _sogou_search(query)
+    def _d(query: str) -> Awaitable[str]: return _ddg_search(query)
 
     if override == "tavily":
         return [("tavily", _t)]
@@ -205,7 +206,12 @@ def build_web_search_tool(definition: ToolDef, tavily_api_key: str | None = None
         chain = _provider_chain(tavily_api_key)
         last_error = ""
         for name, fn in chain:
-            text = await _try(name, lambda fn=fn, query=query: fn(query))
+            def _call(
+                fn: Callable[[str], Awaitable[str]] = fn,
+                query: str = query,
+            ) -> Awaitable[str]:
+                return fn(query)
+            text = await _try(name, _call)
             if text:
                 return ToolResult(call_id="", name=definition.name, content=text)
             last_error = name

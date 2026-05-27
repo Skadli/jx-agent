@@ -310,9 +310,10 @@ def _read_json(req: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     if length <= 0 or length > 64 * 1024:
         return {}
     try:
-        return json.loads(req.rfile.read(length).decode("utf-8"))
+        parsed = json.loads(req.rfile.read(length).decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:

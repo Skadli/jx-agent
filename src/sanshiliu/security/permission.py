@@ -18,7 +18,7 @@ import json
 import re
 import shlex
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Literal
 
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.security.bash_classifier import classify as _classify_bash
@@ -151,17 +151,17 @@ class PermissionManager:
             path_guard_hit = self._path_guard.check(raw_path)
             if path_guard_hit and path_guard_hit != "out-of-cwd":
                 # 命中默认黑名单 → 直接拒绝
-                rule = f"path-guard:{path_guard_hit}"
+                pg_rule = f"path-guard:{path_guard_hit}"
                 _logger.warning("权限拒绝（path-guard）", tool=tool_name, path=raw_path, rule=path_guard_hit)
                 return PermissionDecision(
-                    kind="deny", rule=rule, danger=danger,
+                    kind="deny", rule=pg_rule, danger=danger,
                     reason=f"路径 {raw_path} 命中安全黑名单 {path_guard_hit}",
                 )
 
         settings = self._settings_loader.get()
 
         # 1) deny pattern
-        rule = self._first_match(settings.deny, tool_name, alias, arguments)
+        rule: str | None = self._first_match(settings.deny, tool_name, alias, arguments)
         if rule is not None:
             _logger.warning("权限拒绝（settings.deny）", tool=tool_name, rule=rule)
             return PermissionDecision(
@@ -230,7 +230,7 @@ class PermissionManager:
             tool_name=tool_name, alias=alias, fingerprint=fp,
             session_id=session_id, arguments=arguments,
         )
-        kind = "allow" if response.decision == "allow" else "deny"
+        kind: Literal["allow", "deny"] = "allow" if response.decision == "allow" else "deny"
         return PermissionDecision(
             kind=kind, rule=f"ask:{response.scope}", danger=danger,
             reason=f"用户确认 {response.decision} / {response.scope}",
