@@ -135,7 +135,11 @@ class PermissionManager:
         arguments: dict[str, Any],
         session_id: str,
     ) -> PermissionDecision:
-        """权限状态机；返回 allow/deny；ask 路径会内部调 confirmer。"""
+        """权限状态机；返回 allow/deny；ask 路径会内部调 confirmer。
+
+        PR3：每条 return 前都调 _persist_decision 落 permission_decisions 表，
+        让 dashboard 能看到完整权限发生史。ask 路径除外——_apply_response 内已写。
+        """
         alias = canonical_tool_alias(tool_name)
 
         # bash 危险级（用于 UI 警示，不直接决策）
@@ -153,10 +157,15 @@ class PermissionManager:
                 # 命中默认黑名单 → 直接拒绝
                 pg_rule = f"path-guard:{path_guard_hit}"
                 _logger.warning("权限拒绝（path-guard）", tool=tool_name, path=raw_path, rule=path_guard_hit)
-                return PermissionDecision(
+                decision = PermissionDecision(
                     kind="deny", rule=pg_rule, danger=danger,
                     reason=f"路径 {raw_path} 命中安全黑名单 {path_guard_hit}",
+                    source="path-guard",
                 )
+                await self._persist_decision(
+                    session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+                )
+                return decision
 
         settings = self._settings_loader.get()
 
@@ -164,25 +173,49 @@ class PermissionManager:
         rule: str | None = self._first_match(settings.deny, tool_name, alias, arguments)
         if rule is not None:
             _logger.warning("权限拒绝（settings.deny）", tool=tool_name, rule=rule)
-            return PermissionDecision(
+            decision = PermissionDecision(
                 kind="deny", rule=rule, danger=danger,
                 reason=f"settings.deny 命中：{rule}",
+                source="settings-deny",
             )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
 
         # 2) allow pattern
         rule = self._first_match(settings.allow, tool_name, alias, arguments)
         if rule is not None:
-            return PermissionDecision(kind="allow", rule=rule, danger=danger)
+            decision = PermissionDecision(
+                kind="allow", rule=rule, danger=danger, source="settings-allow",
+            )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
 
         # 3) 会话缓存
         fp = _args_fingerprint(arguments)
         cache_key = (session_id, alias, fp)
         cached = self._session_cache.get(cache_key)
         if cached == "allow":
-            return PermissionDecision(kind="allow", rule="session-cache", danger=danger)
+            decision = PermissionDecision(
+                kind="allow", rule="session-cache", danger=danger, source="session-cache",
+            )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
         if cached == "deny":
-            return PermissionDecision(kind="deny", rule="session-cache", danger=danger,
-                                      reason="本会话此前已拒绝同款调用")
+            decision = PermissionDecision(
+                kind="deny", rule="session-cache", danger=danger,
+                reason="本会话此前已拒绝同款调用",
+                source="session-cache",
+            )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
 
         # 3.5) 安全工具自动放行；deny / 显式 allow / 会话缓存仍优先，
         # 用户撤销也可以经 settings.deny 收回。覆盖范围：
@@ -194,21 +227,44 @@ class PermissionManager:
                 "bash-safe-auto" if tool_name in ("bash_exec", "Bash")
                 else f"{alias.lower()}-safe-auto"
             )
-            return PermissionDecision(kind="allow", rule=rule_label, danger=danger)
+            decision = PermissionDecision(
+                kind="allow", rule=rule_label, danger=danger, source="auto-allowable",
+            )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
 
         # 4) defaultMode
         if settings.default_mode == "allow":
-            return PermissionDecision(kind="allow", rule="defaultMode=allow", danger=danger)
+            decision = PermissionDecision(
+                kind="allow", rule="defaultMode=allow", danger=danger, source="default-mode",
+            )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
         if settings.default_mode == "deny":
-            return PermissionDecision(kind="deny", rule="defaultMode=deny", danger=danger,
-                                      reason="defaultMode=deny")
+            decision = PermissionDecision(
+                kind="deny", rule="defaultMode=deny", danger=danger,
+                reason="defaultMode=deny", source="default-mode",
+            )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
 
         # 5) ask
         if self._confirmer is None:
-            return PermissionDecision(
+            decision = PermissionDecision(
                 kind="deny", rule="ask-no-confirmer", danger=danger,
                 reason="defaultMode=ask 但本通道没有用户确认能力",
+                source="ask-no-confirmer",
             )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
 
         request = ConfirmRequest(
             tool_name=tool_name,
@@ -220,11 +276,17 @@ class PermissionManager:
             response = await self._confirmer.confirm(request)
         except Exception as exc:
             _logger.error("confirmer 异常（fail-closed）", error=str(exc), tool=tool_name)
-            return PermissionDecision(
+            decision = PermissionDecision(
                 kind="deny", rule="ask-error", danger=danger,
                 reason=f"用户确认流程异常：{exc}",
+                source="ask-error",
             )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
 
+        # ask 路径：_apply_response 已写库（scope=session 时），不在此重复 _persist_decision
         await self._apply_response(
             response=response,
             tool_name=tool_name, alias=alias, fingerprint=fp,
@@ -234,7 +296,36 @@ class PermissionManager:
         return PermissionDecision(
             kind=kind, rule=f"ask:{response.scope}", danger=danger,
             reason=f"用户确认 {response.decision} / {response.scope}",
+            source="user-confirmed",
         )
+
+    async def _persist_decision(
+        self,
+        *,
+        session_id: str,
+        alias: str,
+        decision: PermissionDecision,
+        arguments: dict[str, Any],
+    ) -> None:
+        """PR3：每次 check 决定落 permission_decisions 表；失败不阻塞主流程。
+
+        scope 用 'auto' 区分于 _apply_response 写的 'session' / 'permanent'。
+        pattern 用 decision.rule（命中规则）；source 取 decision.source。
+        """
+        del arguments  # 当前 pattern 取自 decision.rule，arguments 暂不用；保留参数便于未来扩展
+        if self._db is None:
+            return
+        try:
+            await self._db.insert_permission_decision(
+                session_id=session_id,
+                tool_name=alias,
+                decision=decision.kind,
+                scope="auto",
+                pattern=decision.rule,
+                source=decision.source,
+            )
+        except Exception as exc:
+            _logger.warning("permission_decisions 落库失败（不阻塞）", error=str(exc))
 
     # ────────── 辅助 ──────────
 
@@ -282,6 +373,7 @@ class PermissionManager:
                     decision=response.decision,
                     scope="session",
                     pattern=_pattern_for_decision(alias, arguments),
+                    source="user-confirmed",
                 )
             except Exception as exc:
                 _logger.warning("permission_decisions 写库失败", error=str(exc))

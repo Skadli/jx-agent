@@ -42,6 +42,8 @@ class PermissionDecision:
     rule: str | None = None  # 触发的 pattern（便于日志和报错）
     reason: str = ""
     danger: DangerLevel | None = None  # 仅 Bash 调用时填
+    # PR3：决策来源，落 permission_decisions.source 用；区分自动 vs 用户确认
+    source: str = "unknown"
 
 
 @dataclass(frozen=True)

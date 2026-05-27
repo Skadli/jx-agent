@@ -51,6 +51,8 @@ class Database:
             # PR1（2026-05-27）：sessions 表加 compact_summary / active_module_ids
             "ALTER TABLE sessions ADD COLUMN compact_summary TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN active_module_ids TEXT NOT NULL DEFAULT ''",
+            # PR3（2026-05-27）：permission_decisions 表加 source 列，区分自动决策与用户确认
+            "ALTER TABLE permission_decisions ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'",
         ):
             try:
                 conn.execute(alter_sql)
@@ -211,13 +213,19 @@ class Database:
         decision: str,
         scope: str,
         pattern: str | None,
+        source: str,
     ) -> int:
-        """记一条权限决定；session 范围内 dispatcher 可复用此查询。"""
+        """记一条权限决定；session 范围内 dispatcher 可复用此查询。
+
+        PR3：source 区分自动决策（settings-allow / settings-deny / path-guard /
+        default-mode / auto-allowable / session-cache / ask-no-confirmer / ask-error）
+        与用户主动确认（user-confirmed）。
+        """
         cur = await self._execute(
             """
             INSERT INTO permission_decisions
-              (ts, session_id, tool_name, decision, scope, pattern)
-            VALUES (?,?,?,?,?,?)
+              (ts, session_id, tool_name, decision, scope, pattern, source)
+            VALUES (?,?,?,?,?,?,?)
             """,
             (
                 int(time.time() * 1000),
@@ -226,6 +234,7 @@ class Database:
                 decision,
                 scope,
                 pattern,
+                source,
             ),
         )
         return int(cur.lastrowid or 0)

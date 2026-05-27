@@ -70,14 +70,16 @@ CREATE TABLE IF NOT EXISTS wechat_ilink_seen (
 CREATE INDEX IF NOT EXISTS idx_wechat_ilink_seen_ts ON wechat_ilink_seen(ts);
 
 -- 权限决策，Phase 8 用
+-- PR3（2026-05-27 起）：加 source 列，区分自动决策（settings/path-guard/auto-allowable/...）与用户主动确认
 CREATE TABLE IF NOT EXISTS permission_decisions (
     id           INTEGER PRIMARY KEY,
     ts           INTEGER NOT NULL,
     session_id   TEXT    NOT NULL,
     tool_name    TEXT    NOT NULL,
     decision     TEXT    NOT NULL,            -- allow / deny / always
-    scope        TEXT    NOT NULL,            -- once / session / permanent
-    pattern      TEXT                          -- e.g. Bash(npm test:*)
+    scope        TEXT    NOT NULL,            -- once / session / permanent / auto
+    pattern      TEXT,                         -- e.g. Bash(npm test:*)
+    source       TEXT    NOT NULL DEFAULT 'unknown'  -- user-confirmed / settings-allow / settings-deny / path-guard / default-mode / auto-allowable / session-cache / ask-no-confirmer / ask-error
 );
 CREATE INDEX IF NOT EXISTS idx_perm_session ON permission_decisions(session_id, ts);
 

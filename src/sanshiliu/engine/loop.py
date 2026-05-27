@@ -349,6 +349,8 @@ class ConversationEngine:
             for tc in parsed_calls:
                 tool_started = time.monotonic()
                 count = loop_state.remember(tc.name, tc.arguments)
+                # PR3：dedupe 路径没走 dispatcher，permission_decision 保持 None（合理）
+                permission_decision: str | None = None
                 if count > _DEDUPE_THRESHOLD:
                     tool_result_text = (
                         f"[同一调用 {tc.name}(...) 已重复 {count} 次，被去重；请换不同参数或退出工具循环]"
@@ -359,6 +361,7 @@ class ConversationEngine:
                     res = await self._tool_dispatcher.execute(tc, session_id=session.session_id)
                     tool_result_text = res.content
                     is_error = res.is_error
+                    permission_decision = res.permission_decision
                 await self._record_tool_call(
                     session_id=session.session_id,
                     tool_name=tc.name,
@@ -366,6 +369,7 @@ class ConversationEngine:
                     result_text=tool_result_text,
                     is_error=is_error,
                     latency_ms=int((time.monotonic() - tool_started) * 1000),
+                    permission_decision=permission_decision,
                 )
                 _logger.info(
                     "tool 调用完成",
@@ -430,6 +434,7 @@ class ConversationEngine:
         result_text: str,
         is_error: bool,
         latency_ms: int,
+        permission_decision: str | None = None,
     ) -> None:
         if self._db is None:
             return
@@ -441,7 +446,7 @@ class ConversationEngine:
                 result_text=result_text,
                 is_error=is_error,
                 latency_ms=latency_ms,
-                permission_decision=None,
+                permission_decision=permission_decision,
             )
         except Exception as exc:
             _logger.error("tool_calls 落库失败（不阻塞）", tool=tool_name, error=str(exc))

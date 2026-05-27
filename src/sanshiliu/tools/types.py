@@ -45,6 +45,9 @@ class ToolResult:
     content: str
     is_error: bool = False
     truncated: bool = False  # bash/file_read 超长截断标记
+    # PR3：权限决策结果（"allow" / "deny" / None）；engine._record_tool_call 写 tool_calls 表
+    # None 表示没走 dispatcher（如 dedupe 路径）或没接 PermissionManager
+    permission_decision: str | None = None
 
     def to_openai(self) -> dict[str, Any]:
         """转 OpenAI tool 消息格式。"""

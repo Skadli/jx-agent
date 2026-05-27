@@ -67,10 +67,13 @@ class ToolDispatcher:
             )
 
         # Phase 8：权限审批；deny 直接出错；allow 继续
+        # PR3：把 decision.kind 串到 ToolResult.permission_decision，让 engine 写 tool_calls 表
+        permission_kind: str | None = None
         if self._permission is not None:
             decision = await self._permission.check(
                 tool_name=call.name, arguments=call.arguments, session_id=session_id,
             )
+            permission_kind = decision.kind
             if decision.kind == "deny":
                 msg = f"权限拒绝：{decision.reason or decision.rule or 'denied'}"
                 _logger.warning(
@@ -79,6 +82,7 @@ class ToolDispatcher:
                 )
                 return ToolResult(
                     call_id=call.id, name=call.name, content=msg, is_error=True,
+                    permission_decision="deny",
                 )
 
         try:
@@ -88,6 +92,7 @@ class ToolDispatcher:
             return ToolResult(
                 call_id=call.id, name=call.name,
                 content=f"工具异常 {type(exc).__name__}: {exc}", is_error=True,
+                permission_decision=permission_kind,
             )
 
         # 长输出截断
@@ -99,5 +104,13 @@ class ToolDispatcher:
             return ToolResult(
                 call_id=result.call_id, name=result.name,
                 content=truncated_content, is_error=result.is_error, truncated=True,
+                permission_decision=permission_kind,
+            )
+        # 工具自己返回的 result 通常不带 permission_decision；补上 dispatcher 拿到的值
+        if result.permission_decision is None and permission_kind is not None:
+            return ToolResult(
+                call_id=result.call_id, name=result.name,
+                content=result.content, is_error=result.is_error,
+                truncated=result.truncated, permission_decision=permission_kind,
             )
         return result
