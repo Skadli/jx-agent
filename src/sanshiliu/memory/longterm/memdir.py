@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -22,9 +21,6 @@ _logger = get_logger(__name__)
 
 # MEMORY.md 文件名固定
 _INDEX_FILE = "MEMORY.md"
-
-# 旧索引格式探测：`- name :: description`（无 markdown 链接前缀）
-_LEGACY_INDEX_RE = re.compile(r"^- [^\[\(]+\s::\s.+")
 
 
 def _resolve_type(raw: Any) -> MemoryType | None:
@@ -52,7 +48,11 @@ def _entry_from_file(path: Path) -> MemoryEntry | None:
         return None
     mtype = _resolve_type(fm.get("metadata")) or _resolve_type(fm.get("type"))
     if mtype is None:
-        _logger.warning("memdir metadata.type 非法或缺失，跳过", path=str(path))
+        _logger.warning(
+            "memdir 跳过：frontmatter 缺 metadata.type"
+            "（应为 user/feedback/project/reference 之一）",
+            path=str(path),
+        )
         return None
     confidence = fm.get("confidence")
     if confidence is not None:
@@ -94,12 +94,6 @@ class MemdirLoader:
                 if entry is not None:
                     entries.append(entry)
         index_text = self._read_index()
-        # 检测旧索引格式并就地迁移；失败不阻塞启动
-        if index_text and any(
-            _LEGACY_INDEX_RE.match(ln) for ln in index_text.splitlines()
-        ):
-            self._migrate_index(entries)
-            index_text = self._read_index()
         snap = MemorySnapshot(entries=entries, index_text=index_text, memdir_root=self._root)
         self._cache = snap
         _logger.info("memdir 加载", count=len(entries), root=str(self._root))
@@ -120,55 +114,6 @@ class MemdirLoader:
         except OSError as exc:
             _logger.warning("MEMORY.md 读失败", path=str(path), error=str(exc))
             return ""
-
-    def _migrate_index(self, entries: list[MemoryEntry]) -> None:
-        """把旧格式 `- name :: description` 重写成新格式 `- [name](file) — description`。
-
-        按 entries 列表反查 name → entry.index_line()。entry name 找不到的旧行
-        原样保留，并打 warning 日志，不阻塞启动。注释行（<!-- ... -->）保留。
-        """
-        path = self._root / _INDEX_FILE
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            _logger.warning("MEMORY.md 迁移读失败", path=str(path), error=str(exc))
-            return
-
-        by_name = {e.name: e for e in entries}
-        out_lines: list[str] = []
-        migrated = 0
-        for line in raw.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("<!--"):
-                out_lines.append(line)
-                continue
-            m = _LEGACY_INDEX_RE.match(line)
-            if not m:
-                out_lines.append(line)
-                continue
-            # 旧格式：- {name} :: {description}
-            try:
-                head, _, _ = line[2:].partition(" :: ")
-                name = head.strip()
-            except ValueError:
-                out_lines.append(line)
-                continue
-            entry = by_name.get(name)
-            if entry is None:
-                _logger.warning("MEMORY.md 旧索引迁移失败（未找到对应 entry）", name=name)
-                out_lines.append(line)
-                continue
-            out_lines.append(entry.index_line())
-            migrated += 1
-
-        if migrated == 0:
-            return
-        try:
-            path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
-        except OSError as exc:
-            _logger.warning("MEMORY.md 迁移写失败", path=str(path), error=str(exc))
-            return
-        _logger.info("MEMORY.md 索引格式迁移完成", migrated=migrated)
 
 
 def append_index_line(memdir_root: Path, line: str) -> None:
