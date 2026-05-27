@@ -101,6 +101,8 @@ Feature flags (default true unless noted) — flip in `.env` to disable a whole 
 - `SANSHILIU_AUTO_EXTRACT_ENABLED` (default **false**) — extra LLM call per turn to extract memory candidates
 - `SANSHILIU_WECHAT_ENABLED` (default **false**) — iLink WeChat bot
 
+**新增 env 字段时**：同步更新 `.env.example` 模板，按现有 6 个 section 归类（LLM/通道/记忆工具/安全上下文/豆包/微信/路径）。
+
 ## Conventions
 
 - Code, comments, and logs are **Chinese**. `ruff` ignores `RUF001/2/3` so full-width punctuation in docstrings/strings is fine. Comments mark *why*, not *what*.
