@@ -241,9 +241,9 @@ async def run_serve() -> int:
                     file=sys.stderr,
                 )
 
-    # ShortTermMemory 内部会在 base_dir 下再建 sessions/；这里直接给 data_dir
+    # 与 wire.py / repl 统一到 data_dir/shortterm 子目录下；
     # 提前构造（build_tool_stack 需要它注入 LoadMemory 的 session 查询路径）
-    short_term = ShortTermMemory(settings.data_dir)
+    short_term = ShortTermMemory(settings.data_dir / "shortterm")
 
     # Phase 5：tool 栈
     # PR2：memdir_loader 已构造好，build_tool_stack 会注册 LoadMemory / SaveMemory
@@ -279,6 +279,7 @@ async def run_serve() -> int:
         memdir_loader=memdir_loader,
         memory_extractor=memory_extractor,
         persona_module_activator=module_activator,
+        short_term=short_term,
         consolidate_instruction=consolidate_instruction,
     )
     persona_watcher = PersonaWatcher(loader, module_loader=module_loader)
