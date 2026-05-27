@@ -27,6 +27,9 @@ _PLAIN_FIELDS: tuple[tuple[str, str], ...] = (
     # (env_key, display_key)
     ("OPENAI_BASE_URL",            "openai_base_url"),
     ("OPENAI_MODEL",               "openai_model"),
+    ("SANSHILIU_LOG_LEVEL",        "log_level"),
+    ("DOUBAO_BASE_URL",            "doubao_base_url"),
+    ("DOUBAO_MODEL",               "doubao_model"),
     ("SANSHILIU_WECHAT_ENABLED",   "wechat_enabled"),
     ("WEIXIN_ACCOUNT_ID",          "weixin_account_id"),
     ("WEIXIN_BASE_URL",            "weixin_base_url"),
@@ -35,6 +38,7 @@ _PLAIN_FIELDS: tuple[tuple[str, str], ...] = (
 
 _SECRET_FIELDS: tuple[tuple[str, str], ...] = (
     ("OPENAI_API_KEY",             "openai_api_key"),
+    ("DOUBAO_API_KEY",             "doubao_api_key"),
     ("WEIXIN_TOKEN",               "weixin_token"),
     ("ILINK_API_KEY",              "ilink_api_key"),
     ("ILINK_WEBHOOK_SECRET",       "ilink_webhook_secret"),
@@ -43,6 +47,9 @@ _SECRET_FIELDS: tuple[tuple[str, str], ...] = (
 
 # 布尔字段：env 文件里写 "true" / "false"
 _BOOL_FIELDS = {"SANSHILIU_WECHAT_ENABLED"}
+
+# log_level 合法枚举（与 foundation/config.py 的 LogLevel Literal 严格对齐）
+_LOG_LEVEL_VALUES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 # ────────── 工具 ──────────
@@ -200,6 +207,16 @@ def make_put_settings_handler(
                     text = str(raw).strip()
                     if any(ch in text for ch in ("\n", "\r")):
                         _write_json(req, {"error": f"{disp_key} 不能包含换行"}, status=400); return
+                    # log_level 走枚举白名单（保留大写写入）；前端 select 已大写，这里只做防御
+                    if disp_key == "log_level":
+                        text = text.upper()
+                        if text not in _LOG_LEVEL_VALUES:
+                            _write_json(
+                                req,
+                                {"error": f"log_level 必须是 {'/'.join(_LOG_LEVEL_VALUES)} 之一"},
+                                status=400,
+                            )
+                            return
                     updates[env_key] = text
             applied.append(disp_key)
 

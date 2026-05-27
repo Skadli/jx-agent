@@ -80,6 +80,11 @@ function Settings() {
     plainKeys: ["openai_base_url", "openai_model"],
     secretKeys: ["openai_api_key"],
   };
+  const multimodalGroup = {
+    title: "多模态后端（豆包 vision-pro）",
+    plainKeys: ["doubao_base_url", "doubao_model"],
+    secretKeys: ["doubao_api_key"],
+  };
   const wechatGroup = {
     title: "微信通道开关",
     plainKeys: ["wechat_enabled"],
@@ -89,6 +94,11 @@ function Settings() {
     title: "Dashboard 密码",
     plainKeys: [],
     secretKeys: ["dashboard_password"],
+  };
+  const logLevelGroup = {
+    title: "日志级别",
+    plainKeys: ["log_level"],
+    secretKeys: [],
   };
 
   return (
@@ -135,6 +145,29 @@ function Settings() {
           <FormFooter saving={saving} onSave={() => submit(llmGroup)} />
         </SettingsCard>
 
+        {/* ── 多模态后端 ── 豆包 vision-pro，缺则降级走 OPENAI_* */}
+        <SettingsCard title="多模态后端（豆包 vision-pro）" subtitle="火山引擎 Ark，OpenAI 兼容；缺凭据则纯文本场景不受影响">
+          <Field
+            label="Base URL"
+            hint="末尾不带 / ；默认 https://ark.cn-beijing.volces.com/api/v3"
+            value={form.doubao_base_url || ""}
+            placeholder="https://ark.cn-beijing.volces.com/api/v3"
+            onChange={v => updateForm("doubao_base_url", v)} />
+          <Field
+            label="模型"
+            hint="模型 ID 或 endpoint ID（ep-xxx）；vision-pro 系列"
+            value={form.doubao_model || ""}
+            placeholder="doubao-seed-2-0-pro-260215"
+            onChange={v => updateForm("doubao_model", v)} />
+          <SecretField
+            label="API Key"
+            placeholder="留空 = 保留当前值"
+            existing={data.secrets?.doubao_api_key}
+            value={secrets.doubao_api_key || ""}
+            onChange={v => updateSecret("doubao_api_key", v)} />
+          <FormFooter saving={saving} onSave={() => submit(multimodalGroup)} />
+        </SettingsCard>
+
         {/* ── 微信 ── 扫码登录 + 启用开关 */}
         <SettingsCard title="微信通道" subtitle="扫码连接官方 iLink Bot；连接后才能启用此通道">
           <WechatConnect data={data} onChanged={refresh} />
@@ -159,6 +192,17 @@ function Settings() {
             修改后需要重启进程并重新登录。
           </div>
           <FormFooter saving={saving} onSave={() => submit(dashboardGroup)} />
+        </SettingsCard>
+
+        {/* ── 日志级别 ── 控制台 + JSONL 同步生效 */}
+        <SettingsCard title="日志级别" subtitle="控制台 + JSONL 同步生效；改后需重启进程">
+          <SelectRow
+            label="日志级别"
+            hint="DEBUG 最详尽 / INFO 默认 / WARNING 仅警告 / ERROR 仅错误 / CRITICAL 仅致命"
+            value={(form.log_level || "INFO").toUpperCase()}
+            options={["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]}
+            onChange={v => updateForm("log_level", v)} />
+          <FormFooter saving={saving} onSave={() => submit(logLevelGroup)} />
         </SettingsCard>
 
         <div className="t-meta" style={{ color: "var(--ink-60)", marginTop: 16, padding: "0 4px" }}>
@@ -216,6 +260,25 @@ function SecretField({ label, placeholder, existing, value, onChange }) {
         value={value || ""}
         placeholder={placeholder || "留空 = 保留当前值"}
         onChange={e => onChange(e.target.value)} />
+    </div>
+  );
+}
+
+function SelectRow({ label, hint, value, options, onChange }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(140px, 180px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
+      <div>
+        <div className="t-body-strong">{label}</div>
+        {hint && <div className="t-meta" style={{ color: "var(--ink-60)", marginTop: 4 }}>{hint}</div>}
+      </div>
+      <select
+        className="field field-mono"
+        value={value || ""}
+        onChange={e => onChange(e.target.value)}>
+        {(options || []).map(opt => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
     </div>
   );
 }
