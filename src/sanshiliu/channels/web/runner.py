@@ -241,6 +241,10 @@ async def run_serve() -> int:
                     file=sys.stderr,
                 )
 
+    # ShortTermMemory 内部会在 base_dir 下再建 sessions/；这里直接给 data_dir
+    # 提前构造（build_tool_stack 需要它注入 LoadMemory 的 session 查询路径）
+    short_term = ShortTermMemory(settings.data_dir)
+
     # Phase 5：tool 栈
     # PR2：memdir_loader 已构造好，build_tool_stack 会注册 LoadMemory / SaveMemory
     tool_registry = None
@@ -257,6 +261,7 @@ async def run_serve() -> int:
                 skill_activator=skill_activator,
                 persona_module_activator=module_activator,
                 memdir_loader=memdir_loader,
+                short_term=short_term,
                 db=db,
             )
         except ConfigError as exc:
@@ -285,8 +290,6 @@ async def run_serve() -> int:
 
     loop = asyncio.get_running_loop()
     router = Router()
-    # ShortTermMemory 内部会在 base_dir 下再建 sessions/；这里直接给 data_dir
-    short_term = ShortTermMemory(settings.data_dir)
     # PR1：SessionStore 注入 short_term + db，让进程重启后能从 jsonl + sqlite reload
     session_store = SessionStore(short_term=short_term, db=db)
     router.register("POST", "/chat", make_chat_handler(
