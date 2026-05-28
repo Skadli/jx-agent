@@ -42,37 +42,49 @@ const EDGE_STYLES = {
 function CustomNode({ data, selected }) {
   const theme = NODE_THEMES[data.type] || NODE_THEMES.step;
   return (
+    // 外层容器：白基底 + overflow hidden（裁掉 header 方角到 18px 圆角）+ 选中态边框；无 box-shadow、无 min-height（两区自然撑）
     <div style={{
       width: NODE_WIDTH,
-      minHeight: 72,
       boxSizing: "border-box",
-      padding: "18px 20px",
-      background: theme.bg,
+      background: "var(--canvas)",
       border: selected ? "2px solid var(--primary-focus)" : `1px solid ${theme.border}`,
       borderRadius: 18,
+      overflow: "hidden",
     }}>
-      {/* eyebrow：类型差异化（大写 / 12px / 600 / 0.06em tracking / 同类型色） */}
+      {/* header 区（上，tinted）：类型极淡色底 + 与 body 的 hairline 分隔线，放 eyebrow + title */}
       <div style={{
-        fontSize: 12, fontWeight: 600, letterSpacing: "0.06em",
-        textTransform: "uppercase", color: theme.fg,
-      }}>{theme.eyebrow}</div>
-      {/* title：body-strong 17px / 600 / -0.374px */}
-      <div style={{
-        marginTop: 8,
-        fontSize: 17, fontWeight: 600, lineHeight: 1.24, letterSpacing: "-0.374px",
-        color: "var(--ink)",
-        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-      }}>{data.title}</div>
-      {/* desc：caption 14px / 400 / -0.224px / 灰 */}
+        background: theme.bg,
+        padding: "10px 16px",
+        borderBottom: "1px solid var(--hairline)",
+      }}>
+        {/* eyebrow：类型差异化（大写 / 12px / 600 / 0.06em tracking / 同类型色） */}
+        <div style={{
+          fontSize: 12, fontWeight: 600, letterSpacing: "0.06em",
+          textTransform: "uppercase", color: theme.fg,
+        }}>{theme.eyebrow}</div>
+        {/* title：body-strong 17px / 600 / -0.374px */}
+        <div style={{
+          marginTop: 8,
+          fontSize: 17, fontWeight: 600, lineHeight: 1.24, letterSpacing: "-0.374px",
+          color: "var(--ink)",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>{data.title}</div>
+      </div>
+      {/* body 区（下，白）：放 desc；desc 为空则整个 body 不渲染 */}
       {data.desc && (
         <div style={{
-          marginTop: 4,
-          fontSize: 14, fontWeight: 400, lineHeight: 1.43, letterSpacing: "-0.224px",
-          color: "var(--ink-48)",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>{data.desc}</div>
+          background: "var(--canvas)",
+          padding: "10px 16px",
+        }}>
+          {/* desc：caption 14px / 400 / -0.224px / 灰 */}
+          <div style={{
+            fontSize: 14, fontWeight: 400, lineHeight: 1.43, letterSpacing: "-0.224px",
+            color: "var(--ink-48)",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>{data.desc}</div>
+        </div>
       )}
-      {/* handle：严格 Right→Left；统一 hairline 色；缩进 ±8px */}
+      {/* handle：严格 Right→Left；统一 hairline 色；缩进 ±8px。放外层容器内（不在 header/body 内），否则定位会错 */}
       <Handle type="target" position={Position.Left}  style={{ left: -HANDLE_OFFSET, background: "var(--hairline)", width: 8, height: 8 }} />
       <Handle type="source" position={Position.Right} style={{ right: -HANDLE_OFFSET, background: "var(--hairline)", width: 8, height: 8 }} />
     </div>
@@ -175,7 +187,8 @@ function NodeInspector({ node, onClose }) {
     }}>
       <div style={{
         padding: "16px 20px",
-        borderBottom: `1px solid ${theme.border}`,
+        background: theme.bg,
+        borderBottom: "1px solid var(--hairline)",
         display: "flex", alignItems: "center", gap: 10,
       }}>
         <div style={{ flex: 1, minWidth: 0 }}>
