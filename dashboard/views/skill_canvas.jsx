@@ -3,14 +3,15 @@
    拉 /api/skills/{id}/structure，渲染节点 + 边。所有节点统一 type='custom'，
    按 data.type 在 CustomNode 内部用 eyebrow 文本 + 整卡类型辨识色区分类型（NODE_THEMES）。
 
-   视觉：18px 圆角 + 极淡类型底 + 稍深同色 1px 边 + 同色 eyebrow + 无 box-shadow。
+   视觉：18px 圆角 + 极淡类型底 + 稍深同色 1px 边 + 同色 eyebrow + 极轻双层浮卡阴影。
 
    props:
      skillId  string  目标 skill 的 id（目录名）
 */
 
 const RF = window.ReactFlow || {};
-const { ReactFlow, Background, MiniMap, Controls, Handle, Position, useNodesState, useEdgesState } = RF;
+// MarkerType: xyflow 命名空间导出，用于 edge 箭头；若该 namespace 没有则为 undefined → marker 不渲染但不报错
+const { ReactFlow, Background, MiniMap, Controls, Handle, Position, MarkerType, useNodesState, useEdgesState } = RF;
 
 // Dify 布局常量（见 research/dify-canvas-stack.md）
 const NODE_WIDTH = 240;
@@ -31,18 +32,18 @@ const NODE_THEMES = {
 // 边 kind → 样式。默认 hairline；subagent/resource 保留虚线区分但同样走 hairline。
 // 全部静态（移除 animated）——Apple 语境下不要流动动画。
 const EDGE_STYLES = {
-  sequence: { stroke: "var(--hairline)", strokeWidth: 2 },
-  anchor:   { stroke: "var(--hairline)", strokeWidth: 2 },
-  tool:     { stroke: "var(--hairline)", strokeWidth: 2 },
-  subagent: { stroke: "var(--hairline)", strokeWidth: 2, strokeDasharray: "6 4" },
-  resource: { stroke: "var(--hairline)", strokeWidth: 1.5, strokeDasharray: "2 4" },
+  sequence: { stroke: "var(--hairline-strong)", strokeWidth: 2 },
+  anchor:   { stroke: "var(--hairline-strong)", strokeWidth: 2 },
+  tool:     { stroke: "var(--hairline-strong)", strokeWidth: 2 },
+  subagent: { stroke: "var(--hairline-strong)", strokeWidth: 2, strokeDasharray: "6 4" },
+  resource: { stroke: "var(--hairline-strong)", strokeWidth: 1.5, strokeDasharray: "2 4" },
 };
 
 
 function CustomNode({ data, selected }) {
   const theme = NODE_THEMES[data.type] || NODE_THEMES.step;
   return (
-    // 外层容器：白基底 + overflow hidden（裁掉 header 方角到 18px 圆角）+ 选中态边框；无 box-shadow、无 min-height（两区自然撑）
+    // 外层容器：白基底 + overflow hidden（裁掉 header 方角到 18px 圆角）+ 选中态边框 + 极轻浮卡阴影（双层：近距实影落地 + 远距软影漂浮，负 spread 收窄）；无 min-height（两区自然撑）
     <div style={{
       width: NODE_WIDTH,
       boxSizing: "border-box",
@@ -50,6 +51,9 @@ function CustomNode({ data, selected }) {
       border: selected ? "2px solid var(--primary-focus)" : `1px solid ${theme.border}`,
       borderRadius: 18,
       overflow: "hidden",
+      boxShadow: selected
+        ? "0 2px 4px rgba(0,0,0,0.06), 0 12px 28px -8px rgba(0,0,0,0.16)"
+        : "0 1px 2px rgba(0,0,0,0.04), 0 8px 20px -8px rgba(0,0,0,0.10)",
     }}>
       {/* header 区（上，tinted）：类型极淡色底 + 与 body 的 hairline 分隔线，放 eyebrow + title */}
       <div style={{
@@ -122,14 +126,20 @@ function SkillCanvas({ skillId }) {
     return <div style={{ padding: 40, textAlign: "center", color: "var(--ink-60)" }}>加载中…</div>;
   }
 
-  // 后端给的 nodes 已经带 position；前端只补 edge 的 style。
-  // 后端把 edge 的 type 标为 "custom" 是为了将来扩展自定义边组件用，但 MVP 没注册
-  // 自定义 edgeType，直接走 ReactFlow 默认 (bezier) 即可——所以删 type 字段。
+  // 后端给的 nodes 已经带 position；前端补 edge 的 style + 类型。
+  // 后端把 edge 的 type 标为 "custom" 是占位（MVP 没注册自定义 edgeType）；这里显式设
+  // smoothstep（圆角直角折线，配合横向 Right→Left 布局更清爽），加 ArrowClosed 箭头指明流向。
   const styledEdges = graph.edges.map((e) => {
+    const kind = (e.data && e.data.kind);
+    const style = EDGE_STYLES[kind] || EDGE_STYLES.sequence;
     const { type: _t, ...rest } = e;
     return {
       ...rest,
-      style: EDGE_STYLES[e.data && e.data.kind] || EDGE_STYLES.sequence,
+      type: "smoothstep",
+      pathOptions: { borderRadius: 12 },
+      // MarkerType 未导出时为 undefined → markerEnd.type=undefined → 箭头不渲染但不报错
+      markerEnd: { type: MarkerType && MarkerType.ArrowClosed, width: 14, height: 14, color: style.stroke },
+      style,
     };
   });
 
@@ -183,6 +193,7 @@ function NodeInspector({ node, onClose }) {
       border: "1px solid var(--hairline-strong)",
       borderRadius: 18,
       overflow: "hidden",
+      boxShadow: "0 4px 24px -6px rgba(0,0,0,0.18)",
       zIndex: 10,
     }}>
       <div style={{
