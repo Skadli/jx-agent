@@ -1,18 +1,16 @@
-/* Skills — admin table。真实接 /api/skills。 */
+/* Skills — admin table。真实接 /api/skills。
+   点行/卡片 → 打开右侧 Drawer，含三 tab：概览 / 画布 / 源码。 */
 
 function Skills({ onJump }) {
-  const [view, setView]     = React.useState("table");
-  const [skills, setSkills] = React.useState([]);
-  const [activeId, setActiveId] = React.useState(null);
+  const [view, setView]         = React.useState("table");
+  const [skills, setSkills]     = React.useState([]);
+  const [drawerSkill, setDrawerSkill] = React.useState(null);
+  const [tab, setTab]           = React.useState("overview");
 
   const refresh = React.useCallback(async () => {
     const r = await API.get("/api/skills");
-    if (!r.error) {
-      const list = r.skills || [];
-      setSkills(list);
-      if (!activeId && list.length > 0) setActiveId(list[0].id);
-    }
-  }, [activeId]);
+    if (!r.error) setSkills(r.skills || []);
+  }, []);
 
   React.useEffect(() => {
     refresh();
@@ -20,10 +18,8 @@ function Skills({ onJump }) {
     return () => clearInterval(id);
   }, [refresh]);
 
-  const active = skills.find(s => s.id === activeId);
-
   const hits24 = skills.reduce((a, s) => a + s.hits_24h, 0);
-  const hits7d = skills.reduce((a, s) => a + s.hits_7d,  0);
+  const hits7d = skills.reduce((a, s) => a + s.hits_7d, 0);
   const totalChars = skills.reduce((a, s) => a + s.chars, 0);
 
   const reload = async () => {
@@ -31,6 +27,8 @@ function Skills({ onJump }) {
     if (r.error) alert("重载失败：" + r.error);
     else { alert("已重新扫描"); refresh(); }
   };
+
+  const pick = (s) => { setDrawerSkill(s); setTab("overview"); };
 
   return (
     <div data-screen-label="05 技能">
@@ -59,12 +57,12 @@ function Skills({ onJump }) {
           <StatCard label="目录" value={skills.length > 0 ? "./skills" : "—"} sub="协议: SKILL.md" />
         </div>
 
-        {view === "table" ? (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginTop: 16 }}>
+        <div style={{ marginTop: 16 }}>
+          {view === "table" ? (
             <div className="card">
               <CardHeader
                 title="已注册 skill"
-                sub="按 24h 命中排序"
+                sub="点击行查看可视化结构"
                 right={
                   <div className="search-wrap" style={{ width: 200 }}>
                     <span className="search-icon"><Icon name="search" size={13} color="var(--ink-48)"/></span>
@@ -74,90 +72,128 @@ function Skills({ onJump }) {
               {skills.length === 0 ? (
                 <div style={{ padding: 32, textAlign: "center", color: "var(--ink-60)" }} className="t-meta">暂无 skill</div>
               ) : (
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th style={{ width: 36 }}></th>
-                    <th>Skill</th>
-                    <th style={{ width: 240 }}>关键词</th>
-                    <th style={{ width: 80, textAlign: "right" }}>24h</th>
-                    <th style={{ width: 80, textAlign: "right" }}>7d</th>
-                    <th style={{ width: 36 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {skills.map(s => (
-                    <tr key={s.id} onClick={() => setActiveId(s.id)} style={{ cursor: "pointer", background: activeId === s.id ? "var(--primary-soft)" : "transparent" }}>
-                      <td><span className={`dot ${s.hits_24h > 0 ? "dot-up" : "dot-off"}`} /></td>
-                      <td>
-                        <div className="t-mono-strong" style={{ color: activeId === s.id ? "var(--primary)" : "var(--ink)" }}>{s.name}</div>
-                        <div className="t-meta" style={{ marginTop: 3 }}>{s.description.slice(0, 80)}</div>
-                      </td>
-                      <td>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {(s.keywords || []).slice(0, 4).map(t => <span key={t} className="chip" style={{ fontSize: 10.5 }}>{t}</span>)}
-                          {(s.keywords || []).length > 4 && <span className="t-meta">+{s.keywords.length - 4}</span>}
-                        </div>
-                      </td>
-                      <td className="col-num" style={{ color: s.hits_24h ? "var(--primary)" : "var(--ink-60)" }}>{s.hits_24h}</td>
-                      <td className="col-num">{s.hits_7d}</td>
-                      <td><button className="btn-icon"><Icon name="chevron-r" size={14}/></button></td>
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 36 }}></th>
+                      <th>Skill</th>
+                      <th style={{ width: 240 }}>关键词</th>
+                      <th style={{ width: 80, textAlign: "right" }}>24h</th>
+                      <th style={{ width: 80, textAlign: "right" }}>7d</th>
+                      <th style={{ width: 36 }}></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {skills.map(s => (
+                      <tr key={s.id} onClick={() => pick(s)} style={{ cursor: "pointer", background: drawerSkill && drawerSkill.id === s.id ? "var(--primary-soft)" : "transparent" }}>
+                        <td><span className={`dot ${s.hits_24h > 0 ? "dot-up" : "dot-off"}`} /></td>
+                        <td>
+                          <div className="t-mono-strong" style={{ color: drawerSkill && drawerSkill.id === s.id ? "var(--primary)" : "var(--ink)" }}>{s.name}</div>
+                          <div className="t-meta" style={{ marginTop: 3 }}>{s.description.slice(0, 80)}</div>
+                        </td>
+                        <td>
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            {(s.keywords || []).slice(0, 4).map(t => <span key={t} className="chip" style={{ fontSize: 10.5 }}>{t}</span>)}
+                            {(s.keywords || []).length > 4 && <span className="t-meta">+{s.keywords.length - 4}</span>}
+                          </div>
+                        </td>
+                        <td className="col-num" style={{ color: s.hits_24h ? "var(--primary)" : "var(--ink-60)" }}>{s.hits_24h}</td>
+                        <td className="col-num">{s.hits_7d}</td>
+                        <td><button className="btn-icon" onClick={(e) => { e.stopPropagation(); pick(s); }}><Icon name="chevron-r" size={14}/></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
+          ) : (
+            <div className="grid-3">
+              {skills.map(s => <SkillCard key={s.id} s={s} onClick={() => pick(s)} />)}
+            </div>
+          )}
+        </div>
+      </div>
 
-            {active && <SkillDetail s={active} />}
-          </div>
-        ) : (
-          <div className="grid-3" style={{ marginTop: 16 }}>
-            {skills.map(s => <SkillCard key={s.id} s={s} onClick={() => { setActiveId(s.id); setView("table"); }} />)}
+      <Drawer
+        open={!!drawerSkill}
+        onClose={() => setDrawerSkill(null)}
+        storageKey="skill-canvas-drawer"
+        title={drawerSkill ? drawerSkill.name : ""}
+        subtitle={drawerSkill ? drawerSkill.description.slice(0, 80) : ""}
+        actions={
+          <Segmented value={tab} onChange={setTab} options={[
+            { id: "overview", label: "概览" },
+            { id: "canvas",   label: "画布" },
+            { id: "source",   label: "源码" },
+          ]} />
+        }
+      >
+        {drawerSkill && tab === "overview" && <SkillOverview s={drawerSkill} />}
+        {drawerSkill && tab === "canvas"   && (
+          <div style={{ height: "100%", minHeight: 480 }}>
+            <SkillCanvas skillId={drawerSkill.id} />
           </div>
         )}
-      </div>
+        {drawerSkill && tab === "source"   && <SkillSource skillId={drawerSkill.id} />}
+      </Drawer>
     </div>
   );
 }
 
-function SkillDetail({ s }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div className="card">
-        <CardHeader
-          title={s.name}
-          sub={s.description.slice(0, 60)}
-          right={<span className="chip chip-success">已加载</span>}
-        />
-        <div className="card-body">
-          <p className="t-body" style={{ margin: 0, marginBottom: 16 }}>{s.description}</p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <KV k="目录"     v={s.source.split(/[\\/]/).slice(-2).join("/")} />
-            <KV k="字数"     v={`${API.fmtNumber(s.chars)} 字`} />
-            <KV k="关键词"   v={(s.keywords || []).join(", ") || "—"} />
-            <KV k="优先级"   v={s.priority === 0 ? "project" : s.priority === 1 ? "global" : "repo"} />
-            <KV k="24h 命中" v={s.hits_24h} accent={s.hits_24h ? "var(--primary)" : undefined} />
-          </div>
-        </div>
-      </div>
 
-      <div className="card">
-        <CardHeader title="SKILL.md frontmatter" />
-        <pre style={{
-          margin: 0, padding: "16px 20px",
-          fontFamily: "var(--font-mono)", fontSize: 11.5, lineHeight: 1.7,
-          color: "var(--ink-80)", whiteSpace: "pre-wrap",
-          background: "var(--pearl)", borderTop: "1px solid var(--hairline)",
-        }}>{`---
+function SkillOverview({ s }) {
+  return (
+    <div style={{ padding: "18px 20px" }}>
+      <p className="t-body" style={{ margin: 0, marginBottom: 16 }}>{s.description}</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+        <KV k="目录"     v={s.source.split(/[\\/]/).slice(-2).join("/")} />
+        <KV k="字数"     v={`${API.fmtNumber(s.chars)} 字`} />
+        <KV k="关键词"   v={(s.keywords || []).join(", ") || "—"} />
+        <KV k="优先级"   v={s.priority === 0 ? "project" : s.priority === 1 ? "global" : "repo"} />
+        <KV k="24h 命中" v={s.hits_24h} accent={s.hits_24h ? "var(--primary)" : undefined} />
+        <KV k="7d 命中"  v={s.hits_7d} />
+      </div>
+      <div className="t-eyebrow" style={{ marginBottom: 8 }}>SKILL.md frontmatter</div>
+      <pre style={{
+        margin: 0, padding: "14px 16px",
+        fontFamily: "var(--font-mono)", fontSize: 11.5, lineHeight: 1.7,
+        color: "var(--ink-80)", whiteSpace: "pre-wrap",
+        background: "var(--pearl)", border: "1px solid var(--hairline)",
+        borderRadius: "var(--r-md)",
+      }}>{`---
 name: ${s.name}
 description: ${s.description}
 keywords: [${(s.keywords || []).map(k => `"${k}"`).join(", ")}]
 ---`}</pre>
-      </div>
     </div>
   );
 }
+
+
+function SkillSource({ skillId }) {
+  const [data, setData] = React.useState(null);
+  const [err, setErr]   = React.useState(null);
+  React.useEffect(() => {
+    if (!skillId) return;
+    setData(null); setErr(null);
+    API.get(`/api/skills/${encodeURIComponent(skillId)}/structure`).then(r => {
+      if (r.error) setErr(r.error);
+      else setData(r);
+    });
+  }, [skillId]);
+  if (err)  return <div style={{ padding: 40, textAlign: "center", color: "var(--danger)" }}>加载失败：{err}</div>;
+  if (!data) return <div style={{ padding: 40, textAlign: "center", color: "var(--ink-60)" }}>加载中…</div>;
+  return (
+    <pre style={{
+      margin: 0, padding: "16px 20px",
+      fontFamily: "var(--font-mono)", fontSize: 11.5, lineHeight: 1.65,
+      color: "var(--ink-80)", whiteSpace: "pre-wrap",
+      background: "var(--canvas)",
+      minHeight: "100%",
+    }}>{data.meta.raw_body || "(空)"}</pre>
+  );
+}
+
 
 function SkillCard({ s, onClick }) {
   return (

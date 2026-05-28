@@ -551,13 +551,30 @@
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
+  <!-- xyflow/react (Skill 画布) — 本地 vendor，避免外网失败白屏 -->
+  <!-- jsxRuntime shim：React 18 UMD 不暴露 react/jsx-runtime 全局，xyflow UMD 需要它；
+       jsxs/jsx 在 React 18 运行时无差异，统一走 createElement 即可 -->
+  <script>
+    (function (R) {
+      function jsx(type, props, key) {
+        var config = key != null ? Object.assign({ key: key }, props) : props;
+        return R.createElement(type, config);
+      }
+      window.jsxRuntime = { jsx: jsx, jsxs: jsx, Fragment: R.Fragment };
+    })(window.React);
+  </script>
+  <link rel="stylesheet" href="vendor/xyflow-react.css">
+  <script src="vendor/xyflow-react.umd.js"></script>
+
   <script src="api.js"></script>
   <script type="text/babel" src="primitives.jsx"></script>
+  <script type="text/babel" src="components/Drawer.jsx"></script>
   <script type="text/babel" src="chrome.jsx"></script>
   <script type="text/babel" src="views/overview.jsx"></script>
   <script type="text/babel" src="views/chat.jsx"></script>
   <script type="text/babel" src="views/persona.jsx"></script>
   <script type="text/babel" src="views/memory.jsx"></script>
+  <script type="text/babel" src="views/skill_canvas.jsx"></script>
   <script type="text/babel" src="views/skills.jsx"></script>
   <script type="text/babel" src="views/tools.jsx"></script>
   <script type="text/babel" src="views/channels.jsx"></script>

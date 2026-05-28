@@ -19,6 +19,7 @@ from sanshiliu.channels.web.api import (
     make_session_messages_handler,
     make_sessions_handler,
     make_settings_json_handler,
+    make_skill_structure_handler,
     make_skills_handler,
     make_tool_calls_handler,
     make_tools_handler,
@@ -364,6 +365,8 @@ async def run_serve() -> int:
     router.register("GET", "/api/memory", make_memory_handler(memdir_loader, claudemd_loader))
     router.register_prefix("GET", "/api/memory/", make_memory_file_handler(memdir_loader, claudemd_loader))
     router.register("GET", "/api/skills", make_skills_handler(skill_loader, db, loop))
+    # 前缀路由必须在 exact 之后注册（resolve 先查 exact）；handler 内严格校验 /api/skills/{id}/structure 形状
+    router.register_prefix("GET", "/api/skills/", make_skill_structure_handler(skill_loader))
     router.register("GET", "/api/channels", make_channels_handler(settings, health))
     router.register("GET", "/api/permissions", make_permissions_handler(settings_loader, db, loop))
     router.register("GET", "/api/settings_json", make_settings_json_handler(settings_loader))

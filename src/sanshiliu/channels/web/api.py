@@ -22,6 +22,7 @@ from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.loader import SkillLoader
+from sanshiliu.skills.structure import parse_skill_structure
 from sanshiliu.storage.db import Database
 from sanshiliu.tools.registry import ToolRegistry
 
@@ -550,6 +551,33 @@ def make_skills_handler(
                 })
             _write_json(req, {"skills": skills})
         _safe(req, _do, "/api/skills")
+    return handler
+
+
+# ────────── /api/skills/{id}/structure ──────────
+
+def make_skill_structure_handler(
+    skill_loader: SkillLoader | None,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        def _do() -> None:
+            if skill_loader is None:
+                _write_json(req, {"error": "skills disabled"}, status=404)
+                return
+            raw = req.path.split("?", 1)[0]
+            # /api/skills/{id}/structure —— register_prefix 会兜住 /api/skills/foo/reload 等，
+            # 必须严格校验路径形状，否则把 reload 误吃了
+            parts = raw.strip("/").split("/")
+            if len(parts) != 4 or parts[0] != "api" or parts[1] != "skills" or parts[3] != "structure":
+                _write_json(req, {"error": "not found"}, status=404)
+                return
+            skill_id = urllib.parse.unquote(parts[2])
+            skill = next((s for s in skill_loader.list() if s.id == skill_id), None)
+            if skill is None:
+                _write_json(req, {"error": "skill not found", "id": skill_id}, status=404)
+                return
+            _write_json(req, parse_skill_structure(skill))
+        _safe(req, _do, "/api/skills/structure")
     return handler
 
 

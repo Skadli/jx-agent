@@ -208,6 +208,34 @@ cp    ~/.claude/settings.json ~/.sanshiliu/settings.json
 
 ---
 
+## Skill 可视化画布
+
+Dashboard 的 Skills 页支持把每个 SKILL.md 渲染成 Dify 风格的无限画布：点击行 → 右侧滑出抽屉 → 切到「画布」tab。后端 `parse_skill_structure`（[`src/sanshiliu/skills/structure.py`](src/sanshiliu/skills/structure.py)）用启发式把 markdown 抽成 5 类节点 + 6 类边，前端用 `@xyflow/react` UMD 渲染（vendor 在 `dashboard/vendor/`，离线可用）。
+
+**节点抽取启发式**（写 SKILL.md 时遵循即可得到合理画布）：
+
+| 节点类型 | 信号来源 | 形状/色带 |
+|---------|---------|----------|
+| `trigger` | frontmatter `keywords` > `## When to Use` > `## Activation Signals` | 圆角矩形 / success |
+| `step` | `## Workflow` / `## Steps` 下的**有序列表**或 `### 第 N 步` / `### Step N` 风格 H3 | 矩形 / primary |
+| `tool` | 行内 tool 名（bash_exec/Read/Skill/...）；frontmatter `allowed-tools` | 矩形 / warning |
+| `subagent` | 引用 `agents/X.md` 或正文出现 spawn/delegate | 双框 / primary-focus |
+| `resource` | 引用 `references/` `scripts/` `assets/` 或 `~/path` | 矩形 / ink-48 |
+| `output` | `## Output` / `## Recommendation Format` / `## Report structure` | 圆角矩形 / success |
+
+**边规则**：相邻 step 顺序边、tool 短挂、subagent 虚线、resource 灰双向、trigger→首 step、末 step→output。step 超过 5 自动蛇形换行。
+
+**写 skill 让画布漂亮**：
+
+1. 在主流程段加 `## Workflow` 或 `## Steps`，下面用编号列表（`1. ...`）或 `### 第 N 步` 写每一步
+2. 在 frontmatter 写 `allowed-tools: [Read, Write, Skill]` 或正文里行内提及工具名
+3. 加 `## Output` / `## Recommendation Format` 段写明输出格式
+4. 不规范的 SKILL.md 会显示 warning 提示而非自动假造结构
+
+详细规则见 `.trellis/tasks/05-28-skill-dify/research/skill-viz-patterns.md`。
+
+---
+
 ## 仓库结构
 
 ```
