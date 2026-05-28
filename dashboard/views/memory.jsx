@@ -1,9 +1,8 @@
-/* Memory — memdir + CLAUDE.md. 真实接 /api/memory。 */
+/* Memory — memdir + MEMORY.md 索引. 真实接 /api/memory。 */
 
 function Memory({ onJump }) {
   const [entries, setEntries] = React.useState([]);
-  const [claude, setClaude]   = React.useState(null);
-  const [active, setActive]   = React.useState("");
+  const [active, setActive]   = React.useState("MEMORY.md");
   const [body, setBody]       = React.useState("");
   const [editBuf, setEditBuf] = React.useState("");
   const [scope, setScope]     = React.useState("all");
@@ -14,7 +13,6 @@ function Memory({ onJump }) {
     const r = await API.get("/api/memory");
     if (!r.error) {
       setEntries(r.entries || []);
-      setClaude(r.claudemd);
       setActive(a => a || (r.entries && r.entries[0] ? r.entries[0].file : ""));
     }
   }, []);
@@ -30,20 +28,19 @@ function Memory({ onJump }) {
     if (!active) return;
     let alive = true;
     (async () => {
-      const path = active === "__claudemd__" ? "__claudemd__" : encodeURIComponent(active);
+      const path = encodeURIComponent(active);
       const r = await API.get(`/api/memory/${path}`);
       if (alive && !r.error) { setBody(r.body || ""); setEditBuf(r.body || ""); }
     })();
     return () => { alive = false; };
   }, [active]);
 
-  const isClaude = active === "__claudemd__";
+  const isMemoryIndex = active === "MEMORY.md";
   const file = entries.find(m => m.file === active);
   const filtered = scope === "all" ? entries : entries.filter(m => m.scope === scope);
-  const totalChars = (claude ? claude.total_chars : 0) + entries.reduce((a, e) => a + e.chars, 0);
+  const totalChars = entries.reduce((a, e) => a + e.chars, 0);
 
   const save = async () => {
-    if (isClaude) return;
     const r = await API.put(`/api/memory/${encodeURIComponent(active)}`, { body: editBuf });
     if (r.error) { alert("保存失败：" + r.error); return; }
     setBody(editBuf);
@@ -52,11 +49,11 @@ function Memory({ onJump }) {
   };
 
   const del = async () => {
-    if (isClaude || !file) return;
+    if (!file) return;
     if (!confirm(`确定删除记忆 ${file.file}？此操作不可恢复。`)) return;
     const r = await API.del(`/api/memory/${encodeURIComponent(active)}`);
     if (r.error) { alert("删除失败：" + r.error); return; }
-    setActive("__claudemd__");
+    setActive("MEMORY.md");
     refresh();
   };
 
@@ -64,7 +61,7 @@ function Memory({ onJump }) {
     <div data-screen-label="04 记忆" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <PageHeader
         title="记忆"
-        sub={`CLAUDE.md + memdir/ · ${API.fmtNumber(totalChars)} 字 · ${entries.length} 条`}
+        sub={`MEMORY.md + memdir/ · ${API.fmtNumber(totalChars)} 字 · ${entries.length} 条`}
         actions={
           <>
             <button className="btn btn-secondary" onClick={() => {
@@ -107,7 +104,22 @@ function Memory({ onJump }) {
           </div>
 
           <div style={{ overflowY: "auto", flex: 1 }}>
-            {filtered.length === 0 && !claude && (
+            {/* MEMORY.md 索引置顶，固定可见，不受 scope 过滤影响 */}
+            <div onClick={() => setActive("MEMORY.md")} style={{
+              padding: "12px 14px",
+              borderLeft: active === "MEMORY.md" ? "3px solid var(--primary)" : "3px solid transparent",
+              borderBottom: "1px solid var(--divider-soft)",
+              background: active === "MEMORY.md" ? "var(--primary-soft)" : "transparent",
+              cursor: "pointer",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <span className="t-mono-sm" style={{ color: active === "MEMORY.md" ? "var(--primary)" : "var(--ink)" }}>MEMORY.md</span>
+                <span className="chip chip-info">索引</span>
+              </div>
+              <div className="t-meta" style={{ marginTop: 6 }}>记忆索引（自动维护）</div>
+            </div>
+
+            {filtered.length === 0 && (
               <div style={{ padding: 32, textAlign: "center", color: "var(--ink-60)" }} className="t-meta">暂无记忆<br/>点击"新建记忆"</div>
             )}
 
@@ -121,33 +133,41 @@ function Memory({ onJump }) {
         <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <div className="card-header">
             <div>
-              <div className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{isClaude ? "CLAUDE.md" : `memdir/${file ? file.file : ""}`}</div>
+              <div className="t-mono-sm" style={{ color: "var(--ink-60)" }}>{isMemoryIndex ? "MEMORY.md" : `memdir/${file ? file.file : ""}`}</div>
               <div className="t-card-title" style={{ marginTop: 3 }}>
-                {isClaude ? "项目记忆（顶部注入）" : (file ? `${file.scope} · ${API.fmtNumber(file.chars)} 字` : "")}
+                {isMemoryIndex ? "记忆索引（自动维护）" : (file ? `${file.scope} · ${API.fmtNumber(file.chars)} 字` : "")}
               </div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button className="btn btn-ghost btn-sm" onClick={() => { navigator.clipboard.writeText(body); }}><Icon name="copy" size={13}/>复制</button>
-              {!isClaude && mode !== "edit" && <button className="btn btn-secondary btn-sm" onClick={() => setMode("edit")}><Icon name="edit" size={13}/>编辑</button>}
+              {mode !== "edit" && <button className="btn btn-secondary btn-sm" onClick={() => setMode("edit")}><Icon name="edit" size={13}/>编辑</button>}
               {mode === "edit" && (
                 <>
                   <button className="btn btn-ghost btn-sm" onClick={() => { setEditBuf(body); setMode("preview"); }}>取消</button>
                   <button className="btn btn-primary btn-sm" onClick={save}><Icon name="check" size={13} color="#fff"/>保存</button>
                 </>
               )}
-              {!isClaude && file && <button className="btn-icon" title="删除" onClick={del}><Icon name="trash" size={14} color="var(--danger)"/></button>}
+              {file && <button className="btn-icon" title="删除" onClick={del}><Icon name="trash" size={14} color="var(--danger)"/></button>}
             </div>
           </div>
 
           {mode === "edit" ? (
-            <textarea
-              value={editBuf}
-              onChange={e => setEditBuf(e.target.value)}
-              style={{
-                margin: 0, padding: "24px 32px", border: "none", outline: "none", resize: "none",
-                fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.75,
-                color: "var(--ink-80)", background: "var(--canvas)", flex: 1,
-              }} />
+            <>
+              {isMemoryIndex && (
+                <div className="t-meta" style={{
+                  padding: "8px 32px", color: "var(--warning-fg)",
+                  background: "rgba(242,180,65,0.16)", borderBottom: "1px solid var(--hairline)",
+                }}>此文件由代码自动维护，手改会在下次记忆变动时被 rebuild 覆盖</div>
+              )}
+              <textarea
+                value={editBuf}
+                onChange={e => setEditBuf(e.target.value)}
+                style={{
+                  margin: 0, padding: "24px 32px", border: "none", outline: "none", resize: "none",
+                  fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.75,
+                  color: "var(--ink-80)", background: "var(--canvas)", flex: 1,
+                }} />
+            </>
           ) : (
             <pre style={{
               margin: 0, padding: "24px 32px",
@@ -163,9 +183,9 @@ function Memory({ onJump }) {
           <div className="card">
             <CardHeader title="元信息" />
             <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <KV k="路径"    v={isClaude ? "CLAUDE.md" : (file ? `memdir/${file.file}` : "—")} />
-              <KV k="scope"   v={isClaude ? "project (顶部)" : (file ? file.scope : "—")} />
-              <KV k="字数"    v={isClaude ? API.fmtNumber(claude ? claude.total_chars : 0) : (file ? API.fmtNumber(file.chars) : "—")} />
+              <KV k="路径"    v={isMemoryIndex ? "memdir/MEMORY.md" : (file ? `memdir/${file.file}` : "—")} />
+              <KV k="scope"   v={isMemoryIndex ? "索引" : (file ? file.scope : "—")} />
+              <KV k="字数"    v={isMemoryIndex ? API.fmtNumber(body.length) : (file ? API.fmtNumber(file.chars) : "—")} />
               <KV k="最近修改" v={file ? API.relTime(file.mtime * 1000) : "—"} />
             </div>
           </div>
