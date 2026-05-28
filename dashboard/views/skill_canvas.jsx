@@ -47,7 +47,7 @@ function CustomNode({ data, selected }) {
       boxSizing: "border-box",
       padding: "18px 20px",
       background: "var(--canvas)",
-      border: selected ? "2px solid var(--primary-focus)" : "1px solid var(--hairline)",
+      border: selected ? "2px solid var(--primary-focus)" : "1px solid var(--hairline-strong)",
       borderRadius: 18,
     }}>
       {/* eyebrow：类型差异化唯一来源（大写 / 12px / 600 / 0.06em tracking / 灰） */}
@@ -121,7 +121,7 @@ function SkillCanvas({ skillId }) {
   });
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div style={{ width: "100%", height: "100%", position: "relative", background: "var(--parchment)" }}>
       <ReactFlow
         nodes={graph.nodes}
         edges={styledEdges}
@@ -140,7 +140,7 @@ function SkillCanvas({ skillId }) {
         onPaneClick={() => setActiveNode(null)}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={20} size={1} color="var(--hairline)" />
+        <Background gap={20} size={1} color="var(--hairline-strong)" />
         <MiniMap pannable zoomable
           nodeColor={(n) => {
             const t = (n.data && n.data.type) || "step";
@@ -167,7 +167,7 @@ function NodeInspector({ node, onClose }) {
       position: "absolute", bottom: 12, right: 12,
       width: 360, maxHeight: "60%", display: "flex", flexDirection: "column",
       background: "var(--canvas)",
-      border: "1px solid var(--hairline)",
+      border: "1px solid var(--hairline-strong)",
       borderRadius: 18,
       overflow: "hidden",
       zIndex: 10,
