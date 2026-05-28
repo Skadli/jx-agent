@@ -1,9 +1,9 @@
 /* SkillCanvas — 无限画布只读 viewer（Apple 设计语言，见 uploads/DESIGN.md）。
 
    拉 /api/skills/{id}/structure，渲染节点 + 边。所有节点统一 type='custom'，
-   按 data.type 在 CustomNode 内部用顶部 eyebrow 文本区分类型（不再用彩色色带）。
+   按 data.type 在 CustomNode 内部用 eyebrow 文本 + 整卡类型辨识色区分类型（NODE_THEMES）。
 
-   视觉：18px 圆角 + 1px hairline + 纯白底 + 无 box-shadow；单一 Action Blue accent。
+   视觉：18px 圆角 + 极淡类型底 + 稍深同色 1px 边 + 同色 eyebrow + 无 box-shadow。
 
    props:
      skillId  string  目标 skill 的 id（目录名）
@@ -16,15 +16,16 @@ const { ReactFlow, Background, MiniMap, Controls, Handle, Position, useNodesStat
 const NODE_WIDTH = 240;
 const HANDLE_OFFSET = 8;
 
-// 节点类型 → { band: minimap 缩略图用色（DESIGN 允许的功能性用色，唯一例外）,
-//             eyebrow: 节点顶部大写标签 }
+// 节点类型 → { band: minimap 缩略图用色（DESIGN 允许的功能性用色）,
+//             eyebrow: 节点顶部大写标签,
+//             bg/border/fg: 整卡极淡类型底 + 稍深同色边 + 同色 eyebrow（全用 dashboard.html 已有 token）}
 const NODE_THEMES = {
-  trigger:  { band: "var(--success)",       eyebrow: "TRIGGER" },
-  step:     { band: "var(--primary)",       eyebrow: "STEP" },
-  tool:     { band: "var(--warning)",       eyebrow: "TOOL" },
-  subagent: { band: "var(--primary-focus)", eyebrow: "SUBAGENT" },
-  resource: { band: "var(--ink-48)",        eyebrow: "RESOURCE" },
-  output:   { band: "var(--success)",       eyebrow: "OUTPUT" },
+  trigger:  { band: "var(--success)",       eyebrow: "TRIGGER",  bg: "var(--success-bg)",     border: "var(--success)",         fg: "var(--success-fg)" },
+  step:     { band: "var(--primary)",       eyebrow: "STEP",     bg: "var(--primary-soft)",   border: "var(--primary)",         fg: "var(--primary)" },
+  tool:     { band: "var(--warning)",       eyebrow: "TOOL",     bg: "var(--warning-bg)",     border: "var(--warning)",         fg: "var(--warning-fg)" },
+  subagent: { band: "var(--primary-focus)", eyebrow: "SUBAGENT", bg: "var(--primary-soft-2)", border: "var(--primary-focus)",   fg: "var(--primary-focus)" },
+  resource: { band: "var(--ink-48)",        eyebrow: "RESOURCE", bg: "var(--pearl)",          border: "var(--hairline-strong)", fg: "var(--ink-48)" },
+  output:   { band: "var(--success)",       eyebrow: "OUTPUT",   bg: "var(--success-bg)",     border: "var(--success)",         fg: "var(--success-fg)" },
 };
 
 // 边 kind → 样式。默认 hairline；subagent/resource 保留虚线区分但同样走 hairline。
@@ -46,14 +47,14 @@ function CustomNode({ data, selected }) {
       minHeight: 72,
       boxSizing: "border-box",
       padding: "18px 20px",
-      background: "var(--canvas)",
-      border: selected ? "2px solid var(--primary-focus)" : "1px solid var(--hairline-strong)",
+      background: theme.bg,
+      border: selected ? "2px solid var(--primary-focus)" : `1px solid ${theme.border}`,
       borderRadius: 18,
     }}>
-      {/* eyebrow：类型差异化唯一来源（大写 / 12px / 600 / 0.06em tracking / 灰） */}
+      {/* eyebrow：类型差异化（大写 / 12px / 600 / 0.06em tracking / 同类型色） */}
       <div style={{
         fontSize: 12, fontWeight: 600, letterSpacing: "0.06em",
-        textTransform: "uppercase", color: "var(--ink-48)",
+        textTransform: "uppercase", color: theme.fg,
       }}>{theme.eyebrow}</div>
       {/* title：body-strong 17px / 600 / -0.374px */}
       <div style={{
@@ -174,13 +175,13 @@ function NodeInspector({ node, onClose }) {
     }}>
       <div style={{
         padding: "16px 20px",
-        borderBottom: "1px solid var(--hairline)",
+        borderBottom: `1px solid ${theme.border}`,
         display: "flex", alignItems: "center", gap: 10,
       }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
             fontSize: 12, fontWeight: 600, letterSpacing: "0.06em",
-            textTransform: "uppercase", color: "var(--ink-48)",
+            textTransform: "uppercase", color: theme.fg,
           }}>{theme.eyebrow}</div>
           <div style={{
             marginTop: 4,
