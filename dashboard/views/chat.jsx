@@ -111,6 +111,12 @@ function Chat() {
           : [{ id: sid, channel: "web", calls: 0, input_tokens: 0, output_tokens: 0, cost_cny: 0, last_active_at: Date.now(), last_message: text }, ...list]);
       },
       onApproval: askToolApproval,
+      onMsgBreak: () => {
+        // <MSG> 段边界：把当前段定型为一条独立气泡，后续 delta 进新气泡
+        if (buf.trim()) setTimeline(t => [...t, { kind: "assistant", content: buf }]);
+        buf = "";
+        setStreamText("");
+      },
       onDelta: (chunk) => { buf += chunk; setStreamText(buf); },
       onDone:  () => {
         if (buf) setTimeline(t => [...t, { kind: "assistant", content: buf }]);
@@ -737,6 +743,30 @@ function Bubble({ role, text, images, streaming, t }) {
   );
 }
 
+/* 按 <MSG> 把一段 assistant 文本拆成多条；与后端 foundation/msg_split.py 对齐：
+ * 三反引号代码块内的 <MSG> 不拆；段首尾 trim；空段过滤；无 <MSG> 时整段单条返回。 */
+function splitOnMsg(text, sentinel = "<MSG>") {
+  if (typeof text !== "string" || !text.trim()) return [];
+  const FENCE = "```";
+  const out = [];
+  let cur = text;
+  while (true) {
+    let pos = -1, p = 0, inCode = false;
+    while (p < cur.length) {
+      if (cur.startsWith(FENCE, p)) { inCode = !inCode; p += FENCE.length; continue; }
+      if (!inCode && cur.startsWith(sentinel, p)) { pos = p; break; }
+      p++;
+    }
+    if (pos < 0) break;
+    const seg = cur.slice(0, pos).trim();
+    if (seg) out.push(seg);
+    cur = cur.slice(pos + sentinel.length);
+  }
+  const rest = cur.trim();
+  if (rest) out.push(rest);
+  return out.length ? out : [text.trim()];
+}
+
 /**
  * 把 /api/sessions/{id}/messages 返回的扁平消息流，
  * 重建为 timeline 的顺序事件：user / assistant / tool。
@@ -767,6 +797,13 @@ function buildTimelineFromMessages(msgs) {
         items.push({ kind: "user", content: m.content || "" });
       }
     } else if (role === "assistant") {
+      // content 是工具前的口语状态(preamble)，先于工具卡片显示，符合"状态→调用→结果"时序。
+      // 存储原文含字面 <MSG>，按段拆成多条气泡（与后端发送一致）。
+      if (m.content) {
+        for (const seg of splitOnMsg(m.content)) {
+          items.push({ kind: "assistant", content: seg });
+        }
+      }
       const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
       for (const tc of calls) {
         const fn = tc.function || {};
@@ -781,7 +818,6 @@ function buildTimelineFromMessages(msgs) {
         items.push(item);
         if (tc.id) idMap[tc.id] = item;
       }
-      if (m.content) items.push({ kind: "assistant", content: m.content });
     } else if (role === "tool") {
       const target = m.tool_call_id ? idMap[m.tool_call_id] : null;
       if (target) {

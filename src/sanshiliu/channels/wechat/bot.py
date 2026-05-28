@@ -235,8 +235,18 @@ class WechatBot:
 
         # 跑引擎；contextvar 让 CompositeConfirmer 路由到 wechat broker
         token = _current_wechat_user.set(head.user_id)
+
+        async def _send_preamble(text: str) -> None:
+            # 工具前的口语状态，先单独发出（拟人化"状态→结果"）；同样过输出安全
+            pre_check = self._safety.check_output(text)
+            pre_final = pre_check.redacted_text if pre_check.blocked else text
+            if pre_final:
+                await self._send_safe(head, pre_final)
+
         try:
-            msg = await self._engine.complete_turn(session, user_content)
+            msg = await self._engine.complete_turn(
+                session, user_content, on_user_message=_send_preamble,
+            )
             reply = msg.text_only() or ""
             if self._short_term is not None:
                 try:

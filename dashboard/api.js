@@ -44,9 +44,9 @@
     }
   }
 
-  // 用 fetch + ReadableStream 解 SSE；data: ... 行触发 onDelta；event: done/error/approval 触发对应 cb
+  // 用 fetch + ReadableStream 解 SSE；data: ... 行触发 onDelta；event: done/error/approval/msg_break 触发对应 cb
   // 返回 {abort: ()=>void}
-  function chatStream({ q, sessionId, images, onSession, onApproval, onDelta, onDone, onError }) {
+  function chatStream({ q, sessionId, images, onSession, onApproval, onDelta, onMsgBreak, onDone, onError }) {
     const ctrl = new AbortController();
     const body = {
       q,
@@ -77,6 +77,13 @@
         let finished = false;
 
         const flush = () => {
+          // msg_break：<MSG> 段边界，无有效 data；不能当成 delta（否则裸标签/不分气泡）
+          if (currentEvent === "msg_break") {
+            dataLines = [];
+            currentEvent = "message";
+            onMsgBreak && onMsgBreak();
+            return;
+          }
           if (dataLines.length === 0) return;
           const data = dataLines.join("\n");
           dataLines = [];

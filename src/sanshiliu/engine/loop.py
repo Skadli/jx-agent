@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +12,7 @@ from sanshiliu.context.manager import ContextManager
 from sanshiliu.engine.session import Session
 from sanshiliu.engine.types import ChatMessage, MessageContent
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.foundation.msg_split import DEFAULT_SENTINEL
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.llm.client import LLMClient
@@ -272,9 +273,20 @@ class ConversationEngine:
         Phase 10：user_text 可为 str（旧）或 list[dict]（OpenAI 多模态格式）。
         """
         if self.tools_enabled:
-            msg = await self.complete_turn(session, user_text)
-            content_text = msg.text_only()
-            yield StreamDelta(text=content_text)
+            # 工具前的口语 preamble 作为独立气泡/消息浮出（"状态→结果"两段流）。
+            # 段间插 DEFAULT_SENTINEL，复用各通道已有的 <MSG> 拆分逻辑切气泡。
+            preambles: list[str] = []
+
+            async def _collect_preamble(text: str) -> None:
+                preambles.append(text)
+
+            msg = await self.complete_turn(
+                session, user_text, on_user_message=_collect_preamble,
+            )
+            for pre in preambles:
+                yield StreamDelta(text=pre)
+                yield StreamDelta(text=DEFAULT_SENTINEL)
+            yield StreamDelta(text=msg.text_only())
             return
 
         flat_text = _flatten_user_text(user_text)
@@ -314,10 +326,16 @@ class ConversationEngine:
 
     async def complete_turn(
         self, session: Session, user_text: MessageContent,
+        *, on_user_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> ChatMessage:
         """非流式 + tool_call 循环；返回最终 assistant 消息。
 
         Phase 10：user_text 可为 str 或 list[dict]（OpenAI 多模态格式）。
+
+        on_user_message：可选回调。当某轮模型在调用工具的同时写了口语 preamble
+        （content 非空 + tool_calls），在执行工具**前**用该 preamble 调用一次，
+        让通道把它作为独立的"状态"消息先发出（拟人化"状态→结果"）。最终回复仍走返回值。
+        dream_runner 等不传则保持原单条行为。
         """
         flat_text = _flatten_user_text(user_text)
         await self._refresh_memory(session)
@@ -379,6 +397,9 @@ class ConversationEngine:
             )
             session.messages.append(asst_with_tools)
             await self._persist_message(session, asst_with_tools)
+            # 工具前的口语 preamble 浮出为独立"状态"消息（拟人化"状态→结果"）
+            if on_user_message is not None and result.text and result.text.strip():
+                await on_user_message(result.text)
             parsed_calls = parse_tool_calls(result.tool_calls)
             for tc in parsed_calls:
                 tool_started = time.monotonic()
