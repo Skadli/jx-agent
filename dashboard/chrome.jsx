@@ -146,6 +146,7 @@ const RAIL_SECTIONS = [
 {
   label: "系统",
   items: [
+  { id: "heartbeat", label: "心跳", icon: "spark", count: null },
   { id: "settings", label: "设置", icon: "settings", count: null }]
 
 }];
@@ -177,46 +178,6 @@ function LeftRail({ active, onJump, collapsed }) {
         )}
       </div>
 
-      {/* Bottom dock — 展开态：详细环境徽章；折叠态：仅一个绿点 */}
-      <div className="rail-dock-full" style={{
-        marginTop: "auto",
-        padding: "12px 14px",
-        borderTop: "1px solid var(--hairline)",
-        background: "var(--pearl)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="dot dot-up" />
-          <span className="t-row-strong" style={{ color: "var(--ink)", fontSize: 12 }}>本机环境</span>
-          <span className="t-meta" style={{ marginLeft: "auto", color: "var(--ink-48)" }}>Py 3.13</span>
-        </div>
-        <div
-          className="t-mono-sm"
-          title="~/.sanshiliu"
-          style={{
-            color: "var(--ink-80)",
-            background: "var(--canvas)",
-            border: "1px solid var(--hairline)",
-            borderRadius: 6,
-            padding: "3px 8px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >~/.sanshiliu</div>
-        <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-          <span className="chip chip-success chip-dot" style={{ fontSize: 10 }}>REPL</span>
-          <span className="chip chip-success chip-dot" style={{ fontSize: 10 }}>Web</span>
-          <span className="chip" style={{ fontSize: 10, color: "var(--ink-48)", background: "rgba(0,0,0,0.04)" }}>
-            <span className="dot dot-off" />微信
-          </span>
-        </div>
-      </div>
-      <div className="rail-dock-mini" title="本机环境 · Py 3.13">
-        <span className="dot dot-up" style={{ width: 8, height: 8 }} />
-      </div>
     </aside>);
 
 }

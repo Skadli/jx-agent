@@ -284,6 +284,32 @@ class Settings(BaseSettings):
         description="是否在每轮对话后异步调 LLM 提取候选记忆（默认关；按需开）",
     )
 
+    # 做梦 scheduler（与 skills/dream/SKILL.md 配套；只在 serve 模式生效——REPL 进程不长跑）
+    dream_scheduler_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "dream_scheduler_enabled", "SANSHILIU_DREAM_SCHEDULER_ENABLED"
+        ),
+        description="是否每天定时检查做梦闸门；只在 serve 模式跑后台 task",
+    )
+    dream_scheduler_hour: int = Field(
+        default=3,
+        ge=0,
+        le=23,
+        validation_alias=AliasChoices(
+            "dream_scheduler_hour", "SANSHILIU_DREAM_SCHEDULER_HOUR"
+        ),
+        description="定时器醒来的小时（local time，0-23）；默认夜里 3 点",
+    )
+    dream_scheduler_min_sessions: int = Field(
+        default=3,
+        ge=1,
+        validation_alias=AliasChoices(
+            "dream_scheduler_min_sessions", "SANSHILIU_DREAM_SCHEDULER_MIN_SESSIONS"
+        ),
+        description="自上次做梦以来需累积多少个新 session 才放行；用户原话：对话文件 >= N 个",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

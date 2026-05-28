@@ -28,6 +28,7 @@ from sanshiliu.memory.longterm.consolidate import load_consolidate_instruction
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
+from sanshiliu.scheduler import HeartbeatScheduler
 from sanshiliu.security.path_guard import PathGuard
 from sanshiliu.security.permission import PermissionManager
 from sanshiliu.security.settings_loader import SettingsLoader
@@ -67,9 +68,15 @@ class App:
     short_term: ShortTermMemory | None = None
     settings_loader: SettingsLoader | None = None
     permission_manager: PermissionManager | None = None
+    heartbeat: HeartbeatScheduler | None = None
 
     async def shutdown(self) -> None:
         """优雅回收；任意阶段异常不阻塞其余清理。"""
+        if self.heartbeat is not None:
+            try:
+                await self.heartbeat.stop()
+            except Exception as exc:
+                _logger.warning("heartbeat.stop 异常", error=str(exc))
         try:
             await self.persona_watcher.stop()
         except Exception as exc:
@@ -254,6 +261,10 @@ async def build_app(
         permission_deny=len(perm.deny) if perm is not None else 0,
     )
 
+    # L10 heartbeat：只装空 scheduler；具体 task 注册在 runner.py
+    # （因为 dream task 需要 engine + db + sessions_dir，而 build_app 不一定全有上下文）
+    heartbeat = HeartbeatScheduler()
+
     return App(
         settings=settings,
         db=db, llm=llm,
@@ -271,6 +282,7 @@ async def build_app(
         short_term=short_term,
         settings_loader=settings_loader,
         permission_manager=permission_manager,
+        heartbeat=heartbeat,
         summary=summary,
     )
 

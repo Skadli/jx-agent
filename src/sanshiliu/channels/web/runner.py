@@ -23,6 +23,10 @@ from sanshiliu.channels.web.api import (
     make_tool_calls_handler,
     make_tools_handler,
 )
+from sanshiliu.channels.web.api_heartbeat import (
+    make_heartbeat_dispatch_handler,
+    make_heartbeat_list_handler,
+)
 from sanshiliu.channels.web.api_settings import (
     make_get_settings_handler,
     make_put_settings_handler,
@@ -98,6 +102,14 @@ from sanshiliu.memory.longterm.consolidate import load_consolidate_instruction
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
+from sanshiliu.scheduler import (
+    HeartbeatScheduler,
+    apply_state_to_scheduler,
+    build_dream_task,
+    heartbeat_state_path,
+    load_heartbeat_state,
+    save_heartbeat_state,
+)
 from sanshiliu.security.composite_confirmer import CompositeConfirmer
 from sanshiliu.security.path_guard import PathGuard
 from sanshiliu.security.permission import PermissionManager
@@ -284,6 +296,25 @@ async def run_serve() -> int:
     )
     persona_watcher = PersonaWatcher(loader, module_loader=module_loader)
 
+    # 心跳调度（heartbeat）：通用周期任务框架；当前注册一个 dream task
+    # serve 进程长跑才有意义；dashboard 可手动 enable/disable + run-now + 改配置
+    # 状态持久化到 <data_dir>/heartbeat.json：env 是首次启动 seed，JSON 是 runtime 真相源
+    heartbeat = HeartbeatScheduler()
+    heartbeat.register(
+        build_dream_task(
+            engine=engine,
+            db=db,
+            sessions_dir=settings.data_dir / "sessions",
+            memdir_dir=settings.memdir_dir,
+            fire_hour=settings.dream_scheduler_hour,
+            min_sessions=settings.dream_scheduler_min_sessions,
+            enabled=settings.dream_scheduler_enabled,
+        )
+    )
+    _hb_state_path = heartbeat_state_path(settings.data_dir)
+    apply_state_to_scheduler(heartbeat, load_heartbeat_state(_hb_state_path))
+    heartbeat.set_change_hook(lambda: save_heartbeat_state(_hb_state_path, heartbeat))
+
     health = HealthState()
     health.set("llm", "up")
     health.set("db", "up")
@@ -336,6 +367,7 @@ async def run_serve() -> int:
     router.register("GET", "/api/channels", make_channels_handler(settings, health))
     router.register("GET", "/api/permissions", make_permissions_handler(settings_loader, db, loop))
     router.register("GET", "/api/settings_json", make_settings_json_handler(settings_loader))
+    router.register("GET", "/api/heartbeat", make_heartbeat_list_handler(heartbeat))
 
     # ─── 写 endpoints ───
     router.register("POST", "/api/sessions/new", make_session_new_handler(session_store))
@@ -361,6 +393,10 @@ async def run_serve() -> int:
     env_file = _Path.cwd() / ".env"
     router.register("GET", "/api/settings", make_get_settings_handler(env_file))
     router.register("PUT", "/api/settings", make_put_settings_handler(env_file))
+    # 心跳任务操作：POST /api/heartbeat/{name}/run | /toggle，PUT /api/heartbeat/{name}/config
+    _hb_dispatch = make_heartbeat_dispatch_handler(heartbeat, loop)
+    router.register_prefix("POST", "/api/heartbeat/", _hb_dispatch)
+    router.register_prefix("PUT",  "/api/heartbeat/", _hb_dispatch)
 
     # 微信扫码连接
     import os as _os
@@ -468,6 +504,7 @@ async def run_serve() -> int:
             loop.add_signal_handler(sig, _request_stop)
 
     await persona_watcher.start()
+    await heartbeat.start()
     server.start()
     if wechat_bot is not None:
         await wechat_bot.start()
@@ -496,6 +533,7 @@ async def run_serve() -> int:
         if client is not None:
             await client.close()
         server.stop()
+        await heartbeat.stop()
         await persona_watcher.stop()
         await llm.close()
         await db.close()

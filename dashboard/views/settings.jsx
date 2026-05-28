@@ -205,6 +205,17 @@ function Settings() {
           <FormFooter saving={saving} onSave={() => submit(logLevelGroup)} />
         </SettingsCard>
 
+        <SettingsCard title="心跳调度" subtitle="周期任务（如做梦）的开关与参数；持久化在 data/heartbeat.json，不走 .env">
+          <div style={{ padding: "8px 16px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div className="t-meta" style={{ color: "var(--ink-60)" }}>
+              心跳任务的启停、定时小时、阈值等配置都在<strong>心跳</strong>页面 inline 编辑。改完立即生效并落盘，重启不会回到 <code>.env</code> 默认值。
+            </div>
+            <button className="btn btn-primary" onClick={() => { window.location.hash = "heartbeat"; }}>
+              <Icon name="spark" size={13} color="#fff" />前往心跳页
+            </button>
+          </div>
+        </SettingsCard>
+
         <div className="t-meta" style={{ color: "var(--ink-60)", marginTop: 16, padding: "0 4px" }}>
           注：所有改动都会立即写入 <code className="t-mono">{data.env_path || ".env"}</code>。
           大部分字段（API key / base url / 模型 / 微信凭据 / 密码）需要重启 `python -m sanshiliu serve` 才能生效。
