@@ -170,7 +170,7 @@ function IdentityCard({ overview, ident, onJump, onReload }) {
     "║  Base     " + ((overview.base_url || "—").replace(/^https?:\/\//, "")).slice(0, 22).padEnd(22, " ") + " ║",
     "║  Persona  " + `${API.fmtNumber(ident.persona_chars)} 字 / ${ident.persona_files} 份`.padEnd(22, " ") + " ║",
     "║  Skills   " + `${ident.skills_count} 个`.padEnd(22, " ") + " ║",
-    "║  Memory   " + `${API.fmtNumber(ident.claudemd_chars)} 字 / ${ident.memdir_count} 条`.padEnd(22, " ") + " ║",
+    "║  Memory   " + `${ident.memdir_count} 条`.padEnd(22, " ") + " ║",
     "╚══════════════════════════════════╝",
   ].join("\n");
 
@@ -290,7 +290,7 @@ function MemoryPreview({ memory, onJump }) {
     <div className="card">
       <CardHeader
         title="记忆"
-        sub={`memdir + CLAUDE.md`}
+        sub={`memdir`}
         right={<button className="btn btn-ghost btn-sm" onClick={() => onJump("memory")}>浏览 →</button>} />
       <div style={{ padding: 4 }}>
         {claude && claude.total_chars > 0 && (

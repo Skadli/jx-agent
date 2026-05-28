@@ -168,10 +168,6 @@ async def build_app(
     consolidate_instruction: str | None = None
     if settings.memory_enabled:
         try:
-            claudemd_loader = ClaudeMdLoader(
-                global_home=settings.home_dir, project_cwd=cwd_root,
-            )
-            claudemd_loader.load()
             memdir_loader = MemdirLoader(settings.memdir_dir)
             memdir_loader.load()
             short_term = ShortTermMemory(settings.data_dir)

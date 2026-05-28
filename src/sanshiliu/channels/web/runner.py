@@ -220,16 +220,10 @@ async def run_serve() -> int:
     consolidate_instruction: str | None = None
     if settings.memory_enabled:
         try:
-            claudemd_loader = ClaudeMdLoader(
-                global_home=settings.home_dir,
-                project_cwd=_Path.cwd(),
-            )
-            claudemd_loader.load()
             memdir_loader = MemdirLoader(settings.memdir_dir)
             memdir_loader.load()
             _logger.info(
                 "memory 已加载",
-                claudemd_chars=claudemd_loader.get().total_chars(),
                 memdir_entries=len(memdir_loader.get().entries),
             )
         except Exception as exc:

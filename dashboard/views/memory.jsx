@@ -3,7 +3,7 @@
 function Memory({ onJump }) {
   const [entries, setEntries] = React.useState([]);
   const [claude, setClaude]   = React.useState(null);
-  const [active, setActive]   = React.useState("__claudemd__");
+  const [active, setActive]   = React.useState("");
   const [body, setBody]       = React.useState("");
   const [editBuf, setEditBuf] = React.useState("");
   const [scope, setScope]     = React.useState("all");
@@ -15,6 +15,7 @@ function Memory({ onJump }) {
     if (!r.error) {
       setEntries(r.entries || []);
       setClaude(r.claudemd);
+      setActive(a => a || (r.entries && r.entries[0] ? r.entries[0].file : ""));
     }
   }, []);
 
@@ -106,25 +107,6 @@ function Memory({ onJump }) {
           </div>
 
           <div style={{ overflowY: "auto", flex: 1 }}>
-            {claude && (
-              <div onClick={() => setActive("__claudemd__")} style={{
-                padding: "12px 14px",
-                borderLeft: isClaude ? "3px solid var(--primary)" : "3px solid transparent",
-                borderBottom: "1px solid var(--divider-soft)",
-                background: isClaude ? "var(--primary-soft)" : "transparent",
-                cursor: "pointer",
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                    <Icon name="stack" size={13} color={isClaude ? "var(--primary)" : "var(--ink-60)"}/>
-                    <span className="t-mono-strong" style={{ color: isClaude ? "var(--primary)" : "var(--ink)" }}>CLAUDE.md</span>
-                  </span>
-                  <span className="chip chip-info">常驻</span>
-                </div>
-                <div className="t-meta" style={{ marginTop: 6 }}>项目+全局 · {API.fmtNumber(claude.total_chars)} 字</div>
-              </div>
-            )}
-
             {filtered.length === 0 && !claude && (
               <div style={{ padding: 32, textAlign: "center", color: "var(--ink-60)" }} className="t-meta">暂无记忆<br/>点击"新建记忆"</div>
             )}
