@@ -117,6 +117,7 @@ from sanshiliu.security.permission import PermissionManager
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.skills.loader import SkillLoader
+from sanshiliu.skills.structure import skill_structure_path
 from sanshiliu.storage.db import get_database
 from sanshiliu.tools.bootstrap import build_tool_stack
 
@@ -203,7 +204,11 @@ async def run_serve() -> int:
             skills = skill_loader.load()
             if skills:
                 skill_activator = SkillActivator(skill_loader)
-                _logger.info("skills 已注册", ids=[s.id for s in skills])
+                _logger.info(
+                    "skills 已注册",
+                    ids=[s.id for s in skills],
+                    structures={s.id: str(skill_structure_path(s)) for s in skills},
+                )
         except Exception as exc:
             print(f"skills 加载失败（继续不带 skills）：{exc}", file=sys.stderr)
             skill_loader = None

@@ -22,6 +22,7 @@ from sanshiliu.memory.longterm.memdir import MemdirLoader, write_memory_file
 from sanshiliu.memory.types import MEMORY_TYPES, MemoryEntry
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.loader import SkillLoader
+from sanshiliu.skills.structure import skill_structure_path
 
 if TYPE_CHECKING:
     from http.server import BaseHTTPRequestHandler
@@ -265,10 +266,16 @@ def make_skills_reload_handler(
 ) -> Callable[[BaseHTTPRequestHandler], None]:
     def handler(req: BaseHTTPRequestHandler) -> None:
         if skill_loader is None:
-            _write_json(req, {"error": "skills disabled"}, status=400); return
+            _write_json(req, {"error": "skills disabled"}, status=400)
+            return
         skill_loader.invalidate()
         skills = skill_loader.load()
-        _write_json(req, {"ok": True, "count": len(skills), "ids": [s.id for s in skills]})
+        _write_json(req, {
+            "ok": True,
+            "count": len(skills),
+            "ids": [s.id for s in skills],
+            "structure_files": {s.id: str(skill_structure_path(s)) for s in skills},
+        })
 
     return handler
 

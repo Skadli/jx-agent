@@ -22,7 +22,7 @@ from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.loader import SkillLoader
-from sanshiliu.skills.structure import parse_skill_structure
+from sanshiliu.skills.structure import read_skill_structure, skill_structure_path
 from sanshiliu.storage.db import Database
 from sanshiliu.tools.registry import ToolRegistry
 
@@ -545,6 +545,7 @@ def make_skills_handler(
                     "keywords":    s.keywords,
                     "chars":       len(s.body),
                     "source":      str(s.source),
+                    "structure":   str(skill_structure_path(s)),
                     "priority":    s.priority,
                     "hits_24h":    int(hits_24h.get(s.id, 0)),
                     "hits_7d":     int(hits_7d.get(s.id, 0)),
@@ -576,7 +577,24 @@ def make_skill_structure_handler(
             if skill is None:
                 _write_json(req, {"error": "skill not found", "id": skill_id}, status=404)
                 return
-            _write_json(req, parse_skill_structure(skill))
+            try:
+                structure = read_skill_structure(skill)
+            except FileNotFoundError:
+                _write_json(req, {
+                    "error": "skill structure not found",
+                    "id": skill_id,
+                    "path": str(skill_structure_path(skill)),
+                }, status=404)
+                return
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                _write_json(req, {
+                    "error": "invalid skill structure",
+                    "id": skill_id,
+                    "path": str(skill_structure_path(skill)),
+                    "detail": str(exc),
+                }, status=500)
+                return
+            _write_json(req, structure)
         _safe(req, _do, "/api/skills/structure")
     return handler
 

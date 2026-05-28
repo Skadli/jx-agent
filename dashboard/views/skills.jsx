@@ -142,29 +142,55 @@ function Skills({ onJump }) {
 
 
 function SkillOverview({ s }) {
+  const keywords = s.keywords || [];
+  const sourceDir = (s.source || "").split(/[\\/]/).slice(-2).join("/") || "—";
+  const structureFile = (s.structure || "").split(/[\\/]/).slice(-2).join("/") || `${s.id}/structure.json`;
+
   return (
     <div style={{ padding: "18px 20px" }}>
-      <p className="t-body" style={{ margin: 0, marginBottom: 16 }}>{s.description}</p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
-        <KV k="目录"     v={s.source.split(/[\\/]/).slice(-2).join("/")} />
-        <KV k="字数"     v={`${API.fmtNumber(s.chars)} 字`} />
-        <KV k="关键词"   v={(s.keywords || []).join(", ") || "—"} />
-        <KV k="优先级"   v={s.priority === 0 ? "project" : s.priority === 1 ? "global" : "repo"} />
-        <KV k="24h 命中" v={s.hits_24h} accent={s.hits_24h ? "var(--primary)" : undefined} />
-        <KV k="7d 命中"  v={s.hits_7d} />
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
+        gap: 8,
+        marginBottom: 20,
+      }}>
+        <SkillOverviewStat label="24h 命中" value={s.hits_24h} accent={s.hits_24h ? "var(--primary)" : undefined} />
+        <SkillOverviewStat label="7d 命中" value={s.hits_7d} />
+        <SkillOverviewStat label="字数" value={API.fmtNumber(s.chars)} sub="SKILL.md" />
       </div>
-      <div className="t-eyebrow" style={{ marginBottom: 8 }}>SKILL.md frontmatter</div>
-      <pre style={{
-        margin: 0, padding: "14px 16px",
-        fontFamily: "var(--font-mono)", fontSize: 11.5, lineHeight: 1.7,
-        color: "var(--ink-80)", whiteSpace: "pre-wrap",
-        background: "var(--pearl)", border: "1px solid var(--hairline)",
-        borderRadius: "var(--r-md)",
-      }}>{`---
-name: ${s.name}
-description: ${s.description}
-keywords: [${(s.keywords || []).map(k => `"${k}"`).join(", ")}]
----`}</pre>
+
+      <div className="t-eyebrow" style={{ marginBottom: 10 }}>文件</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+        <KV k="Skill"    v={sourceDir} />
+        <KV k="结构"     v={structureFile} />
+        <KV k="协议"     v="SKILL.md + structure.json" mono={false} />
+        <KV k="优先级"   v={s.priority === 0 ? "project" : s.priority === 1 ? "global" : "repo"} />
+      </div>
+
+      <div className="t-eyebrow" style={{ marginBottom: 10 }}>触发词</div>
+      {keywords.length ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {keywords.map(t => <span key={t} className="chip">{t}</span>)}
+        </div>
+      ) : (
+        <div className="t-meta">未配置关键词</div>
+      )}
+    </div>
+  );
+}
+
+function SkillOverviewStat({ label, value, sub, accent }) {
+  return (
+    <div style={{
+      padding: "12px 14px",
+      background: "var(--pearl)",
+      border: "1px solid var(--hairline)",
+      borderRadius: "var(--r-md)",
+      minWidth: 0,
+    }}>
+      <div className="t-eyebrow">{label}</div>
+      <div className="t-stat-sm" style={{ marginTop: 7, color: accent || "var(--ink)" }}>{value}</div>
+      {sub && <div className="t-meta" style={{ marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }

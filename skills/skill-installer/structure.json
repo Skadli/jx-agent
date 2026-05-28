@@ -1,0 +1,197 @@
+{
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "custom",
+      "position": {
+        "x": 0,
+        "y": 280
+      },
+      "data": {
+        "type": "trigger",
+        "title": "安装 Codex skill",
+        "desc": "列出、安装、从 GitHub 安装",
+        "raw": "用户要求列可安装 skill、安装 curated skill，或提供 GitHub repo/path 安装 skill。"
+      }
+    },
+    {
+      "id": "classify",
+      "type": "custom",
+      "position": {
+        "x": 300,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "判断安装来源",
+        "desc": "curated 或 GitHub",
+        "raw": "如果只是问可用项，列 curated；给 skill 名则从 curated 安装；给 repo/path/url 则按外部仓库安装。"
+      }
+    },
+    {
+      "id": "list",
+      "type": "custom",
+      "position": {
+        "x": 600,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "列出候选",
+        "desc": "带 installed 标注",
+        "raw": "使用 list-skills.py，默认 openai/skills 的 skills/.curated；实验技能使用 skills/.experimental。"
+      }
+    },
+    {
+      "id": "install",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "执行安装",
+        "desc": "下载或 git fallback",
+        "raw": "使用 install-skill-from-github.py。公共 repo 走 direct download，认证失败或权限问题 fallback 到 git sparse checkout。"
+      }
+    },
+    {
+      "id": "report",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 280
+      },
+      "data": {
+        "type": "output",
+        "title": "安装结果",
+        "desc": "提醒重启 Codex",
+        "raw": "安装后告知路径和结果，并提醒：Restart Codex to pick up new skills。"
+      }
+    },
+    {
+      "id": "res-list",
+      "type": "custom",
+      "position": {
+        "x": 600,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "scripts/list-skills.py",
+        "desc": "列技能",
+        "raw": "列出远端技能，并标注本机已安装项。"
+      }
+    },
+    {
+      "id": "res-install",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "scripts/install-skill-from-github.py",
+        "desc": "安装技能",
+        "raw": "支持 --repo/--path、--url、--ref、--dest、--method。"
+      }
+    },
+    {
+      "id": "tool-network",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 160
+      },
+      "data": {
+        "type": "tool",
+        "title": "network/GitHub",
+        "desc": "访问 openai/skills 或用户 repo",
+        "raw": "脚本会访问 GitHub API、下载 archive，必要时使用 git sparse checkout。"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-classify",
+      "source": "trigger",
+      "target": "classify",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-classify-list",
+      "source": "classify",
+      "target": "list",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-list-install",
+      "source": "list",
+      "target": "install",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-install-report",
+      "source": "install",
+      "target": "report",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-list-res-list",
+      "source": "list",
+      "target": "res-list",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    },
+    {
+      "id": "e-install-res-install",
+      "source": "install",
+      "target": "res-install",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    },
+    {
+      "id": "e-install-tool-network",
+      "source": "install",
+      "target": "tool-network",
+      "type": "custom",
+      "data": {
+        "kind": "tool"
+      }
+    }
+  ],
+  "meta": {
+    "structure_version": 2,
+    "skill_id": "skill-installer",
+    "skill_name": "skill-installer",
+    "description": "Install Codex skills into $CODEX_HOME/skills from curated list or GitHub repo path.",
+    "keywords": [],
+    "source": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\skill-installer\\SKILL.md",
+    "structure_file": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\skill-installer\\structure.json",
+    "raw_body": "# Skill Installer\n\nHelps install skills. By default these are from https://github.com/openai/skills/tree/main/skills/.curated, but users can also provide other locations.\n\nUse the helper scripts based on the task:\n- List skills when the user asks what is available, or if the user uses this skill without specifying what to do. Default listing is `.curated`, but you can pass `--path skills/.experimental` when they ask about experimental skills.\n- Install from the curated list when the user provides a skill name.\n- Install from another repo when the user provides a GitHub repo/path (including private repos).\n\nInstall skills with the helper scripts.\n\n## Communication\n\nWhen listing skills, output approximately as follows, depending on the context of the user's request. If they ask about experimental skills, list from `.experimental` instead of `.curated` and label the source accordingly:\n\"\"\"\nSkills from {repo}:\n1. skill-1\n2. skill-2 (already installed)\n3. ...\nWhich ones would you like installed?\n\"\"\"\n\nAfter installing a skill, tell the user: \"Restart Codex to pick up new skills.\"\n\n## Scripts\n\nAll of these scripts use network, so when running in the sandbox, request escalation when running them.\n\n- `scripts/list-skills.py` (prints skills list with installed annotations)\n- `scripts/list-skills.py --format json`\n- Example (experimental list): `scripts/list-skills.py --path skills/.experimental`\n- `scripts/install-skill-from-github.py --repo <owner>/<repo> --path <path/to/skill> [<path/to/skill> ...]`\n- `scripts/install-skill-from-github.py --url https://github.com/<owner>/<repo>/tree/<ref>/<path>`\n- Example (experimental skill): `scripts/install-skill-from-github.py --repo openai/skills --path skills/.experimental/<skill-name>`\n\n## Behavior and Options\n\n- Defaults to direct download for public GitHub repos.\n- If download fails with auth/permission errors, falls back to git sparse checkout.\n- Aborts if the destination skill directory already exists.\n- Installs into `$CODEX_HOME/skills/<skill-name>` (defaults to `~/.codex/skills`).\n- Multiple `--path` values install multiple skills in one run, each named from the path basename unless `--name` is supplied.\n- Options: `--ref <ref>` (default `main`), `--dest <path>`, `--method auto|download|git`.\n\n## Notes\n\n- Curated listing is fetched from `https://github.com/openai/skills/tree/main/skills/.curated` via the GitHub API. If it is unavailable, explain the error and exit.\n- Private GitHub repos can be accessed via existing git credentials or optional `GITHUB_TOKEN`/`GH_TOKEN` for download.\n- Git fallback tries HTTPS first, then SSH.\n- The skills at https://github.com/openai/skills/tree/main/skills/.system are preinstalled, so no need to help users install those. If they ask, just explain this. If they insist, you can download and overwrite.\n- Installed annotations come from `$CODEX_HOME/skills`.\n",
+    "has_workflow": true,
+    "warnings": [],
+    "step_count": 3,
+    "tool_count": 1,
+    "subagent_count": 0,
+    "resource_count": 2
+  }
+}

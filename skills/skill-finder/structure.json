@@ -1,0 +1,358 @@
+{
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "custom",
+      "position": {
+        "x": 0,
+        "y": 280
+      },
+      "data": {
+        "type": "trigger",
+        "title": "能力缺口触发",
+        "desc": "找、比较、安装 skill",
+        "raw": "用户问怎么做某事、是否有 skill、需要更好工具、想安装能力，或描述重复工作/当前 skill 不够用。"
+      }
+    },
+    {
+      "id": "memory",
+      "type": "custom",
+      "position": {
+        "x": 300,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "读取本地偏好",
+        "desc": "~/skill-finder/memory.md",
+        "raw": "先检查 source mode、preferences、liked/passed skills；没有 memory 时运行 setup.md 创建。"
+      }
+    },
+    {
+      "id": "understand",
+      "type": "custom",
+      "position": {
+        "x": 600,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "理解真实需求",
+        "desc": "按任务而不是名字搜索",
+        "raw": "把“PDF”拆成编辑、创建、解析等真实需求；查询要具体，避免泛词噪声。"
+      }
+    },
+    {
+      "id": "search",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "搜索两个来源",
+        "desc": "ClawHub + Skills.sh",
+        "raw": "默认同时搜索 ClawHub 和 Skills.sh；尊重用户保存的 source mode。每个结果保留来源和安装命令。"
+      }
+    },
+    {
+      "id": "evaluate",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "评估候选",
+        "desc": "质量、维护、风险",
+        "raw": "检查描述清晰度、下载量、更新时间、作者/仓库信誉、安装摩擦和安全扫描风险。"
+      }
+    },
+    {
+      "id": "recommend",
+      "type": "custom",
+      "position": {
+        "x": 1500,
+        "y": 280
+      },
+      "data": {
+        "type": "step",
+        "title": "比较并给决策",
+        "desc": "Top 1-3 + winner",
+        "raw": "不要倾倒列表。说明最佳匹配为什么赢、适用人群、tradeoffs 和精确安装命令。"
+      }
+    },
+    {
+      "id": "install-or-fallback",
+      "type": "custom",
+      "position": {
+        "x": 300,
+        "y": 660
+      },
+      "data": {
+        "type": "step",
+        "title": "安装或兜底",
+        "desc": "只在用户确认后安装",
+        "raw": "风险、路径不清或匹配弱时说明原因并给安全替代；没有强结果就直接帮助或建议创建 skill。"
+      }
+    },
+    {
+      "id": "learn",
+      "type": "custom",
+      "position": {
+        "x": 600,
+        "y": 660
+      },
+      "data": {
+        "type": "step",
+        "title": "记录显式反馈",
+        "desc": "更新 source mode 和偏好",
+        "raw": "只记录用户明确表达的偏好、liked/passed，不从行为里猜隐藏偏好。"
+      }
+    },
+    {
+      "id": "output",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 660
+      },
+      "data": {
+        "type": "output",
+        "title": "推荐格式",
+        "desc": "Best fit / Source / Why / Install",
+        "raw": "输出包含最佳候选、来源、胜出理由、安装命令、取舍、备选项和下一步。"
+      }
+    },
+    {
+      "id": "tool-clawhub",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 160
+      },
+      "data": {
+        "type": "tool",
+        "title": "npx clawhub",
+        "desc": "search / inspect / install",
+        "raw": "用于 ClawHub curated registry。"
+      }
+    },
+    {
+      "id": "tool-skills",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 160
+      },
+      "data": {
+        "type": "tool",
+        "title": "npx skills",
+        "desc": "find / add / list / check",
+        "raw": "用于 Skills.sh ecosystem。"
+      }
+    },
+    {
+      "id": "res-memory",
+      "type": "custom",
+      "position": {
+        "x": 300,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "memory-template.md",
+        "desc": "偏好模板",
+        "raw": "本地 source mode、preferences、liked/passed skills 的模板。"
+      }
+    },
+    {
+      "id": "res-search",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "search.md",
+        "desc": "搜索策略",
+        "raw": "不同领域如何构造 ClawHub / Skills.sh 查询。"
+      }
+    },
+    {
+      "id": "res-evaluate",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "evaluate.md",
+        "desc": "评估标准",
+        "raw": "判断候选是否足够可靠、适配和安全。"
+      }
+    },
+    {
+      "id": "res-trouble",
+      "type": "custom",
+      "position": {
+        "x": 1500,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "troubleshooting.md",
+        "desc": "边界情况",
+        "raw": "无强结果、结果过多、安装歧义、风险警告等。"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-memory",
+      "source": "trigger",
+      "target": "memory",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-memory-understand",
+      "source": "memory",
+      "target": "understand",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-understand-search",
+      "source": "understand",
+      "target": "search",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-search-evaluate",
+      "source": "search",
+      "target": "evaluate",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-evaluate-recommend",
+      "source": "evaluate",
+      "target": "recommend",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-recommend-install-or-fallback",
+      "source": "recommend",
+      "target": "install-or-fallback",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-install-or-fallback-learn",
+      "source": "install-or-fallback",
+      "target": "learn",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-learn-output",
+      "source": "learn",
+      "target": "output",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-search-tool-clawhub",
+      "source": "search",
+      "target": "tool-clawhub",
+      "type": "custom",
+      "data": {
+        "kind": "tool"
+      }
+    },
+    {
+      "id": "e-search-tool-skills",
+      "source": "search",
+      "target": "tool-skills",
+      "type": "custom",
+      "data": {
+        "kind": "tool"
+      }
+    },
+    {
+      "id": "e-memory-res-memory",
+      "source": "memory",
+      "target": "res-memory",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    },
+    {
+      "id": "e-search-res-search",
+      "source": "search",
+      "target": "res-search",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    },
+    {
+      "id": "e-evaluate-res-evaluate",
+      "source": "evaluate",
+      "target": "res-evaluate",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    },
+    {
+      "id": "e-install-or-fallback-res-trouble",
+      "source": "install-or-fallback",
+      "target": "res-trouble",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    }
+  ],
+  "meta": {
+    "structure_version": 2,
+    "skill_id": "skill-finder",
+    "skill_name": "Skill Finder (Find ClawHub skills + Search Skills.sh)",
+    "description": "Find, compare, and install agent skills across ClawHub and Skills.sh when the user needs new capabilities or safer alternatives.",
+    "keywords": [],
+    "source": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\skill-finder\\SKILL.md",
+    "structure_file": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\skill-finder\\structure.json",
+    "raw_body": "## When to Use\n\nUser asks how to do something, wonders whether a skill exists, wants a new capability, or asks for the best skill for a job. Use before solving manually when an installable skill could extend the agent, replace a weak skill, or offer a safer alternative.\n\n## Architecture\n\nMemory lives in `~/skill-finder/`. If `~/skill-finder/` does not exist or is empty, run `setup.md`.\n\n```\n~/skill-finder/\n├── memory.md     # Source mode + preferences + liked/passed skills\n└── searches.md   # Recent search history (optional)\n```\n\n## Migration\n\nIf upgrading from a previous version, see `migration.md` for data migration steps.\nThe agent MUST check for legacy memory structure before proceeding.\n\n## Quick Reference\n\n| Topic | File |\n|-------|------|\n| Setup | `setup.md` |\n| Memory template | `memory-template.md` |\n| Search strategies | `search.md` |\n| Evaluation criteria | `evaluate.md` |\n| Skill categories | `categories.md` |\n| Edge cases | `troubleshooting.md` |\n\n## Activation Signals\n\nActivate when the user says things like:\n- \"How do I do X?\"\n- \"Is there a skill for this?\"\n- \"Can you do this better?\"\n- \"Find a skill for X\"\n- \"I need a safer or more maintained option\"\n- \"What should I install for this task?\"\n\nAlso activate when the user describes a missing capability, a repetitive workflow, or frustration with a current skill.\n\n## Search Sources\n\nThis skill can search two ecosystems:\n\n| Source | Search | Install | Best for |\n|--------|--------|---------|----------|\n| `ClawHub` | `npx clawhub search \"query\"` | `npx clawhub install <slug>` | Curated registry search with built-in inspection |\n| `Skills.sh` | `npx skills find [query]` | `npx skills add <owner/repo@skill>` | Broad open ecosystem from the `skills` CLI |\n\nDefault mode: search **both** sources, then compare results together.\n\nConfigurable modes:\n- `both` — recommended default\n- `clawhub` — only search ClawHub\n- `skills.sh` — only search the Skills.sh ecosystem\n\nStore the current mode in `~/skill-finder/memory.md`. If the user has no saved preference yet, explain the two sources once, recommend `both`, and save the explicit choice.\n\n## Security Note\n\nThis skill uses `npx clawhub` and `npx skills` to discover and install skills from two different ecosystems. Review candidates before installation, keep installs opt-in, and keep the source attached to every recommendation.\n\n## Data Storage\n\nThis skill stores local preference data in `~/skill-finder/`:\n- Source mode, explicit preferences, liked skills, and passed skills in the local memory file inside `~/skill-finder/`\n- Optional recent search history in a local search log inside `~/skill-finder/`\n\nCreate on first use: `mkdir -p ~/skill-finder`\n\n## Core Rules\n\n### 1. Search Both Sources by Default\nUnless the user has explicitly chosen otherwise, search `ClawHub` and `Skills.sh` for the same need, then compare the strongest results together.\n\nNever assume a `Skills.sh` result can be installed with `clawhub`, or the reverse. Keep the source and install command attached to every recommendation.\n\n### 2. Trigger on Capability Gaps, Not Just Explicit Search Requests\nDo not wait only for \"find a skill.\" Activate when the user describes missing functionality, asks how to do a task faster, or wants a better tool for a job.\n\n### 3. Search by Need, Not Name\nUser says \"help with PDFs\" - think about what they actually need:\n- Edit? -> `npx clawhub search \"pdf edit\"` and `npx skills find pdf edit`\n- Create? -> `npx clawhub search \"pdf generate\"` and `npx skills find pdf generate`\n- Extract? -> `npx clawhub search \"pdf parse\"` and `npx skills find pdf parse`\n\n### 4. Evaluate Before Recommending\nNever recommend blindly. Inspect strong candidates and check `evaluate.md` criteria:\n- Description clarity\n- Download count (popularity = maintenance)\n- Last update (recent = active)\n- Author or repository reputation\n- Install scope and friction\n\nFor `Skills.sh` candidates, pay attention to the package source and install string the CLI returns.\n\n### 5. Present a Decision, Not a Dump\nDon't just list skills. Explain why each fits, who it is best for, and why the winner wins:\n> \"Best fit: `pdf-editor` from ClawHub — handles form filling and annotations, 2.3k downloads, updated last week. Matches your need for editing contracts better than the Skills.sh options.\"\n\nWhen there are multiple good fits, rank the top 1-3 and call out tradeoffs clearly.\n\n### 6. Learn Preferences and Source Mode\nWhen user explicitly states what they value, confirm and update `~/skill-finder/memory.md`:\n- \"Search both by default\" -> set source mode to `both`\n- \"Only use Skills.sh for this workspace\" -> set source mode to `skills.sh`\n- \"Only check ClawHub\" -> set source mode to `clawhub`\n- \"I prefer minimal skills\" -> add to Preferences\n- \"This one is great\" -> add to Liked with reason\n- \"Too verbose\" -> add to Passed with reason\n\nDo not infer hidden preferences from behavior-only signals.\n\n### 7. Check Memory First\nBefore recommending, read memory.md:\n- Respect saved source mode unless the user overrides it\n- Skip skills similar to Passed ones\n- Favor qualities from Liked ones\n- Apply stated Preferences\n\n### 8. Respect Installation and Security Boundaries\nIf a candidate skill is marked risky by scanner output, or the install path is unclear:\n- Explain the warning or ambiguity first\n- Prefer a safer alternative\n- Do not run force-install flags for the user\n- Do not auto-accept install prompts with `-y`\n- Do not choose global install scope unless the user explicitly wants it\n- Install only with explicit user consent\n\n### 9. Fallback Gracefully\nIf nothing is strong enough:\n- Say what was searched\n- Say which source mode was used\n- Explain why the matches are weak\n- Help directly or suggest creating a purpose-built skill\n\n## Search Commands\n\n```bash\n# ClawHub search and inspect\nnpx clawhub search \"query\"\nnpx clawhub inspect <slug>\nnpx clawhub install <slug>\nnpx clawhub list\n\n# Skills.sh ecosystem\nnpx skills find [query]\nnpx skills add <owner/repo@skill>\nnpx skills list\nnpx skills check\nnpx skills update\n\n# Example install string returned by `npx skills find`\nnpx skills add vercel-labs/agent-skills@vercel-react-best-practices\n```\n\n## Workflow\n\n1. **Detect** - Is the user describing a capability gap or installable need?\n2. **Load memory** - Read `~/skill-finder/memory.md` for source mode and preferences\n3. **Understand** - What does user actually need?\n4. **Search** - Use `both` by default, or the saved single-source mode\n5. **Evaluate** - Check quality signals (see `evaluate.md`)\n6. **Compare** - Rank results across both sources by fit + quality\n7. **Recommend** - Top 1-3 with clear reasoning and a winner\n8. **Install or fallback** - Install only with consent, otherwise help directly\n9. **Learn** - Store explicit feedback in memory\n\n## Recommendation Format\n\nWhen presenting results, prefer this structure:\n\n```text\nBest fit: <slug or owner/repo@skill>\nSource: <ClawHub or Skills.sh>\nWhy it wins: <1-2 lines>\nInstall: <exact command>\nTradeoffs: <what it does not cover or where alternative is stronger>\nAlternatives: <slug>, <slug>\nNext step: Install now or continue without installing\n```\n\n## Common Traps\n\n- Waiting for the exact phrase \"find a skill\" -> misses proactive discovery moments\n- Searching generic terms -> gets noise. Be specific: \"react testing\" not \"testing\"\n- Searching only one ecosystem when the saved mode is `both`\n- Recommending by name match only -> misses better alternatives with different names\n- Mixing install commands between `ClawHub` and `Skills.sh`\n- Ignoring download counts -> low downloads often means abandoned\n- Not checking last update -> outdated skills cause problems\n\n## Security & Privacy\n\n**Data that leaves your machine:**\n- Search queries sent to ClawHub registry (public search)\n- Search queries sent through the `skills` CLI / Skills.sh ecosystem\n\n**Data that stays local:**\n- All preferences in `~/skill-finder/memory.md`\n- Search history (if enabled)\n\n**This skill does NOT:**\n- Install skills without user consent\n- Use force-install flags to skip scanner warnings\n- Auto-confirm `npx skills add` with `-y`\n- Switch to global install scope silently\n- Collect hidden behavior data\n- Access files outside `~/skill-finder/`\n\n## Related Skills\nInstall with `npx clawhub install <slug>` if user confirms:\n- `skill-manager` — manages installed skills, suggests updates\n- `skill-builder` — creates new skills from scratch\n- `skill-update` — updates existing skills\n\n## Feedback\n\n- If useful: `clawhub star skill-finder`\n- Stay updated: `clawhub sync`\n",
+    "has_workflow": true,
+    "warnings": [],
+    "step_count": 7,
+    "tool_count": 2,
+    "subagent_count": 0,
+    "resource_count": 4
+  }
+}
