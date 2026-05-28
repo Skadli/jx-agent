@@ -250,13 +250,11 @@ def make_memory_modify_handler(
 
 
 def _rebuild_memdir_index(memdir_loader: MemdirLoader) -> None:
-    """删除后重建 MEMORY.md 索引；逐条 entry 重新写。"""
-    from sanshiliu.memory.longterm.memdir import _INDEX_FILE
+    """删除后重建 MEMORY.md 索引；委托 memdir.rebuild_index_file（权威、与写入路径统一格式）。"""
+    from sanshiliu.memory.longterm.memdir import rebuild_index_file
     memdir_loader.invalidate()
     snap = memdir_loader.load()
-    lines = [e.index_line() for e in snap.entries]
-    path = memdir_loader.root / _INDEX_FILE
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    rebuild_index_file(memdir_loader.root, snap.entries)
 
 
 # ────────── POST /api/skills/reload ──────────

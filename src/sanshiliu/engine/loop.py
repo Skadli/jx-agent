@@ -21,7 +21,7 @@ from sanshiliu.llm.stream import StreamDelta
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.consolidate import MemoryConsolidator
 from sanshiliu.memory.longterm.extract import MemoryExtractor
-from sanshiliu.memory.longterm.memdir import MemdirLoader
+from sanshiliu.memory.longterm.memdir import MemdirLoader, format_index_lines
 from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.storage.db import Database
@@ -34,6 +34,14 @@ _logger = get_logger(__name__)
 # 同一 (name, args) 触发 dedupe 的次数；> 此值的同一调用拒绝执行
 # fail-fast：相同调用第 3 次直接拒（前 2 次允许，第 3 次返"重复"错误）
 _DEDUPE_THRESHOLD = 2
+
+# 长期记忆索引注入 system_prompt 的说明头：告诉模型这是它的记忆目录、怎么用。
+_MEMORY_INDEX_HEADER = (
+    "# 你的长期记忆 · 索引\n"
+    "下面是你已沉淀的长期记忆（只列名字+摘要，不含正文）。聊天中命中某条主题时，"
+    '先调 LoadMemory({"name":"<name>"}) 读出该条完整内容再据此回应——'
+    "这些是你真实的记忆，应主动参考，别装不知道。"
+)
 
 
 def _flatten_user_text(content: MessageContent) -> str:
@@ -151,10 +159,11 @@ class ConversationEngine:
         if self._memdir_loader is not None:
             try:
                 mem_snap = self._memdir_loader.get()
-                if mem_snap.index_text.strip():
-                    parts.append(
-                        "# Long-term Memory Index (memdir)\n\n" + mem_snap.index_text.strip()
-                    )
+                # 从真实记忆条目现生成索引（权威，不依赖手维护的 MEMORY.md 漂移），
+                # 配说明头让模型知道这是它的记忆目录、可调 LoadMemory 读正文。
+                index_body = format_index_lines(mem_snap.entries)
+                if index_body:
+                    parts.append(_MEMORY_INDEX_HEADER + "\n\n" + index_body)
             except Exception as exc:
                 _logger.warning("memdir 读失败（不阻塞）", error=str(exc))
         # Recent Sessions：仅在 db 装配时尝试；任何异常都不阻塞主对话

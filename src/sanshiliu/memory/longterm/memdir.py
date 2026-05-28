@@ -10,7 +10,6 @@ from sanshiliu.foundation.frontmatter import parse
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.memory.longterm.wiki_link import parse_links
 from sanshiliu.memory.types import (
-    MEMORY_INDEX_MAX_LINES,
     MEMORY_TYPES,
     MemoryEntry,
     MemorySnapshot,
@@ -73,6 +72,19 @@ def _entry_from_file(path: Path) -> MemoryEntry | None:
     )
 
 
+def _scan_entries(root: Path) -> list[MemoryEntry]:
+    """扫 memdir 目录所有 *.md（除 MEMORY.md 自身）→ MemoryEntry 列表，跳过解析失败的。"""
+    entries: list[MemoryEntry] = []
+    if root.is_dir():
+        for path in sorted(root.glob("*.md")):
+            if path.name == _INDEX_FILE:
+                continue
+            entry = _entry_from_file(path)
+            if entry is not None:
+                entries.append(entry)
+    return entries
+
+
 class MemdirLoader:
     """单目录 memdir 加载器；扫所有 *.md（除 MEMORY.md 自身）拼 MemorySnapshot。"""
 
@@ -85,14 +97,7 @@ class MemdirLoader:
         return self._root
 
     def load(self) -> MemorySnapshot:
-        entries: list[MemoryEntry] = []
-        if self._root.is_dir():
-            for path in sorted(self._root.glob("*.md")):
-                if path.name == _INDEX_FILE:
-                    continue
-                entry = _entry_from_file(path)
-                if entry is not None:
-                    entries.append(entry)
+        entries = _scan_entries(self._root)
         index_text = self._read_index()
         snap = MemorySnapshot(entries=entries, index_text=index_text, memdir_root=self._root)
         self._cache = snap
@@ -123,20 +128,33 @@ class MemdirLoader:
             return ""
 
 
-def append_index_line(memdir_root: Path, line: str) -> None:
-    """追加一行到 MEMORY.md；超过 200 行只打日志 warning 建议 consolidate，不硬截断。"""
+def format_index_lines(entries: list[MemoryEntry]) -> str:
+    """从真实记忆条目生成权威索引文本（不依赖手维护的 MEMORY.md，避免漂移）。
+
+    每条一行：`- [name](file) · type[, 标志] — description`，含 name/链接/metadata/描述。
+    """
+    lines: list[str] = []
+    for e in entries:
+        file_name = e.file_path.name or f"{e.memory_type}_{e.name}.md"
+        meta: str = e.memory_type
+        if e.protected:
+            meta += ", protected"
+        if e.confidence is not None:
+            meta += f", confidence={e.confidence:g}"
+        desc = e.description.strip().replace("\n", " ")
+        lines.append(f"- [{e.name}]({file_name}) · {meta} — {desc}")
+    return "\n".join(lines)
+
+
+def rebuild_index_file(memdir_root: Path, entries: list[MemoryEntry] | None = None) -> None:
+    """从真实记忆文件重建 MEMORY.md（权威，修复手维护漂移）。entries 缺省则现扫目录。"""
     memdir_root.mkdir(parents=True, exist_ok=True)
+    if entries is None:
+        entries = _scan_entries(memdir_root)
+    body = format_index_lines(entries)
+    header = "<!-- 本文件由代码自动维护：扫描 memdir/*.md 重建，勿手改。 -->\n\n"
     path = memdir_root / _INDEX_FILE
-    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-    lines = [ln for ln in existing.splitlines() if ln.strip() and not ln.startswith("<!--")]
-    lines.append(line.rstrip())
-    if len(lines) > MEMORY_INDEX_MAX_LINES:
-        _logger.warning(
-            "MEMORY.md 索引超 200 行，建议跑 /memory consolidate",
-            lines=len(lines),
-        )
-    body = "\n".join(lines) + "\n"
-    path.write_text(body, encoding="utf-8")
+    path.write_text(header + body + ("\n" if body else ""), encoding="utf-8")
 
 
 def write_memory_file(memdir_root: Path, entry: MemoryEntry, body: str | None = None) -> Path:
@@ -161,5 +179,6 @@ def write_memory_file(memdir_root: Path, entry: MemoryEntry, body: str | None = 
     fm_lines.append("---")
     full = "\n".join(fm_lines) + "\n\n" + (body or entry.body or "").strip() + "\n"
     file_path.write_text(full, encoding="utf-8")
-    append_index_line(memdir_root, entry.index_line())
+    # 重扫全部条目重建索引（权威，含刚写入的这条 + 修复历史漂移），替代盲目 append。
+    rebuild_index_file(memdir_root)
     return file_path

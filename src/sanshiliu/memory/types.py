@@ -28,12 +28,6 @@ class MemoryEntry:
     file_path: Path = field(default_factory=Path)
     wiki_links: list[str] = field(default_factory=list)
 
-    def index_line(self) -> str:
-        """MEMORY.md 索引行格式（Claude 协议）：- [name](file.md) — description（一行一条）。"""
-        desc = self.description.strip().replace("\n", " ")[:120]
-        file_name = self.file_path.name or f"{self.memory_type}_{self.name}.md"
-        return f"- [{self.name}]({file_name}) — {desc}"
-
 
 @dataclass(frozen=True)
 class MemorySnapshot:
