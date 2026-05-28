@@ -4,7 +4,8 @@
 - 默认 sentinel：``<MSG>``
 - 代码块（三反引号 ``` 包围）内部的 sentinel **失效**——防止配音脚本被错切。
 - 输出每段 strip；空段过滤。
-- 没有 sentinel 时返回 ``[text.strip()]`` 单元素列表（向后兼容旧逻辑）。
+- 没有 sentinel 时默认返回 ``[text.strip()]`` 单元素列表（向后兼容旧逻辑）；
+  channel 可显式开启段落兜底，按空行拆分非代码块内容。
 - text 为空或全空白时返回空列表。
 
 两种 API：
@@ -41,7 +42,12 @@ def _find_next_split(text: str, sentinel: str) -> int:
     return -1
 
 
-def split_messages(text: str, *, sentinel: str = DEFAULT_SENTINEL) -> list[str]:
+def split_messages(
+    text: str,
+    *,
+    sentinel: str = DEFAULT_SENTINEL,
+    paragraph_fallback: bool = False,
+) -> list[str]:
     """把 text 按 sentinel 拆成多条消息；代码块内 sentinel 失效。
 
     一次性 API。若代码块未闭合，剩余段全部作为最后一条返回（不丢字）。
@@ -49,6 +55,10 @@ def split_messages(text: str, *, sentinel: str = DEFAULT_SENTINEL) -> list[str]:
     if not text or not text.strip():
         return []
     if sentinel not in text:
+        if paragraph_fallback:
+            parts = _split_paragraphs_outside_code(text)
+            if len(parts) > 1:
+                return parts
         return [text.strip()]
 
     out: list[str] = []
@@ -64,6 +74,38 @@ def split_messages(text: str, *, sentinel: str = DEFAULT_SENTINEL) -> list[str]:
     rest = cur.strip()
     if rest:
         out.append(rest)
+    return out
+
+
+def _split_paragraphs_outside_code(text: str) -> list[str]:
+    """按空行拆段，但不拆三反引号代码块内部内容。"""
+    out: list[str] = []
+    buf: list[str] = []
+    in_code = False
+
+    def flush() -> None:
+        seg = "\n".join(buf).strip()
+        if seg:
+            out.append(seg)
+        buf.clear()
+
+    for line in text.splitlines():
+        if not in_code and not line.strip():
+            flush()
+            continue
+        buf.append(line)
+
+        # A line may technically contain more than one fence; toggle once per
+        # occurrence so inline examples still keep the parser consistent.
+        search_from = 0
+        while True:
+            pos = line.find(_FENCE, search_from)
+            if pos < 0:
+                break
+            in_code = not in_code
+            search_from = pos + len(_FENCE)
+
+    flush()
     return out
 
 
@@ -85,8 +127,15 @@ class StreamingSplitter:
     - 跨 chunk 的 ``` 或 sentinel 会被正确处理（依赖 _find_next_split 重新扫描 buf）。
     """
 
-    def __init__(self, *, sentinel: str = DEFAULT_SENTINEL) -> None:
+    def __init__(
+        self,
+        *,
+        sentinel: str = DEFAULT_SENTINEL,
+        paragraph_fallback: bool = False,
+    ) -> None:
         self._sentinel = sentinel
+        self._paragraph_fallback = paragraph_fallback
+        self._saw_sentinel = False
         self._buf: str = ""
 
     def feed(self, chunk: str) -> list[str]:
@@ -99,7 +148,13 @@ class StreamingSplitter:
         """流结束；返回 buffer 剩余段（若有）。"""
         rest = self._buf.strip()
         self._buf = ""
-        return [rest] if rest else []
+        if not rest:
+            return []
+        if self._paragraph_fallback and not self._saw_sentinel:
+            parts = _split_paragraphs_outside_code(rest)
+            if len(parts) > 1:
+                return parts
+        return [rest]
 
     def _drain(self) -> list[str]:
         out: list[str] = []
@@ -112,4 +167,5 @@ class StreamingSplitter:
             if seg:
                 out.append(seg)
             self._buf = self._buf[pos + len(self._sentinel):]
+            self._saw_sentinel = True
         return out

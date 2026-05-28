@@ -272,12 +272,13 @@ class WechatBot:
         """发出 + 落出站日志；iLink 故障不阻塞队列消费。
 
         若 text 含 <MSG> sentinel，按段拆成多条独立消息背靠背发送（无延迟）。
+        若模型漏写 <MSG> 但用空行自然分段，微信侧按空行兜底拆分；代码块内不拆。
         每段独立落出站日志，便于回放对应原始消息。
         """
         if not text:
             return
         target = item.group_id or item.user_id
-        segments = split_messages(text)
+        segments = split_messages(text, paragraph_fallback=True)
         if not segments:
             return
         for seg in segments:

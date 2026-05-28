@@ -371,7 +371,7 @@ def make_chat_handler(
                         sse_q.put(SENTINEL)
                         return
 
-                sp = StreamingSplitter()
+                sp = StreamingSplitter(paragraph_fallback=True)
                 first_segment = True
                 async for delta in engine.stream_turn(session, user_content):
                     for seg in sp.feed(delta.text):

@@ -1,6 +1,6 @@
 # Humanizer
 
-A conversational-response skill for making the assistant's own replies sound natural, direct, and context-aware.
+A conversational-response skill for making an AI assistant's own replies sound natural, direct, and context-aware.
 
 This is not a default text-rewriting workflow. It should shape how the AI answers questions, explains decisions, reports work, gives advice, or chats with a user. It only rewrites user-provided text when the user explicitly asks for editing or rewriting.
 

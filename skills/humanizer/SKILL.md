@@ -1,10 +1,11 @@
 ---
 name: humanizer
 description: >-
-  Use when Codex is composing conversational replies to users: answering
-  questions, explaining, advising, brainstorming, summarizing, or chatting. Make
-  the assistant's own response sound natural, direct, context-aware, and human
-  without rewriting the user's text unless the user explicitly asks for editing.
+  Use when an AI assistant is composing conversational replies to users:
+  answering questions, explaining, advising, brainstorming, summarizing, or
+  chatting. Make the assistant's own response sound natural, direct,
+  context-aware, and human without rewriting the user's text unless the user
+  explicitly asks for editing.
 ---
 
 # Humanizer: conversational replies
@@ -73,7 +74,7 @@ End when the useful answer is complete.
 4. Cut filler, ceremony, repeated claims, and generic encouragement.
 5. Read the final answer once as if speaking to the user; tighten anything that sounds staged.
 
-## Coding-agent adaptation
+## Work-report adaptation
 
 When reporting work:
 
