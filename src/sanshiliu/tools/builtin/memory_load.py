@@ -50,6 +50,8 @@ def _render_memdir(entry: MemoryEntry) -> str:
         lines.append(f"source: {entry.source}")
     if entry.confidence is not None:
         lines.append(f"confidence: {entry.confidence}")
+    if entry.apply is not None:
+        lines.append(f"apply: {entry.apply}")
     if entry.protected:
         lines.append("protected: true")
     lines.append("---")

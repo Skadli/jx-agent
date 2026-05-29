@@ -6,14 +6,20 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sanshiliu.foundation.errors import ConfigError, LLMError
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.llm.client import LLMClient
 from sanshiliu.llm.router import LLMRouter
 from sanshiliu.memory.longterm.memdir import write_memory_file
-from sanshiliu.memory.types import MEMORY_TYPES, MemoryEntry, MemoryType
+from sanshiliu.memory.types import (
+    MEMORY_APPLIES,
+    MEMORY_TYPES,
+    MemoryApply,
+    MemoryEntry,
+    MemoryType,
+)
 
 _logger = get_logger(__name__)
 
@@ -63,6 +69,10 @@ def _coerce_entry(item: dict[str, Any]) -> MemoryEntry | None:
     if not isinstance(mtype_raw, str) or mtype_raw not in MEMORY_TYPES:
         return None
     mtype: MemoryType = mtype_raw
+    apply: MemoryApply | None = None
+    apply_raw = metadata.get("apply") if isinstance(metadata, dict) else None
+    if isinstance(apply_raw, str) and apply_raw.strip().lower() in MEMORY_APPLIES:
+        apply = cast(MemoryApply, apply_raw.strip().lower())
     conf_raw = item.get("confidence")
     try:
         conf = float(conf_raw) if conf_raw is not None else None
@@ -80,6 +90,7 @@ def _coerce_entry(item: dict[str, Any]) -> MemoryEntry | None:
         memory_type=mtype,
         body=body,
         confidence=conf,
+        apply=apply,
         source="auto-extract",
         protected=False,
     )

@@ -9,6 +9,8 @@ from typing import Literal
 # 4 类与 Claude 一致：user 偏好 / feedback 反馈 / project 项目 / reference 参考
 MemoryType = Literal["user", "feedback", "project", "reference"]
 MEMORY_TYPES: tuple[MemoryType, ...] = ("user", "feedback", "project", "reference")
+MemoryApply = Literal["always"]
+MEMORY_APPLIES: tuple[MemoryApply, ...] = ("always",)
 
 # MEMORY.md 索引最大行数；超过截断并加 WARNING（prd 7-V5）
 MEMORY_INDEX_MAX_LINES = 200
@@ -24,6 +26,7 @@ class MemoryEntry:
     body: str = ""
     source: str | None = None
     confidence: float | None = None
+    apply: MemoryApply | None = None
     protected: bool = False
     file_path: Path = field(default_factory=Path)
     wiki_links: list[str] = field(default_factory=list)

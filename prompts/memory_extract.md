@@ -17,7 +17,7 @@
   {
     "name": "短标识，5-20 字符，仅小写字母/数字/短横线",
     "description": "一句话摘要，≤ 80 字",
-    "metadata": { "type": "user | feedback | project | reference" },
+    "metadata": { "type": "user | feedback | project | reference", "apply": "always 可选" },
     "confidence": 0.0-1.0,
     "body": "完整内容；详见下方 4 类语义中的 body 模板"
   }
@@ -51,6 +51,15 @@
 - **reference**：客观事实、链接、专业知识（"DeepSeek API base url 是 https://api.deepseek.com"）
   - body 自由文本即可
   - 涉及代码符号（函数/文件/flag）时建议附 Verify 行，见严格规则 (d)
+
+## metadata.apply=always（可选）
+
+只有当这条记忆是**每轮对话都必须直接遵守**的用户偏好/称呼/语气/格式/行为规则时，才在 `metadata` 中写 `"apply":"always"`。
+
+- 典型应标记：用户说"以后叫我大哥"、"以后回答短一点"、"短句末尾别加句号"、"默认用 PowerShell 命令"。
+- 不应标记：项目背景、参考资料、一次性任务、代码路径、当前排查进度、只在少数场景才可能用到的信息。
+- 标记 `apply=always` 的 body 必须写清楚如何执行；feedback / project 仍按模板写 `**Why:**` + `**How to apply:**`。
+- 未标记 `apply=always` 的条目只进入 MEMORY.md 索引；需要正文时由后续 agent 调用 `LoadMemory({"name":"<name>"})` 查看。
 
 ## 严格规则
 
@@ -104,4 +113,5 @@ body 中若提到具体函数/文件/flag/工具名（如 `bash_exec`、`engine/
 ❌ `{"name":"用户问了 N+1 问题","..."}` —— 一次性技术问题，无需长期记
 ❌ `{"name":"...","confidence":0.3}` —— confidence 太低
 ❌ `{"name":"engine-loop-dedupe","metadata":{"type":"reference"},"body":"engine/loop.py 第 4 次重复 tool_call 触发 dedupe..."}` —— 这是代码模式，CLAUDE.md 已记，违反 (e)
-✅ `{"name":"prefer-short-replies","description":"用户多次要求回复保持简短","metadata":{"type":"feedback"},"confidence":0.85,"body":"**Why:** 用户在 3 次对话（2026-05-20 / 05-22 / 05-25）提到希望回复短一点，confirmed-judgment。\n**How to apply:** 所有 assistant 回复默认 ≤ 5 句，长答必要时分多条。"}`
+✅ `{"name":"prefer-short-replies","description":"用户多次要求回复保持简短","metadata":{"type":"feedback","apply":"always"},"confidence":0.85,"body":"**Why:** 用户在 3 次对话（2026-05-20 / 05-22 / 05-25）提到希望回复短一点，confirmed-judgment。\n**How to apply:** 所有 assistant 回复默认 ≤ 5 句，长答必要时分多条。"}`
+✅ `{"name":"user-call-dage","description":"用户希望每次被称呼为大哥","metadata":{"type":"user","apply":"always"},"confidence":0.95,"body":"**How to apply:** 每次开启新对话或直接称呼用户时，称呼用户为大哥。"}`

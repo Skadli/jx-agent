@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sanshiliu.foundation.frontmatter import parse
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.memory.longterm.wiki_link import parse_links
 from sanshiliu.memory.types import (
+    MEMORY_APPLIES,
     MEMORY_TYPES,
+    MemoryApply,
     MemoryEntry,
     MemorySnapshot,
     MemoryType,
@@ -20,6 +22,19 @@ _logger = get_logger(__name__)
 
 # MEMORY.md 文件名固定
 _INDEX_FILE = "MEMORY.md"
+_INDEX_HEADER = """<!-- 本文件由代码自动维护：扫描 memdir/*.md 重建，勿手改。 -->
+
+# MEMORY.md
+
+这是长期记忆索引，只列 name、文件、类型、标志和摘要，不包含完整正文。
+
+- `metadata.apply=always`：正文会每轮直接注入 system prompt，属于必须遵守的长期偏好/行为规则。
+- 其他条目：只进入索引；需要具体正文时调用 `LoadMemory({"name":"<name>"})`。
+- 修改记忆请编辑对应 `memdir/*.md` 文件；本文件可由代码重建。
+
+## 索引
+
+"""
 
 
 def _resolve_type(raw: Any) -> MemoryType | None:
@@ -30,6 +45,16 @@ def _resolve_type(raw: Any) -> MemoryType | None:
         return None
     t = raw.strip().lower()
     return t if t in MEMORY_TYPES else None
+
+
+def _resolve_apply(raw: Any) -> MemoryApply | None:
+    """frontmatter 中 metadata.apply 或顶层 apply 字段，归一化到支持值。"""
+    if isinstance(raw, dict):
+        raw = raw.get("apply")
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().lower()
+    return cast(MemoryApply, value) if value in MEMORY_APPLIES else None
 
 
 def _entry_from_file(path: Path) -> MemoryEntry | None:
@@ -46,6 +71,7 @@ def _entry_from_file(path: Path) -> MemoryEntry | None:
         _logger.warning("memdir 缺 name/description，跳过", path=str(path))
         return None
     mtype = _resolve_type(fm.get("metadata")) or _resolve_type(fm.get("type"))
+    apply = _resolve_apply(fm.get("metadata")) or _resolve_apply(fm.get("apply"))
     if mtype is None:
         _logger.warning(
             "memdir 跳过：frontmatter 缺 metadata.type"
@@ -66,6 +92,7 @@ def _entry_from_file(path: Path) -> MemoryEntry | None:
         body=parsed.body,
         source=fm.get("source") if isinstance(fm.get("source"), str) else None,
         confidence=confidence,
+        apply=apply,
         protected=bool(fm.get("protected", False)),
         file_path=path,
         wiki_links=[n for n, _ in parse_links(parsed.body)],
@@ -137,6 +164,8 @@ def format_index_lines(entries: list[MemoryEntry]) -> str:
     for e in entries:
         file_name = e.file_path.name or f"{e.memory_type}_{e.name}.md"
         meta: str = e.memory_type
+        if e.apply is not None:
+            meta += f", apply={e.apply}"
         if e.protected:
             meta += ", protected"
         if e.confidence is not None:
@@ -146,15 +175,38 @@ def format_index_lines(entries: list[MemoryEntry]) -> str:
     return "\n".join(lines)
 
 
+def format_always_memory_block(entries: list[MemoryEntry]) -> str:
+    """把 apply=always 的记忆正文渲染成直接注入 system prompt 的规则块。"""
+    always = [e for e in entries if e.apply == "always" and e.body.strip()]
+    if not always:
+        return ""
+    parts = [
+        "# 长期记忆 · 必须遵守",
+        "以下条目已标记 `metadata.apply=always`。它们不是可选参考，"
+        "而是本轮回复必须直接遵守的用户偏好、称呼、风格或行为规则。",
+    ]
+    for entry in always:
+        parts.append(
+            "\n".join(
+                [
+                    f"## {entry.name} ({entry.memory_type})",
+                    f"摘要：{entry.description}",
+                    "",
+                    entry.body.strip(),
+                ]
+            )
+        )
+    return "\n\n".join(parts)
+
+
 def rebuild_index_file(memdir_root: Path, entries: list[MemoryEntry] | None = None) -> None:
     """从真实记忆文件重建 MEMORY.md（权威，修复手维护漂移）。entries 缺省则现扫目录。"""
     memdir_root.mkdir(parents=True, exist_ok=True)
     if entries is None:
         entries = _scan_entries(memdir_root)
     body = format_index_lines(entries)
-    header = "<!-- 本文件由代码自动维护：扫描 memdir/*.md 重建，勿手改。 -->\n\n"
     path = memdir_root / _INDEX_FILE
-    path.write_text(header + body + ("\n" if body else ""), encoding="utf-8")
+    path.write_text(_INDEX_HEADER + body + ("\n" if body else ""), encoding="utf-8")
 
 
 def write_memory_file(memdir_root: Path, entry: MemoryEntry, body: str | None = None) -> Path:
@@ -170,6 +222,8 @@ def write_memory_file(memdir_root: Path, entry: MemoryEntry, body: str | None = 
         "metadata:",
         f"  type: {entry.memory_type}",
     ]
+    if entry.apply is not None:
+        fm_lines.append(f"  apply: {entry.apply}")
     if entry.confidence is not None:
         fm_lines.append(f"confidence: {entry.confidence}")
     if entry.source:

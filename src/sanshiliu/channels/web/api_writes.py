@@ -11,7 +11,7 @@ import json
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sanshiliu.channels.web.api import resolve_persona_file
 from sanshiliu.channels.web.handlers import SessionStore
@@ -19,7 +19,13 @@ from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.memdir import MemdirLoader, write_memory_file
-from sanshiliu.memory.types import MEMORY_TYPES, MemoryEntry
+from sanshiliu.memory.types import (
+    MEMORY_APPLIES,
+    MEMORY_TYPES,
+    MemoryApply,
+    MemoryEntry,
+    MemoryType,
+)
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.loader import SkillLoader
 from sanshiliu.skills.structure import skill_structure_path
@@ -194,6 +200,7 @@ def make_memory_create_handler(
         name = str(body.get("name") or "").strip()
         desc = str(body.get("description") or "").strip()
         mtype = str(body.get("type") or "user").strip()
+        apply = str(body.get("apply") or "").strip().lower() or None
         text = str(body.get("body") or "")
         if not name or not desc:
             _write_json(req, {"error": "name/description 不能为空"}, status=400)
@@ -201,10 +208,15 @@ def make_memory_create_handler(
         if mtype not in MEMORY_TYPES:
             _write_json(req, {"error": f"type 必须是 {MEMORY_TYPES}"}, status=400)
             return
+        if apply is not None and apply not in MEMORY_APPLIES:
+            _write_json(req, {"error": f"apply 必须是 {MEMORY_APPLIES}"}, status=400)
+            return
+        memory_type = cast(MemoryType, mtype)
+        memory_apply = cast(MemoryApply, apply) if apply is not None else None
         try:
             entry = MemoryEntry(
-                name=name, description=desc, memory_type=mtype,
-                body=text, file_path=Path(),
+                name=name, description=desc, memory_type=memory_type,
+                body=text, apply=memory_apply, file_path=Path(),
             )
             path = write_memory_file(memdir_loader.root, entry, body=text)
             memdir_loader.invalidate()

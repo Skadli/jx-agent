@@ -164,6 +164,7 @@ def _dump_entries_for_llm(entries: list[MemoryEntry]) -> str:
         {
             "name": e.name,
             "type": e.memory_type,
+            "apply": e.apply,
             "description": e.description,
             "body": e.body,
             "confidence": e.confidence,

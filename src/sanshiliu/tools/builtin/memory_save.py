@@ -10,11 +10,17 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.memory.longterm.memdir import MemdirLoader, write_memory_file
-from sanshiliu.memory.types import MEMORY_TYPES, MemoryEntry
+from sanshiliu.memory.types import (
+    MEMORY_APPLIES,
+    MEMORY_TYPES,
+    MemoryApply,
+    MemoryEntry,
+    MemoryType,
+)
 from sanshiliu.tools.types import FunctionTool, ToolDef, ToolResult
 
 _logger = get_logger(__name__)
@@ -42,6 +48,7 @@ def build_save_memory_tool(
         mtype = str(args.get("type") or "").strip()
         description = str(args.get("description") or "").strip()
         body = str(args.get("body") or "").strip()
+        apply = str(args.get("apply") or "").strip().lower() or None
         if not name or not mtype or not description or not body:
             return ToolResult(
                 "", definition.name,
@@ -51,6 +58,14 @@ def build_save_memory_tool(
         err = _validate(name, mtype)
         if err is not None:
             return ToolResult("", definition.name, err, is_error=True)
+        if apply is not None and apply not in MEMORY_APPLIES:
+            return ToolResult(
+                "", definition.name,
+                f"apply 非法：{apply}；目前只支持 {'/'.join(MEMORY_APPLIES)}",
+                is_error=True,
+            )
+        memory_type = cast(MemoryType, mtype)
+        memory_apply = cast(MemoryApply, apply) if apply is not None else None
 
         confidence_raw = args.get("confidence")
         confidence: float | None = None
@@ -66,9 +81,10 @@ def build_save_memory_tool(
         entry = MemoryEntry(
             name=name,
             description=description,
-            memory_type=mtype,  # type: ignore[arg-type]
+            memory_type=memory_type,
             body=body,
             confidence=confidence,
+            apply=memory_apply,
         )
         try:
             file_path = write_memory_file(memdir_loader.root, entry, body)

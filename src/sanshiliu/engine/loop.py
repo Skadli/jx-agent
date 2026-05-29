@@ -21,7 +21,11 @@ from sanshiliu.llm.stream import StreamDelta
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.consolidate import MemoryConsolidator
 from sanshiliu.memory.longterm.extract import MemoryExtractor
-from sanshiliu.memory.longterm.memdir import MemdirLoader, format_index_lines
+from sanshiliu.memory.longterm.memdir import (
+    MemdirLoader,
+    format_always_memory_block,
+    format_index_lines,
+)
 from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.skills.activator import SkillActivator
 from sanshiliu.storage.db import Database
@@ -38,7 +42,8 @@ _DEDUPE_THRESHOLD = 2
 # 长期记忆索引注入 system_prompt 的说明头：告诉模型这是它的记忆目录、怎么用。
 _MEMORY_INDEX_HEADER = (
     "# 你的长期记忆 · 索引\n"
-    "下面是你已沉淀的长期记忆（只列名字+摘要，不含正文）。聊天中命中某条主题时，"
+    "下面是你已沉淀的长期记忆（只列名字+摘要，不含正文）。"
+    "`apply=always` 条目的正文已在上方注入；其余条目在聊天中命中某条主题时，"
     '先调 LoadMemory({"name":"<name>"}) 读出该条完整内容再据此回应——'
     "这些是你真实的记忆，应主动参考，别装不知道。"
 )
@@ -159,6 +164,9 @@ class ConversationEngine:
         if self._memdir_loader is not None:
             try:
                 mem_snap = self._memdir_loader.get()
+                always_body = format_always_memory_block(mem_snap.entries)
+                if always_body:
+                    parts.append(always_body)
                 # 从真实记忆条目现生成索引（权威，不依赖手维护的 MEMORY.md 漂移），
                 # 配说明头让模型知道这是它的记忆目录、可调 LoadMemory 读正文。
                 index_body = format_index_lines(mem_snap.entries)

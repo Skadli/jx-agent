@@ -2,7 +2,8 @@
 name: SaveMemory
 description: |
   主动写入一条新的长期记忆到 memdir；下一轮起 name + description 出现在
-  system prompt memory_block 索引，body 通过 LoadMemory 取。
+  system prompt memory_block 索引。若设置 apply=always，body 也会直接注入
+  system prompt；否则 body 通过 LoadMemory 取。
   使用场景：用户表达稳定偏好/反馈/项目决策时主动调；不要存一次性的临时上下文。
 parameters:
   type: object
@@ -23,6 +24,10 @@ parameters:
     confidence:
       type: number
       description: 可选；0-1 的置信度（auto-extract 用，主动写一般可省略）
+    apply:
+      type: string
+      enum: [always]
+      description: 可选；设为 always 时，body 会每轮直接注入 system prompt，适合称呼、语气、格式等必须长期遵守的偏好
   required:
     - name
     - type
@@ -40,7 +45,7 @@ parameters:
 ## 典型示例
 
 用户："以后叫我老板就行"
-→ `SaveMemory({"name":"user_call_boss","type":"user","description":"用户希望被称呼为'老板'","body":"用户在 2026-05-27 明确：日常对话中称呼为'老板'。"})`
+→ `SaveMemory({"name":"user_call_boss","type":"user","description":"用户希望被称呼为'老板'","body":"**How to apply:** 每次和用户对话时称呼用户为老板。","apply":"always"})`
 
 用户："你上次给的回答太长了，简短点"
-→ `SaveMemory({"name":"feedback_short_reply","type":"feedback","description":"用户偏好简短回答","body":"**Why:** 用户 2026-05-27 反馈长答太啰嗦。\\n**How to apply:** 默认 3 句话内回完，除非用户明确要展开。"})`
+→ `SaveMemory({"name":"feedback_short_reply","type":"feedback","description":"用户偏好简短回答","body":"**Why:** 用户 2026-05-27 反馈长答太啰嗦。\\n**How to apply:** 默认 3 句话内回完，除非用户明确要展开。","apply":"always"})`

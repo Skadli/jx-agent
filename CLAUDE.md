@@ -72,7 +72,7 @@ Where to look for a given concern:
   - watcher 5s 内自动 reload 两个目录
   - 多消息拆分：LLM 在输出里插 `<MSG>` 让 channel 层切多条独立消息（无延迟、代码块内失效），规则写在 `persona/core/style.md`
 - **adding persona module**: 写 `persona/modules/<name>.md` 带 frontmatter，重启或 5s 后生效；LLM 在常驻 listing 段可见，也可调 `LoadPersonaModule` 工具按 `name` 主动拉正文
-- **adding memory**: write `memdir/<type>_<slug>.md` with frontmatter `name` / `description` / `metadata.type`, add a line to `memdir/MEMORY.md`
+- **adding memory**: write `memdir/<type>_<slug>.md` with frontmatter `name` / `description` / `metadata.type`, add `metadata.apply: always` only for preferences that must be followed every turn, add a line to `memdir/MEMORY.md`
 
 ## Claude Code protocol mapping
 

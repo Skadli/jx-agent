@@ -12,7 +12,7 @@
 
 ## 输入
 
-用户消息会含一段 JSON 数组：每项是一条记忆 `{name, type, description, body, confidence, source}`，
+用户消息会含一段 JSON 数组：每项是一条记忆 `{name, type, apply, description, body, confidence, source}`，
 紧随其后是当前的 MEMORY.md 索引文本。
 
 ## 输出格式
@@ -49,6 +49,7 @@
    你**不能**编造不存在的 name。
 9. new_body 写作风格沿用 `memory_extract.md` 模板：feedback / project 必含 `**Why:**` + `**How to apply:**`；
    user / reference 自由文本即可。涉及代码符号时建议附 `> Verify before use:` 行。
+   若条目带 `apply=always`，new_body 必须保留明确可执行的 `**How to apply:**`，不要改成纯摘要。
 
 ## 反例
 

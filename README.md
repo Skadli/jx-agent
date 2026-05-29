@@ -185,7 +185,7 @@ defaultMode：`allow` / `deny` / `ask`（ask 在 REPL 弹确认；wechat/web 通
 
 ### `memdir/`（长期记忆）
 
-4 类 md（`user_*` / `feedback_*` / `project_*` / `reference_*`）+ `MEMORY.md` 索引。frontmatter 必填 `name` / `description` / `metadata.type`。索引超 200 行自动截断 + WARNING 头。
+4 类 md（`user_*` / `feedback_*` / `project_*` / `reference_*`）+ `MEMORY.md` 索引。frontmatter 必填 `name` / `description` / `metadata.type`。可选 `metadata.apply: always` 表示正文每轮直接注入 system prompt，适合称呼、语气、格式等必须长期遵守的偏好；未标记的条目只进索引，由 LLM 按需 `LoadMemory`。索引超 200 行自动截断 + WARNING 头。
 
 ### `skills/<skill-id>/SKILL.md`
 
