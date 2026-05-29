@@ -11,7 +11,8 @@
 
 const RF = window.ReactFlow || {};
 // MarkerType: xyflow 命名空间导出，用于 edge 箭头；若该 namespace 没有则为 undefined → marker 不渲染但不报错
-const { ReactFlow, Background, MiniMap, Controls, Handle, Position, MarkerType, Panel, useStore, useReactFlow } = RF;
+// applyNodeChanges/applyEdgeChanges：受控模式下把 RF 派发的变更（拖动/选中等）应用回 state（vendor 已导出）
+const { ReactFlow, Background, MiniMap, Controls, Handle, Position, MarkerType, Panel, useStore, useReactFlow, applyNodeChanges, applyEdgeChanges } = RF;
 
 // Dify 布局常量（见 research/dify-canvas-stack.md）
 const NODE_WIDTH = 240;
@@ -65,6 +66,37 @@ function getNodeDimensions(n) {
     width: n.width || n.initialWidth || (n.measured && n.measured.width) || NODE_WIDTH,
     height: n.height || n.initialHeight || (n.measured && n.measured.height) || ((n.data && n.data.desc) ? NODE_HEIGHT : NODE_HEIGHT_COMPACT),
   };
+}
+
+// 泳道再分配（消除遮挡）：坐标手写在 structure.json，相邻"泳道"（同 y 一行）行距常 < 卡片高度 → 实重叠。
+// 依赖前提：同一行节点共享精确相同的 y（当前数据是 300/150 这类整数倍网格，成立）。
+// 做法：x=语义列不动；按全局去重 y 聚成泳道，记每条泳道最高卡片高度；自上而下扫描：
+//   newY = 首条 ? 原y : max(原y, 上一条newY + 上一条maxH + LANE_GAP)
+// 即"只下推、不上移"——同泳道一起平移（主链保持水平对齐），只在真重叠时才动，原有更大间距用 max 保留。
+const LANE_GAP = 36;
+function relayoutByLanes(nodes) {
+  if (!nodes || !nodes.length) return nodes;
+  // 1. 收集去重 y → 该泳道最高卡片高度
+  const laneMaxH = new Map();
+  nodes.forEach((n) => {
+    const y = n.position.y;
+    laneMaxH.set(y, Math.max(laneMaxH.get(y) || 0, getNodeDimensions(n).height));
+  });
+  // 2. 升序遍历泳道，构建 原y → 新y 映射（只下推不上移）
+  const remap = new Map();
+  let prevNewY = null, prevMaxH = 0;
+  Array.from(laneMaxH.keys()).sort((a, b) => a - b).forEach((y, i) => {
+    const ny = i === 0 ? y : Math.max(y, prevNewY + prevMaxH + LANE_GAP);
+    remap.set(y, ny);
+    prevNewY = ny;
+    prevMaxH = laneMaxH.get(y);
+  });
+  // 3. 无任何泳道被下推则原样返回（避免多余重渲染）
+  let changed = false;
+  remap.forEach((ny, y) => { if (ny !== y) changed = true; });
+  if (!changed) return nodes;
+  // 4. 按映射重写每个节点的 y
+  return nodes.map((n) => ({ ...n, position: { ...n.position, y: remap.get(n.position.y) } }));
 }
 
 function getMiniMapSnapshot(state) {
@@ -421,7 +453,8 @@ function SkillCanvas({ skillId }) {
     });
   }, [skillId]);
 
-  const flowNodes = React.useMemo(() => graph ? withNodeDimensions(graph.nodes) : [], [graph]);
+  // 计算布局：补尺寸 → 泳道再分配（消除遮挡）。仅算几何，受控 state 在下方。
+  const layoutedNodes = React.useMemo(() => graph ? relayoutByLanes(withNodeDimensions(graph.nodes)) : [], [graph]);
 
   // 后端给的 nodes 已经带 position；前端补 edge 的 style + 类型。
   // 后端把 edge 的 type 标为 "custom" 是占位（MVP 没注册自定义 edgeType）；这里显式设
@@ -443,6 +476,16 @@ function SkillCanvas({ skillId }) {
     });
   }, [graph]);
 
+  // 受控 state：React Flow 受控模式必须 nodes/edges 是 state + onChange 回写，否则拖动弹回、选中态不持久。
+  // hooks 必须在下方 early-return 之前调用。
+  const [nodes, setNodes] = React.useState([]);
+  const [edges, setEdges] = React.useState([]);
+  // skill 切换 / 布局重算时，把受控 state 重置为新布局（丢弃上个 skill 的手动整理，符合"只读 viewer"语义）。
+  React.useEffect(() => { setNodes(layoutedNodes); setEdges(styledEdges); }, [layoutedNodes, styledEdges]);
+  // applyNodeChanges/applyEdgeChanges 万一未导出 → no-op 兜底（保持现有行为，不崩）。
+  const onNodesChange = React.useCallback((ch) => setNodes((ns) => applyNodeChanges ? applyNodeChanges(ch, ns) : ns), []);
+  const onEdgesChange = React.useCallback((ch) => setEdges((es) => applyEdgeChanges ? applyEdgeChanges(ch, es) : es), []);
+
   if (!ReactFlow) {
     return (
       <div style={{ padding: 40, textAlign: "center", color: "var(--ink-60)" }}>
@@ -460,8 +503,10 @@ function SkillCanvas({ skillId }) {
   return (
     <div style={{ width: "100%", height: "100%", position: "relative", background: "var(--parchment)" }}>
       <ReactFlow
-        nodes={flowNodes}
-        edges={styledEdges}
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         // 只读三连（参考 Dify hooks/use-workflow-mode.ts）：禁止连线/删除/编辑，
         // 但保留 selectable + draggable，让用户能手动整理布局
