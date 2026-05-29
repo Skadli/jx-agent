@@ -17,6 +17,7 @@ from sanshiliu.bootstrap.wechat_setup import (
     run_wechat_channel_setup,
     wechat_channel_configured,
 )
+from sanshiliu.foundation.http_headers import codex_request_headers
 from sanshiliu.foundation.logging import get_logger
 
 
@@ -187,6 +188,7 @@ async def _test_llm_connectivity(values: dict[str, str]) -> tuple[bool, str]:
     client = AsyncOpenAI(
         api_key=values["OPENAI_API_KEY"],
         base_url=values["OPENAI_BASE_URL"],
+        default_headers=codex_request_headers(),
     )
     import contextlib
 

@@ -19,6 +19,7 @@ from openai import (
 )
 
 from sanshiliu.foundation.errors import LLMFatalError, LLMRetryableError
+from sanshiliu.foundation.http_headers import codex_request_headers
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.foundation.retry import async_retry
 from sanshiliu.llm.cost import estimate_cost
@@ -86,6 +87,7 @@ class LLMClient:
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            default_headers=codex_request_headers(),
             # 禁用 SDK retry，避免双重退避
             max_retries=0,
         )
