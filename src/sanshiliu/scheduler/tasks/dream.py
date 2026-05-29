@@ -1,6 +1,6 @@
 """把"做梦"包装成一个 HeartbeatTask。
 
-闸门（gate）：扫 <memdir>/dream-*.md 最近 mtime，数 sessions/*.jsonl mtime 大于它的文件数；
+闸门（gate）：扫 <memdir>/*dream-*.md 最近 mtime，数 sessions/*.jsonl mtime 大于它的文件数；
               达到 min_sessions（来自 task.extra_params，dashboard 可改）→ 通过，否则 gate-failed。
 触发（on_due）：调用 DreamRunner 跨通道拼材料 + 跑 engine 一轮做梦。
 
@@ -82,7 +82,9 @@ def _last_dream_mtime(memdir_dir: Path) -> float:
     if not memdir_dir.is_dir():
         return 0.0
     latest = 0.0
-    for f in memdir_dir.glob("dream-*.md"):
+    # SaveMemory 落盘文件名为 `{type}_{name}_{ts}.md`，做梦记录 type=reference、name=dream-*，
+    # 实际文件名形如 `reference_dream-2026-05-27-xxx_1716.md`，故用 `*dream-*.md` 匹配。
+    for f in memdir_dir.glob("*dream-*.md"):
         try:
             ts = f.stat().st_mtime
         except OSError:

@@ -89,6 +89,24 @@ def classify(command: str) -> DangerLevel:
     if not cmd:
         return "safe"
 
+    # 复合命令（管道/分号）必须先拆分逐段分类再取最大档。
+    # 否则下面的 _SAFE_PATTERNS 安全前缀短路会掩盖后段危险命令
+    # （如 `git status && rm -rf /` 整体被判 safe 直接放行）。
+    # 整段再跑一次 _PATTERNS，捕捉跨段模式（如 `curl ... | sh` 远程执行、fork bomb）。
+    for sep in (";", "&&", "||", "|"):
+        if sep in cmd:
+            parts = [p.strip() for p in cmd.split(sep) if p.strip()]
+            if len(parts) > 1:
+                worst: DangerLevel = "safe"
+                for part in parts:
+                    worst = _max_level(worst, classify(part))
+                for pat, lvl in _PATTERNS:
+                    if pat.search(cmd):
+                        worst = _max_level(worst, lvl)
+                return worst
+            break
+
+    # ── 单段命令 ──
     # safe 子模式优先：git status 这种不要被 git 通用档拖累
     for pat in _SAFE_PATTERNS:
         if pat.search(cmd):
@@ -103,13 +121,6 @@ def classify(command: str) -> DangerLevel:
         if pat.search(cmd):
             level = _max_level(level, lvl)
 
-    # 复合命令（管道/分号）：在右半也分类，取最大
-    for sep in (";", "&&", "||", "|"):
-        if sep in cmd:
-            parts = [p.strip() for p in cmd.split(sep) if p.strip()]
-            for part in parts[1:]:
-                level = _max_level(level, classify(part))
-            break
     return level
 
 

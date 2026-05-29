@@ -194,6 +194,22 @@ class PermissionManager:
             )
             return decision
 
+        # 2.5) critical 硬底线：classifier 判 critical（不可逆 + 系统级，如 rm -rf / dd / mkfs）
+        # 的命令，除非上面命中显式 settings.allow，否则一律拒绝——不进会话缓存 / 自动放行 /
+        # defaultMode / ask。与 bash_classifier 文档约定"critical 默认拒绝（除非显式 allow）"一致。
+        if danger == "critical":
+            _logger.warning("权限拒绝（critical 硬底线）", tool=tool_name, rule="critical-hard-deny")
+            decision = PermissionDecision(
+                kind="deny", rule="critical-hard-deny", danger=danger,
+                reason="命令被分类为 critical（不可逆/系统级），默认硬拒绝；"
+                "如确需放行请在 settings.allow 显式添加规则",
+                source="critical-hard-deny",
+            )
+            await self._persist_decision(
+                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
+            )
+            return decision
+
         # 3) 会话缓存
         fp = _args_fingerprint(arguments)
         cache_key = (session_id, alias, fp)
