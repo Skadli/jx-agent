@@ -6,7 +6,7 @@
 - **可选 gate**：触发前再判一道闸门，闸门函数返回 `(passed, reason)`；不通过则记 `gate-failed`。
 - **手动触发**：`run_now(name)` 绕过 due 判定（但仍走 gate），用于 dashboard 按钮。
 - **状态在内存**：last_run_at / last_status / last_message 都在 HeartbeatTask 字段里；
-  重启后状态丢失，enabled 回到注册时的默认值——v1 不上 DB 持久化。
+  运行状态重启后丢失；开关与配置由 persistence.py 持久化到 heartbeat.json。
 """
 
 from __future__ import annotations
@@ -59,6 +59,8 @@ class HeartbeatTask:
     last_duration_ms: int | None = None
     # 临时锁：防止 tick 重叠触发同一 task
     _running: bool = field(default=False, repr=False)
+    # 周期任务首次触发的稳定基准；不能在 _next_fire_at 每次用 time.time() 重算。
+    _schedule_anchor_at: float = field(default_factory=time.time, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,6 +147,9 @@ class HeartbeatScheduler:
             return False, f"task 不存在: {name}"
 
         # ── 复制一份做校验，全部通过再 apply ──
+        old_enabled = task.enabled
+        old_daily = task.daily_at_hour
+        old_interval = task.interval_seconds
         new_enabled = task.enabled
         new_daily = task.daily_at_hour
         new_interval = task.interval_seconds
@@ -205,6 +210,12 @@ class HeartbeatScheduler:
         task.daily_at_hour = new_daily
         task.interval_seconds = new_interval
         task.extra_params = new_extra
+        if (
+            old_daily != new_daily
+            or old_interval != new_interval
+            or (not old_enabled and new_enabled and task.last_run_at is None)
+        ):
+            task._schedule_anchor_at = time.time()
         _logger.info(
             "heartbeat task 配置更新",
             name=name,
@@ -319,9 +330,9 @@ class HeartbeatScheduler:
 def _next_fire_at(task: HeartbeatTask) -> float:
     """根据调度模式 + last_run_at 算下一次应触发的 unix 时间戳；不可调度的 task 返 inf。"""
     if task.interval_seconds is not None:
-        base = task.last_run_at if task.last_run_at is not None else time.time()
-        # 首次（last_run_at=None）也立刻能跑——base=now → next=now+interval；
-        # 即第一轮要等满一个 interval 才跑。想立刻跑请用 run_now。
+        base = task.last_run_at if task.last_run_at is not None else task._schedule_anchor_at
+        # 首次（last_run_at=None）使用注册/配置更新时间作为基准；
+        # 第一轮等满一个 interval 才跑。想立刻跑请用 run_now。
         return base + task.interval_seconds
 
     if task.daily_at_hour is not None:

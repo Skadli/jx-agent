@@ -172,7 +172,9 @@ class DreamRunner:
         lines: list[str] = [
             f"现在是夜里 {new_session_count} 个新对话累积之后的固定做梦时间。",
             "请按 Skill(dream) 协议完整做一次梦——读 dream skill 正文，按六步走，",
-            "最终用 SaveMemory 写两条 memdir（reference 档案 + 可选 feedback 洞察）。",
+            "最终用 SaveMemory 写 memdir（reference 档案 + 可选 feedback 洞察）。",
+            "如果 dream 协议判断出现了专业知识能力缺口，只能先用 Skill(skill-finder) 搜索评估，",
+            "再按需用 Skill(skill-installer) 安装现成 skill；禁止本地创建 SKILL.md。",
             "",
             "**重要**：以下是跨所有通道（repl / web / wechat）最近的对话素材。",
             "不要再调 LoadMemory 取 recent——那只看你自己 channel=scheduler 的历史（空的）。",
