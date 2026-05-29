@@ -188,7 +188,8 @@ def make_put_settings_handler(
     def handler(req: BaseHTTPRequestHandler) -> None:
         body = _read_json(req)
         if body is None:
-            _write_json(req, {"error": "invalid JSON"}, status=400); return
+            _write_json(req, {"error": "invalid JSON"}, status=400)
+            return
 
         updates: dict[str, str | None] = {}
         applied: list[str] = []
@@ -206,7 +207,8 @@ def make_put_settings_handler(
                 else:
                     text = str(raw).strip()
                     if any(ch in text for ch in ("\n", "\r")):
-                        _write_json(req, {"error": f"{disp_key} 不能包含换行"}, status=400); return
+                        _write_json(req, {"error": f"{disp_key} 不能包含换行"}, status=400)
+                        return
                     # log_level 走枚举白名单（保留大写写入）；前端 select 已大写，这里只做防御
                     if disp_key == "log_level":
                         text = text.upper()
@@ -231,17 +233,20 @@ def make_put_settings_handler(
             if not text.strip():
                 continue
             if any(ch in text for ch in ("\n", "\r")):
-                _write_json(req, {"error": f"{disp_key} 不能包含换行"}, status=400); return
+                _write_json(req, {"error": f"{disp_key} 不能包含换行"}, status=400)
+                return
             updates[env_key] = text.strip()
             applied.append(disp_key)
 
         if not updates:
-            _write_json(req, {"ok": True, "applied": [], "note": "无字段变更"}); return
+            _write_json(req, {"ok": True, "applied": [], "note": "无字段变更"})
+            return
 
         try:
             _write_env_file(env_path, updates)
         except OSError as exc:
-            _write_json(req, {"error": f"写入 .env 失败：{exc}"}, status=500); return
+            _write_json(req, {"error": f"写入 .env 失败：{exc}"}, status=500)
+            return
 
         _write_json(req, {
             "ok": True,

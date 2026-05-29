@@ -403,9 +403,7 @@ def _is_auto_allowable(
     if tool_name in ("file_read", "Read") and path_guard_hit is None:
         return True
     # 4. memory 工具（LoadMemory 只读；SaveMemory 是 agent 自治写入，ADR 决定默认 allow）
-    if tool_name in ("LoadMemory", "SaveMemory"):
-        return True
-    return False
+    return tool_name in ("LoadMemory", "SaveMemory")
 
 
 def _args_fingerprint(args: dict[str, Any]) -> str:

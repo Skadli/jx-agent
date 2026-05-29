@@ -29,11 +29,9 @@ from sanshiliu.bootstrap.wechat_setup import (
     EP_GET_QR_STATUS,
     ILINK_BASE_URL,
     QrLoginCode,
-    WechatCredentials,
     _credentials_from_confirmed_status,
     _env_updates_for_credentials,
     _ilink_get,
-    _ilink_get_headers,
     _string_field,
     save_wechat_credentials,
 )
@@ -331,12 +329,14 @@ def make_wechat_qr_start_handler(
     def handler(req: BaseHTTPRequestHandler) -> None:
         body = _read_json(req)
         if body is None:
-            _write_json(req, {"error": "invalid JSON"}, status=400); return
+            _write_json(req, {"error": "invalid JSON"}, status=400)
+            return
         try:
             state = broker.start()
         except Exception as exc:
             _logger.exception("启动 wechat QR 失败", error=str(exc))
-            _write_json(req, {"error": str(exc)}, status=500); return
+            _write_json(req, {"error": str(exc)}, status=500)
+            return
         _write_json(req, state)
 
     return handler
@@ -354,10 +354,12 @@ def make_wechat_qr_status_handler(
             qs = parse_qs(path.split("?", 1)[1])
             sid = (qs.get("session") or qs.get("id") or [""])[0]
         if not sid:
-            _write_json(req, {"error": "missing session id"}, status=400); return
+            _write_json(req, {"error": "missing session id"}, status=400)
+            return
         state = broker.get_status(sid)
         if state is None:
-            _write_json(req, {"error": "not found or expired", "status": "expired"}, status=404); return
+            _write_json(req, {"error": "not found or expired", "status": "expired"}, status=404)
+            return
         _write_json(req, state)
 
     return handler
@@ -370,7 +372,8 @@ def make_wechat_qr_cancel_handler(
         body = _read_json(req) or {}
         sid = str(body.get("session_id") or "").strip()
         if not sid:
-            _write_json(req, {"error": "missing session_id"}, status=400); return
+            _write_json(req, {"error": "missing session_id"}, status=400)
+            return
         ok = broker.cancel(sid)
         _write_json(req, {"ok": ok})
 
