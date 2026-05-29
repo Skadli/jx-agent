@@ -307,10 +307,10 @@ COMMANDS_META: dict[str, tuple[CommandHandler, str]] = {
 
 
 __all__ = [
+    "COMMANDS_META",
     "CommandContext",
-    "CommandResult",
     "CommandHandler",
+    "CommandResult",
     "is_slash_command",
     "try_dispatch",
-    "COMMANDS_META",
 ]

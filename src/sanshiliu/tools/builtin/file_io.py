@@ -66,6 +66,9 @@ def build_file_read_tool(definition: ToolDef, cwd_root: Path) -> FunctionTool:
 
 
 def build_file_write_tool(definition: ToolDef, cwd_root: Path) -> FunctionTool:
+    # resolve 幂等且不依赖请求参数，提到 builder 作用域避免在 async _run 内做阻塞 pathlib 调用
+    root = cwd_root.resolve()
+
     async def _run(args: dict[str, Any]) -> ToolResult:
         raw_path = str(args.get("path") or "")
         content = args.get("content")
@@ -89,7 +92,7 @@ def build_file_write_tool(definition: ToolDef, cwd_root: Path) -> FunctionTool:
             return ToolResult("", definition.name, f"写失败：{exc}", is_error=True)
         return ToolResult(
             "", definition.name,
-            f"已写入 {path.relative_to(cwd_root.resolve())}（{len(str(content))} 字符）",
+            f"已写入 {path.relative_to(root)}（{len(str(content))} 字符）",
         )
 
     return FunctionTool(_def=definition, _fn=_run)

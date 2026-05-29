@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import signal
 import sys
+from pathlib import Path
 
 from sanshiliu.channels.web.api import (
     make_channels_handler,
@@ -122,6 +123,9 @@ from sanshiliu.storage.db import get_database
 from sanshiliu.tools.bootstrap import build_tool_stack
 
 _logger = get_logger(__name__)
+
+# dashboard 静态目录：__file__ 静态，模块加载时算一次，避免在 async run_serve 内做阻塞 .resolve()
+_DASHBOARD_DIR = Path(__file__).resolve().parents[3].parent / "dashboard"
 
 
 async def run_serve() -> int:
@@ -338,7 +342,7 @@ async def run_serve() -> int:
     router.register_prefix("POST", "/api/tool_approvals/", make_tool_approval_handler(approval_broker))
 
     # dashboard 静态托管：/ → /dashboard/，/dashboard/* → dashboard 目录
-    dashboard_dir = _Path(__file__).resolve().parents[3].parent / "dashboard"
+    dashboard_dir = _DASHBOARD_DIR
     if dashboard_dir.is_dir():
         router.register("GET", "/", make_root_redirect_handler())
         router.register_prefix("GET", "/dashboard", make_dashboard_handler(dashboard_dir))

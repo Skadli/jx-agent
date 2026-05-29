@@ -153,13 +153,16 @@ def make_persona_write_handler(
         raw = req.path.split("?", 1)[0]
         parts = raw.strip("/").split("/")
         if len(parts) < 3:
-            _write_json(req, {"error": "bad path"}, status=400); return
+            _write_json(req, {"error": "bad path"}, status=400)
+            return
         fname = urllib.parse.unquote(parts[2])
         if not _safe_filename(fname) or not fname.endswith(".md"):
-            _write_json(req, {"error": "invalid filename"}, status=400); return
+            _write_json(req, {"error": "invalid filename"}, status=400)
+            return
         body = _read_json(req)
         if body is None or "body" not in body:
-            _write_json(req, {"error": "missing body"}, status=400); return
+            _write_json(req, {"error": "missing body"}, status=400)
+            return
         # 已存在的文件就地写（不论 core/ 还是 modules/）；不存在默认落 core/
         path = resolve_persona_file(persona_loader, fname) or (persona_loader.core_dir / fname)
         is_core = path.parent.resolve() == persona_loader.core_dir.resolve()
@@ -171,7 +174,8 @@ def make_persona_write_handler(
                 persona_loader.invalidate()
                 persona_loader.load()
         except OSError as exc:
-            _write_json(req, {"error": str(exc)}, status=500); return
+            _write_json(req, {"error": str(exc)}, status=500)
+            return
         _write_json(req, {"ok": True, "path": str(path), "chars": len(str(body["body"]))})
 
     return handler
@@ -185,15 +189,18 @@ def make_memory_create_handler(
     def handler(req: BaseHTTPRequestHandler) -> None:
         body = _read_json(req)
         if not body:
-            _write_json(req, {"error": "missing body"}, status=400); return
+            _write_json(req, {"error": "missing body"}, status=400)
+            return
         name = str(body.get("name") or "").strip()
         desc = str(body.get("description") or "").strip()
         mtype = str(body.get("type") or "user").strip()
         text = str(body.get("body") or "")
         if not name or not desc:
-            _write_json(req, {"error": "name/description 不能为空"}, status=400); return
+            _write_json(req, {"error": "name/description 不能为空"}, status=400)
+            return
         if mtype not in MEMORY_TYPES:
-            _write_json(req, {"error": f"type 必须是 {MEMORY_TYPES}"}, status=400); return
+            _write_json(req, {"error": f"type 必须是 {MEMORY_TYPES}"}, status=400)
+            return
         try:
             entry = MemoryEntry(
                 name=name, description=desc, memory_type=mtype,
@@ -203,7 +210,8 @@ def make_memory_create_handler(
             memdir_loader.invalidate()
             memdir_loader.load()
         except Exception as exc:
-            _write_json(req, {"error": str(exc)}, status=500); return
+            _write_json(req, {"error": str(exc)}, status=500)
+            return
         _write_json(req, {"ok": True, "path": path.name})
 
     return handler
@@ -219,31 +227,36 @@ def make_memory_modify_handler(
         rest = raw[len("/api/memory/"):]
         fname = urllib.parse.unquote(rest)
         if not _safe_filename(fname) or not fname.endswith(".md"):
-            _write_json(req, {"error": "invalid filename"}, status=400); return
+            _write_json(req, {"error": "invalid filename"}, status=400)
+            return
         path = memdir_loader.root / fname
         method = req.command.upper()
         if method == "DELETE":
             if not path.is_file():
-                _write_json(req, {"error": "not found"}, status=404); return
+                _write_json(req, {"error": "not found"}, status=404)
+                return
             try:
                 path.unlink()
                 _rebuild_memdir_index(memdir_loader)
                 memdir_loader.invalidate()
                 memdir_loader.load()
             except OSError as exc:
-                _write_json(req, {"error": str(exc)}, status=500); return
+                _write_json(req, {"error": str(exc)}, status=500)
+                return
             _write_json(req, {"ok": True, "deleted": fname})
             return
         # PUT
         body = _read_json(req)
         if body is None or "body" not in body:
-            _write_json(req, {"error": "missing body"}, status=400); return
+            _write_json(req, {"error": "missing body"}, status=400)
+            return
         try:
             path.write_text(str(body["body"]), encoding="utf-8")
             memdir_loader.invalidate()
             memdir_loader.load()
         except OSError as exc:
-            _write_json(req, {"error": str(exc)}, status=500); return
+            _write_json(req, {"error": str(exc)}, status=500)
+            return
         _write_json(req, {"ok": True, "path": fname, "chars": len(str(body["body"]))})
 
     return handler
@@ -285,15 +298,18 @@ def make_settings_json_write_handler(
 ) -> Callable[[BaseHTTPRequestHandler], None]:
     def handler(req: BaseHTTPRequestHandler) -> None:
         if settings_loader is None:
-            _write_json(req, {"error": "security disabled"}, status=400); return
+            _write_json(req, {"error": "security disabled"}, status=400)
+            return
         body = _read_json(req)
         if body is None or "body" not in body:
-            _write_json(req, {"error": "missing body"}, status=400); return
+            _write_json(req, {"error": "missing body"}, status=400)
+            return
         text = str(body["body"])
         try:
             json.loads(text)  # 校验
         except json.JSONDecodeError as exc:
-            _write_json(req, {"error": f"JSON 不合法：{exc}"}, status=400); return
+            _write_json(req, {"error": f"JSON 不合法：{exc}"}, status=400)
+            return
         path = settings_loader.project_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -311,13 +327,16 @@ def make_permissions_default_mode_handler(
 ) -> Callable[[BaseHTTPRequestHandler], None]:
     def handler(req: BaseHTTPRequestHandler) -> None:
         if settings_loader is None:
-            _write_json(req, {"error": "security disabled"}, status=400); return
+            _write_json(req, {"error": "security disabled"}, status=400)
+            return
         body = _read_json(req)
         if body is None or "default_mode" not in body:
-            _write_json(req, {"error": "missing default_mode"}, status=400); return
+            _write_json(req, {"error": "missing default_mode"}, status=400)
+            return
         mode = str(body["default_mode"])
         if mode not in ("allow", "deny", "ask"):
-            _write_json(req, {"error": "default_mode 必须是 allow/deny/ask"}, status=400); return
+            _write_json(req, {"error": "default_mode 必须是 allow/deny/ask"}, status=400)
+            return
         _edit_settings(settings_loader, lambda d: _set_default_mode(d, mode))
         _write_json(req, {"ok": True, "default_mode": mode})
 
@@ -331,14 +350,17 @@ def make_permissions_rule_handler(
 ) -> Callable[[BaseHTTPRequestHandler], None]:
     def handler(req: BaseHTTPRequestHandler) -> None:
         if settings_loader is None:
-            _write_json(req, {"error": "security disabled"}, status=400); return
+            _write_json(req, {"error": "security disabled"}, status=400)
+            return
         body = _read_json(req) or {}
         group = str(body.get("group") or "")
         pattern = str(body.get("pattern") or "").strip()
         if group not in ("allow", "deny"):
-            _write_json(req, {"error": "group 必须是 allow/deny"}, status=400); return
+            _write_json(req, {"error": "group 必须是 allow/deny"}, status=400)
+            return
         if not pattern:
-            _write_json(req, {"error": "pattern 不能为空"}, status=400); return
+            _write_json(req, {"error": "pattern 不能为空"}, status=400)
+            return
         method = req.command.upper()
         if method == "POST":
             _edit_settings(settings_loader, lambda d: _add_rule(d, group, pattern))

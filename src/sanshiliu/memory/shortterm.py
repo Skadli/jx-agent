@@ -8,7 +8,6 @@ PR1（2026-05-27）：从 session-level snapshot 改为 Claude Code 风格 per-m
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from pathlib import Path

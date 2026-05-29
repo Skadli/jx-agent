@@ -7,6 +7,7 @@ handler 工厂模式：runner 传入 db / 各 loader，闭包持有。所有处�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import urllib.parse
@@ -78,10 +79,8 @@ def _safe(req: BaseHTTPRequestHandler, fn: Callable[[], None], where: str) -> No
         fn()
     except Exception as exc:
         _logger.exception("api 处理失败", path=where, error=str(exc))
-        try:
+        with contextlib.suppress(Exception):
             _write_json(req, {"error": str(exc), "where": where}, status=500)
-        except Exception:
-            pass
 
 
 # ────────── /api/overview ──────────
@@ -116,22 +115,16 @@ def make_overview_handler(
             memdir_count = 0
             claude_chars = 0
             if memdir_loader is not None:
-                try:
+                with contextlib.suppress(Exception):
                     memdir_count = len(memdir_loader.get().entries)
-                except Exception:
-                    pass
             if claudemd_loader is not None:
-                try:
+                with contextlib.suppress(Exception):
                     claude_chars = claudemd_loader.get().total_chars()
-                except Exception:
-                    pass
 
             skills_count = 0
             if skill_loader is not None:
-                try:
+                with contextlib.suppress(Exception):
                     skills_count = len(skill_loader.list())
-                except Exception:
-                    pass
 
             payload = {
                 "version": "1.0.0",

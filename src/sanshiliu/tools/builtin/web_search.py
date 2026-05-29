@@ -11,7 +11,6 @@ provider 链（默认 auto）：
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 from collections.abc import Awaitable, Callable
