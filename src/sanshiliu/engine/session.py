@@ -14,6 +14,16 @@ from sanshiliu.identity.types import PersonaSnapshot
 # 注入 compact 摘要时与 persona 之间的结构性分隔；纯胶水非 prompt 内容
 _SUMMARY_JOINER = "\n\n---\n\n"
 
+# 贴在 system prompt 最末尾的"近因锚点"。LLM 对结尾最敏感，而 style.md 的长度/禁 markdown
+# 硬约束在 persona 中段、后面还压着 modules/skills/compact，容易被"信息型问题→列清单"的默认
+# 反射盖过。这里只做一次行为复述：不带字数（权威约束仍在 style.md，避免双源漂移）、不扫用户
+# 输入（长短仍由模型自己判断），纯粹把"短 + 禁 markdown"挪到模型最听得进去的位置。
+_REPLY_LENGTH_ANCHOR = (
+    "（发送前自检）这是微信聊天，不是写文档：默认一两句话直出；"
+    "不用 markdown —— 不要编号列表 1./2./3.、不要 - 列表、不要 **加粗**、不要标题；"
+    "只有用户这轮明确要展开 / 要方案 / 要脚本时才长，否则先短答或追问。"
+)
+
 
 @dataclass
 class Session:
@@ -67,7 +77,7 @@ class Session:
     def _effective_system(self) -> str:
         """合并顺序（空段跳过）：
         memory_block → core_persona(messages[0]) → persona_modules_listing
-        → active_module(正文) → active_skills → compact_summary
+        → active_module(正文) → active_skills → compact_summary → reply_length_anchor
         """
         if self.messages and self.messages[0].role == "system":
             raw = self.messages[0].content
@@ -83,6 +93,7 @@ class Session:
                 self.active_module_text,
                 self.active_skills_text,
                 self.compact_summary,
+                _REPLY_LENGTH_ANCHOR,
             ) if p
         ]
         return _SUMMARY_JOINER.join(parts)
