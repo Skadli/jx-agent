@@ -68,8 +68,9 @@ class ShortTermMemory:
         - session-level snapshot：{ts, type:"snapshot", messages:[...]}
           （cmd_new 的封档格式 / d8a6ffb 之前 web 通道唯一写出的格式）
 
-        两种格式可在同一 jsonl 混合（snapshot 后又有 per-message append），
-        都能正确还原。调用方负责把第 0 个 system 占位补上（如有）。
+        两种格式可在同一 jsonl 混合。snapshot 是“截至当时的完整帧”，所以读到
+        snapshot 时会替换此前累计的 per-message，随后再继续追加 snapshot 之后的新行。
+        system 消息不从磁盘恢复；调用方会补当前版本的 system 占位并刷新 persona。
         """
         try:
             rows = await self._writer.read_all(session_id)
@@ -80,14 +81,17 @@ class ShortTermMemory:
         for r in rows:
             # 分支 1：旧 snapshot 行——展开 messages 数组
             if r.get("type") == "snapshot" and isinstance(r.get("messages"), list):
+                snapshot_messages: list[ChatMessage] = []
                 for m in r["messages"]:
                     if not isinstance(m, dict):
                         continue
                     role = m.get("role")
-                    if role not in ("system", "user", "assistant", "tool"):
+                    if role == "system":
+                        continue
+                    if role not in ("user", "assistant", "tool"):
                         continue
                     content = m.get("content")
-                    out.append(ChatMessage(
+                    snapshot_messages.append(ChatMessage(
                         role=role,
                         content=content if content is not None else "",
                         tool_calls=m.get("tool_calls"),
@@ -95,10 +99,13 @@ class ShortTermMemory:
                         name=m.get("name"),
                         reasoning_content=m.get("reasoning_content"),
                     ))
+                out = snapshot_messages
                 continue
             # 分支 2：per-message 行（PR1 之后的新写法）
             role = r.get("role")
-            if role not in ("system", "user", "assistant", "tool"):
+            if role == "system":
+                continue
+            if role not in ("user", "assistant", "tool"):
                 continue
             content = r.get("content")
             out.append(ChatMessage(
@@ -131,6 +138,7 @@ class ShortTermMemory:
                     "name": m.name,
                 }
                 for m in session.messages
+                if m.role != "system"
             ],
             "compact_summary": session.compact_summary,
         }
