@@ -14,8 +14,9 @@ _logger = get_logger(__name__)
 
 
 class CompositeConfirmer:
-    """复合 confirmer：优先 wechat（如果 contextvar 标记是 wechat 入口），
-    其次 web；都没绑定就回退到 fallback（默认 deny）。
+    """复合 confirmer：优先成长自动放行（无人值守、免审批 #5），
+    其次 wechat（如果 contextvar 标记是 wechat 入口），再次 web；
+    都没绑定就回退到 fallback（默认 deny）。
     """
 
     def __init__(
@@ -24,16 +25,26 @@ class CompositeConfirmer:
         web: Confirmer | None = None,
         wechat: Confirmer | None = None,
         fallback: Confirmer | None = None,
+        growth: Confirmer | None = None,
     ) -> None:
         self._web = web
         self._wechat = wechat
         self._fallback = fallback
+        # 成长后台自动放行（PR3 #5）；仅当 _current_growth contextvar 为真时启用，
+        # 由 GrowthRunner 严格圈定在一次成长运行内。缺省 None 则成长上下文回落 fallback(deny)。
+        self._growth = growth
 
     async def confirm(self, request: ConfirmRequest) -> ConfirmResponse:
-        # 延迟 import 避免 channels 反向依赖 security
+        # 延迟 import 避免 channels / scheduler 反向依赖 security
         from sanshiliu.channels.web.approvals import _current_emitter
         from sanshiliu.channels.wechat.approvals import _current_wechat_user
+        from sanshiliu.security.growth_approvals import in_growth_autoallow
 
+        # 成长自动放行最优先：凌晨无人值守，Skill(skill-finder)/installer 的工具调用
+        # 必须免审批通过（#5）。注意 deny-pattern / critical 硬底线在 PermissionManager.check
+        # 里 ask 之前就返回，本分支接触不到——危险命令仍被拦，放行只覆盖会询问的那批。
+        if in_growth_autoallow() and self._growth is not None:
+            return await self._growth.confirm(request)
         if _current_wechat_user.get() and self._wechat is not None:
             return await self._wechat.confirm(request)
         if _current_emitter.get() is not None and self._web is not None:

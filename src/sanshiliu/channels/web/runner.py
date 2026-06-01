@@ -25,6 +25,11 @@ from sanshiliu.channels.web.api import (
     make_tool_calls_handler,
     make_tools_handler,
 )
+from sanshiliu.channels.web.api_growth import (
+    make_growth_chapter_handler,
+    make_growth_overview_handler,
+    make_growth_persona_handler,
+)
 from sanshiliu.channels.web.api_heartbeat import (
     make_heartbeat_dispatch_handler,
     make_heartbeat_list_handler,
@@ -108,11 +113,14 @@ from sanshiliu.scheduler import (
     HeartbeatScheduler,
     apply_state_to_scheduler,
     build_dream_task,
+    build_growth_task,
     heartbeat_state_path,
     load_heartbeat_state,
+    make_active_core_provider,
     save_heartbeat_state,
 )
 from sanshiliu.security.composite_confirmer import CompositeConfirmer
+from sanshiliu.security.growth_approvals import GrowthAutoConfirmer
 from sanshiliu.security.path_guard import PathGuard
 from sanshiliu.security.permission import PermissionManager
 from sanshiliu.security.settings_loader import SettingsLoader
@@ -138,8 +146,14 @@ async def run_serve() -> int:
 
     configure_logging(log_level=settings.log_level, log_dir=settings.data_dir / "logs")
 
+    # 成长人格覆盖（PR2）：provider 读 growth-state.json 的 active_persona_chapter，让 loader
+    # 在成长激活时解析到 data/growth/persona/chapter-N/、否则回落 base core。serve 进程跑
+    # scheduler，成长写完 invalidate 即热生效，日常对话以"长成的人"回应（满足 prd #7）。
+    growth_state_path = settings.data_dir / "growth-state.json"
+    active_core_provider = make_active_core_provider(growth_state_path, settings.data_dir)
+
     # 人设 + 系统 prompts
-    loader = PersonaLoader(settings.persona_dir)
+    loader = PersonaLoader(settings.persona_dir, active_core_provider=active_core_provider)
     try:
         loader.load()
     except ConfigError as exc:
@@ -192,6 +206,8 @@ async def run_serve() -> int:
                 confirmer=CompositeConfirmer(
                     web=WebApprovalConfirmer(approval_broker),
                     wechat=WechatApprovalConfirmer(wechat_approval_broker),
+                    # 成长后台无人值守自动放行（#5）；仅 GrowthRunner 圈定的成长运行内生效
+                    growth=GrowthAutoConfirmer(),
                 ),
                 db=db,
             )
@@ -315,6 +331,28 @@ async def run_serve() -> int:
             enabled=settings.dream_scheduler_enabled,
         )
     )
+    # 成长任务：数字分身每天做一次成长梦（满 30 岁定格）；与 dream 同走心跳模块（prd #3）
+    # 状态在 <data_dir>/growth-state.json（章数/年龄真相源），env 是首次 seed
+    heartbeat.register(
+        build_growth_task(
+            engine=engine,
+            db=db,
+            growth_state_path=growth_state_path,
+            memdir_dir=settings.memdir_dir,
+            fire_hour=settings.growth_hour,
+            enabled=settings.growth_enabled,
+            start_age=settings.growth_start_age,
+            years_per_chapter=settings.growth_years_per_chapter,
+            end_age=settings.growth_end_age,
+            # PR2 人格演化：传 base core 来源 + 版本化落盘根 + 同一 loader 实例（写完热生效）
+            persona_dir=settings.persona_dir,
+            data_dir=settings.data_dir,
+            persona_loader=loader,
+            # PR3 技能习得：同一个 SkillLoader 实例——成长跑完做"装前/装后目录 diff"记账，
+            # 并 invalidate+reload 让新装 skill 立刻对后续对话生效（serve 进程内共享一份）
+            skill_loader=skill_loader,
+        )
+    )
     _hb_state_path = heartbeat_state_path(settings.data_dir)
     apply_state_to_scheduler(heartbeat, load_heartbeat_state(_hb_state_path))
     heartbeat.set_change_hook(lambda: save_heartbeat_state(_hb_state_path, heartbeat))
@@ -374,6 +412,24 @@ async def run_serve() -> int:
     router.register("GET", "/api/permissions", make_permissions_handler(settings_loader, db, loop))
     router.register("GET", "/api/settings_json", make_settings_json_handler(settings_loader))
     router.register("GET", "/api/heartbeat", make_heartbeat_list_handler(heartbeat))
+    # 成长模块读端点（PR4）：总览 + 章详情 + 章人格快照。调度/启停/手动推进复用心跳模块
+    # （growth 已注册为 HeartbeatTask，自动在 /api/heartbeat 列出），这里只做"看结果"的读 API。
+    # exact 必须在 prefix 之前注册（resolve 先查 exact）；chapter/persona handler 内严格校验路径形状。
+    router.register("GET", "/api/growth", make_growth_overview_handler(
+        growth_state_path,
+        start_age=settings.growth_start_age,
+        years_per_chapter=settings.growth_years_per_chapter,
+        end_age=settings.growth_end_age,
+        enabled=settings.growth_enabled,
+    ))
+    router.register_prefix("GET", "/api/growth/chapters/", make_growth_chapter_handler(
+        growth_state_path,
+        settings.memdir_dir,
+        start_age=settings.growth_start_age,
+        years_per_chapter=settings.growth_years_per_chapter,
+        end_age=settings.growth_end_age,
+    ))
+    router.register_prefix("GET", "/api/growth/persona/", make_growth_persona_handler(settings.data_dir))
 
     # ─── 写 endpoints ───
     router.register("POST", "/api/sessions/new", make_session_new_handler(session_store))

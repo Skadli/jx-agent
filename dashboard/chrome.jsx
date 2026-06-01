@@ -116,6 +116,8 @@ const TAB_LABEL = {
   tools: "工具",
   channels: "通道",
   permissions: "权限",
+  heartbeat: "心跳",
+  growth: "成长",
   settings: "设置"
 };
 
@@ -147,6 +149,7 @@ const RAIL_SECTIONS = [
   label: "系统",
   items: [
   { id: "heartbeat", label: "心跳", icon: "spark", count: null },
+  { id: "growth", label: "成长", icon: "metric", count: null },
   { id: "settings", label: "设置", icon: "settings", count: null }]
 
 }];

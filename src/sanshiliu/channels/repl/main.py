@@ -28,6 +28,7 @@ from sanshiliu.memory.longterm.consolidate import load_consolidate_instruction
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
+from sanshiliu.scheduler import make_active_core_provider
 from sanshiliu.security.path_guard import PathGuard
 from sanshiliu.security.permission import PermissionManager
 from sanshiliu.security.prompts import ReplConfirmer
@@ -169,8 +170,15 @@ async def run_repl() -> int:
 
     configure_logging(log_level=settings.log_level, log_dir=settings.data_dir / "logs")
 
+    # 成长人格覆盖（PR2）：REPL 不跑 scheduler（不会推进成长），但要让日常对话以"已长成的人格"
+    # 回应——provider 读 growth-state.json 的 active_persona_chapter 解析到 chapter-N 覆盖目录，
+    # 无成长则回落 base core。watcher 5s 轮询激活目录 mtime，serve 进程改了人格这边也能跟上。
+    active_core_provider = make_active_core_provider(
+        settings.data_dir / "growth-state.json", settings.data_dir
+    )
+
     # 人设：缺文件直接拦在启动期，错误信息含友好提示
-    loader = PersonaLoader(settings.persona_dir)
+    loader = PersonaLoader(settings.persona_dir, active_core_provider=active_core_provider)
     try:
         loader.load()
     except ConfigError as exc:

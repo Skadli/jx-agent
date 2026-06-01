@@ -132,6 +132,11 @@ python -m sanshiliu [--version] <command>
 | `SANSHILIU_SECURITY_ENABLED` | `true` | 关掉不审批工具调用 |
 | `SANSHILIU_AUTO_EXTRACT_ENABLED` | `false` | 每轮异步提取候选记忆（开了会多调一次 LLM） |
 | `SANSHILIU_WECHAT_ENABLED` | `false` | 拉 iLink wechat bot |
+| `SANSHILIU_GROWTH_ENABLED` | `false` | 成长系统总开关；关=整条成长线停（也是外部 skill 自动安装的 kill-switch）；仅 `serve` 生效 |
+| `SANSHILIU_GROWTH_HOUR` | `3` | 成长定时器醒来的小时（0-23，local time） |
+| `SANSHILIU_GROWTH_YEARS_PER_CHAPTER` | `5` | 每章成长梦跨多少年 |
+| `SANSHILIU_GROWTH_START_AGE` | `5` | 成长起点年龄（原三十六贱笑起点） |
+| `SANSHILIU_GROWTH_END_AGE` | `30` | 成长终点年龄；跑满即定格不再推进 |
 | `SANSHILIU_WEB_PORT` | `9527` | HTTP 端口 |
 | `WEIXIN_ACCOUNT_ID` / `WEIXIN_TOKEN` | — | Hermes 风格官方 iLink Bot 凭据；setup 扫码后自动写入 |
 | `WEIXIN_BASE_URL` | `https://ilinkai.weixin.qq.com` | 官方 iLink Bot API 地址 |
@@ -258,6 +263,32 @@ Dashboard 的 Skills 页支持把每个 skill 的 `structure.json` 渲染成 Dif
 ```
 
 **边规则**：`sequence` 表示主流程，`anchor` 表示 trigger/output 锚点，`tool` / `subagent` / `resource` 表示旁路依赖。Dashboard 不再从 `SKILL.md` 自动推导画布；改动 skill 后需要同步维护对应的 `structure.json`。
+
+---
+
+## 成长系统（growth）
+
+数字分身的"逐章成长"。在调度层注册为一个心跳任务 `growth`（与现有的 `dream` 做梦任务并列），**仅 `serve` 进程生效**（REPL 不跑调度器）。**默认关闭**（`SANSHILIU_GROWTH_ENABLED=false`）。
+
+开启后每天推进一章成长：从 **5 岁起、每章跨 5 年、共 5 章长到 30 岁定格**。每章读前几章传记、逻辑自洽地往后续写本章经历（内容可丰富到修仙/穿越，但要圆得回来），产出三件事：
+
+- **传记**：写入 memdir `reference_growth-chapter-N.md`（永久，作为下一章输入）。
+- **人格整体演化**：把核心人格**整盘改写**成"这岁数已经长成的那个人"，版本化存进 `data/growth/persona/chapter-N/`，由 `PersonaLoader` 的 active-core provider 在成长激活时**覆盖** base `persona/core/`（base 文件全程不写、可回滚；切回/回退 `active_persona_chapter` 即换人格）。世界观不隔离——长成校长就是校长人格，日常对话即以长成的人回应。
+- **技能习得**：LLM 在成长会话里自己调 `Skill(skill-finder)` 查找并自动安装真实 skill（按 skills 目录前后 diff 记账，`source=growth-chapter-N`）；**不自造 skill**，找不到当章不装。
+
+### 开启与触发
+
+1. `.env` 设 `SANSHILIU_GROWTH_ENABLED=true`（可选调 `SANSHILIU_GROWTH_HOUR` 等，见上方配置表）。
+2. 以 `python -m sanshiliu serve` 启动（REPL 不跑成长）。
+3. 调度走心跳：默认每天 `GROWTH_HOUR` 点自动推进一章，或在 dashboard **心跳模块**对 `growth` 任务点"立即运行 / 开关 / 改配置"（即 `/api/heartbeat/growth/*`）手动推进，连点可快速跑满 5 章验证。
+
+### Dashboard 成长模块
+
+`dashboard/views/growth.jsx` 是"看结果"面：时间线（5→30、当前章/岁、进度）、每章传记/汇报/习得 skills/人格快照、做梦与成长历史；调度动作（enable / 立即运行 / toggle）复用**心跳模块**。读端点：`GET /api/growth`（总览）、`GET /api/growth/chapters/{n}`（章详情）、`GET /api/growth/persona/{n}`（该章人格快照）。成长未激活时总览优雅返回空闲态，不报错。
+
+### 安全说明（诚实披露）
+
+外部 skill 自动安装在凌晨**无人值守、无人工审批**地发生——这是用户明确知情并接受的供应链/prompt 注入风险。它**有界**：`settings.deny` 命中、PathGuard 黑名单、`critical` 档 bash（`rm -rf` / `dd` / `mkfs` 等）的硬拒绝都在权限状态机里**先于**成长自动放行返回，成长放行只作用于 `defaultMode=ask` 才会询问的那批非 critical 调用（Skill 本身、`git clone` / `npx` 等），且每次放行写一行审计日志、另落 `tool_calls` 表。**全局 kill-switch = `SANSHILIU_GROWTH_ENABLED=false`**：关掉则整条成长线（含自动放行）立即停摆。已装外部 skill 的自动卸载未做（人格可回滚，skill 卸载二期）。
 
 ---
 

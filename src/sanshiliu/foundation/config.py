@@ -310,6 +310,42 @@ class Settings(BaseSettings):
         description="自上次做梦以来需累积多少个新 session 才放行；用户原话：对话文件 >= N 个",
     )
 
+    # 成长 scheduler（与 skills/growth/SKILL.md 配套；只在 serve 模式生效——REPL 进程不长跑）
+    # 数字分身从 start_age 起每天做一次"成长梦"、每梦跨 years_per_chapter 年，逻辑自洽承接前文，
+    # 跑满 end_age 定格。growth_enabled 同时是 #5 外部 skill 自动安装的全局 kill-switch。
+    growth_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("growth_enabled", "SANSHILIU_GROWTH_ENABLED"),
+        description="是否启用成长系统；关=全局停（也是自动装 skill 的总开关）；只在 serve 模式跑",
+    )
+    growth_hour: int = Field(
+        default=3,
+        ge=0,
+        le=23,
+        validation_alias=AliasChoices("growth_hour", "SANSHILIU_GROWTH_HOUR"),
+        description="成长定时器醒来的小时（local time，0-23）；默认夜里 3 点",
+    )
+    growth_years_per_chapter: int = Field(
+        default=5,
+        ge=1,
+        validation_alias=AliasChoices(
+            "growth_years_per_chapter", "SANSHILIU_GROWTH_YEARS_PER_CHAPTER"
+        ),
+        description="每章成长梦跨多少年；默认 5 年/章",
+    )
+    growth_start_age: int = Field(
+        default=5,
+        ge=0,
+        validation_alias=AliasChoices("growth_start_age", "SANSHILIU_GROWTH_START_AGE"),
+        description="成长起点年龄；默认 5 岁（原三十六贱笑起点）",
+    )
+    growth_end_age: int = Field(
+        default=30,
+        ge=1,
+        validation_alias=AliasChoices("growth_end_age", "SANSHILIU_GROWTH_END_AGE"),
+        description="成长终点年龄；跑满即定格，不再推进；默认 30 岁",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
