@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Install a skill from a GitHub repo path into the jx-agent project skills dir.
+"""Install a skill from a GitHub repo path into the jx-agent user-global skills dir.
 
 注：本脚本原是 OpenAI Codex 的 skill-installer（默认装到 ~/.codex/skills），但 jx-agent 的
-SkillLoader 只扫 ./.sanshiliu/skills 与 ./skills——装到 ~/.codex/skills 等于装了个寂寞（growth
-目录 diff 永远净 0）。故 _default_dest() 改为优先 jx-agent 的项目 skills 目录：
-SANSHILIU_SKILLS_DIR_PROJECT（有则用）→ 否则 ./.sanshiliu/skills（相对 cwd=仓库根）。--dest 仍可覆盖。
+SkillLoader 不扫该目录——装到 ~/.codex/skills 等于装了个寂寞（growth 目录 diff 永远净 0）。
+故 _default_dest() 改为 jx-agent 的用户级全局 skills 目录（跨项目共享）：
+SANSHILIU_SKILLS_DIR_GLOBAL（有则用）→ 否则 <SANSHILIU_HOME_DIR>/skills（SANSHILIU_HOME_DIR 有则用）
+→ 否则 ~/.sanshiliu/skills（expanduser）。--dest 仍可覆盖。
+对应 jx-agent config 的 skills_dir_global（同名 env），loader 会扫该目录（优先级 project>global>repo），
+所以装到这里成长 phase-2 的"装前/装后目录 diff"才数得到。
 """
 
 from __future__ import annotations
@@ -243,12 +246,18 @@ def _resolve_source(args: Args) -> Source:
 
 
 def _default_dest() -> str:
-    # 优先 jx-agent 项目 skills 目录（loader 真正会扫的地方）：env 覆盖 → 否则 ./.sanshiliu/skills。
+    # 用户级全局 skills 目录（loader 真正会扫的地方，跨项目共享）：
+    #   1) SANSHILIU_SKILLS_DIR_GLOBAL 有则用（与 jx-agent config 同名 env 对齐）；
+    #   2) 否则 <SANSHILIU_HOME_DIR>/skills（SANSHILIU_HOME_DIR 有则用，跟随自定义 home）；
+    #   3) 否则 ~/.sanshiliu/skills（expanduser）。
     # 不再回落 ~/.codex/skills——那是 Codex 的目录，jx-agent 装到那等于装了个寂寞。
-    project_dir = os.environ.get("SANSHILIU_SKILLS_DIR_PROJECT")
-    if project_dir:
-        return os.path.expanduser(project_dir)
-    return os.path.join(".sanshiliu", "skills")
+    global_dir = os.environ.get("SANSHILIU_SKILLS_DIR_GLOBAL")
+    if global_dir:
+        return os.path.expanduser(global_dir)
+    home_dir = os.environ.get("SANSHILIU_HOME_DIR")
+    if home_dir:
+        return os.path.join(os.path.expanduser(home_dir), "skills")
+    return os.path.join(os.path.expanduser("~"), ".sanshiliu", "skills")
 
 
 def _parse_args(argv: list[str]) -> Args:

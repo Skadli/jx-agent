@@ -221,7 +221,13 @@ async def run_serve() -> int:
     skill_loader: SkillLoader | None = None
     if settings.skills_enabled:
         try:
-            skill_loader = SkillLoader([settings.skills_dir_project, settings.skills_dir_repo])
+            # 优先级 project>global>repo：global 是用户级跨项目目录（skill-installer 默认装这里），
+            # 接进来后成长 phase-2 装到 ~/.sanshiliu/skills 的 skill 才会被扫到、被 diff 记账非 0。
+            skill_loader = SkillLoader([
+                settings.skills_dir_project,
+                settings.skills_dir_global,
+                settings.skills_dir_repo,
+            ])
             skills = skill_loader.load()
             if skills:
                 skill_activator = SkillActivator(skill_loader)

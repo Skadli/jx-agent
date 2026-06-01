@@ -151,8 +151,14 @@ async def build_app(
     skill_activator: SkillActivator | None = None
     if settings.skills_enabled:
         try:
+            # 优先级 project>global>repo：global 是用户级跨项目目录（skill-installer 默认装这里），
+            # 与 runner.py / repl 三处构造点保持一致，否则经 build_app 装配会漏扫全局装的 skill。
             skill_loader = SkillLoader(
-                [settings.skills_dir_project, settings.skills_dir_repo],
+                [
+                    settings.skills_dir_project,
+                    settings.skills_dir_global,
+                    settings.skills_dir_repo,
+                ],
             )
             skills = skill_loader.load()
             if skills:

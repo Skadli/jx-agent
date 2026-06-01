@@ -254,6 +254,13 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("skills_dir_project", "SANSHILIU_SKILLS_DIR_PROJECT"),
         description="项目级 skills 目录（优先级最高）",
     )
+    skills_dir_global: Path = Field(
+        # 默认值是占位（仅当 env 未显式提供时由 _default_skills_dir_global 改成 home_dir/skills）；
+        # 用户级全局 skills 目录（跨项目共享），优先级介于 project 与 repo 之间。
+        default=Path("~/.sanshiliu/skills"),
+        validation_alias=AliasChoices("skills_dir_global", "SANSHILIU_SKILLS_DIR_GLOBAL"),
+        description="用户级全局 skills 目录（跨项目共享；优先级 project>global>repo）；缺省随 home_dir 走 <home_dir>/skills",
+    )
     skills_dir_repo: Path = Field(
         default=Path("./skills"),
         validation_alias=AliasChoices("skills_dir_repo", "SANSHILIU_SKILLS_DIR_REPO"),
@@ -396,6 +403,21 @@ class Settings(BaseSettings):
     def _strip_trailing_slash(cls, v: str) -> str:
         """base_url 末尾不带 /，与 openai SDK 内部拼接一致，避免双斜杠 404。"""
         return v.rstrip("/")
+
+    @model_validator(mode="after")
+    def _default_skills_dir_global(self) -> Settings:
+        """全局 skills 目录缺省随 home_dir 走 <home_dir>/skills，并 expanduser/resolve/mkdir。
+
+        为什么用 model_validator 而非 field default_factory：要"跟随自定义 SANSHILIU_HOME_DIR"，
+        必须在 home_dir 解析完之后再派生；只有用户没用 env 显式指定 skills_dir_global 时才覆盖，
+        显式给了就尊重。建目录是因为 SkillLoader 扫描前要保证目录存在（不存在 iterdir 会出错）。
+        """
+        if "skills_dir_global" not in self.model_fields_set:
+            # 未显式提供 → 派生为 <home_dir>/skills（home_dir 此时已被 field_validator 解析为绝对路径）
+            self.skills_dir_global = self.home_dir / "skills"
+        self.skills_dir_global = self.skills_dir_global.expanduser().resolve()
+        self.skills_dir_global.mkdir(parents=True, exist_ok=True)
+        return self
 
     @model_validator(mode="after")
     def _check_channel_dependencies(self) -> Settings:

@@ -236,7 +236,12 @@ async def run_repl() -> int:
     skill_activator: SkillActivator | None = None
     if settings.skills_enabled:
         try:
-            skill_loader = SkillLoader([settings.skills_dir_project, settings.skills_dir_repo])
+            # 优先级 project>global>repo：global 是用户级跨项目目录（skill-installer 默认装这里）
+            skill_loader = SkillLoader([
+                settings.skills_dir_project,
+                settings.skills_dir_global,
+                settings.skills_dir_repo,
+            ])
             skills = skill_loader.load()
             if skills:
                 skill_activator = SkillActivator(skill_loader)

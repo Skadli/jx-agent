@@ -86,8 +86,8 @@ keywords:
   （这轮也调不动 skill-finder/installer，去试只会浪费）。传记 JSON 才是这轮的唯一产物。
 - **装 skill 是之后单独一段**（系统会把你这章的 skill_intents 再交给你，那一段才有工具）。那一段里：
   - 对每个 intent，先 **`Skill(skill-finder)` 发现**一个**真实存在**的 skill（它给出 GitHub 形式的
-    `owner/repo` + 子目录），再 **`Skill(skill-installer)` 装进项目 skills 目录**
-    （脚本默认就装到 `./.sanshiliu/skills/<id>/`，不必手填目标目录；**不要**用 `npx clawhub install` /
+    `owner/repo` + 子目录），再 **`Skill(skill-installer)` 装进用户级全局 skills 目录**
+    （脚本默认就装到 `~/.sanshiliu/skills/<id>/`，不必手填目标目录；**不要**用 `npx clawhub install` /
     `npx skills add` 自己装——那会装到系统扫不到的目录还可能卡死）。
   - **每章最多装 2-3 个**；**找到才装，找不到就跳过这条**（不要硬凑、不要降低标准）。
   - 你处在后台无人值守会话里，安装类工具调用会被**自动放行（免人工审批）**、且有**硬超时**——
