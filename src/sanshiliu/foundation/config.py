@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -411,9 +412,17 @@ class Settings(BaseSettings):
         为什么用 model_validator 而非 field default_factory：要"跟随自定义 SANSHILIU_HOME_DIR"，
         必须在 home_dir 解析完之后再派生；只有用户没用 env 显式指定 skills_dir_global 时才覆盖，
         显式给了就尊重。建目录是因为 SkillLoader 扫描前要保证目录存在（不存在 iterdir 会出错）。
+
+        为什么把"空串/纯空白"也当未设：`SANSHILIU_SKILLS_DIR_GLOBAL=`（空值）会让 model_fields_set
+        判定为"已设"，但 pydantic 把空串/纯空白 coerce 成 Path("")，其 str() == "."（CWD 占位），
+        .resolve() 会塌成 CWD——既不是用户本意、又跟 installer 脚本（它对空串走 falsy 兜底到
+        <home>/skills）分道扬镳，两边落点不一致就是 bug #3。注意这里不能用 `not str(...).strip()` 判空：
+        Path("") 的 str 是 "."（非空），漏判；故直接拿 str 比 "" / "." 这两个空/CWD 占位形态。
+        （对"全局 skills 目录"而言，落到 CWD 从无合理语义，把显式 "." 也一并回落是预期行为。）
         """
-        if "skills_dir_global" not in self.model_fields_set:
-            # 未显式提供 → 派生为 <home_dir>/skills（home_dir 此时已被 field_validator 解析为绝对路径）
+        raw = str(self.skills_dir_global).strip()
+        if "skills_dir_global" not in self.model_fields_set or raw in ("", "."):
+            # 未显式提供 / 空白 / CWD 占位 → 派生为 <home_dir>/skills（home_dir 已被 field_validator 解析为绝对路径）
             self.skills_dir_global = self.home_dir / "skills"
         self.skills_dir_global = self.skills_dir_global.expanduser().resolve()
         self.skills_dir_global.mkdir(parents=True, exist_ok=True)
@@ -437,10 +446,24 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """全局单例；首次加载并校验，测试可调用 cache_clear 重置。"""
+    """全局单例；首次加载并校验，测试可调用 cache_clear 重置。
+
+    单一真相源：把解析后的 home_dir / skills_dir_global **回写进 os.environ**。独立的
+    skill-installer 脚本（install-skill-from-github.py）只读 os.environ、不读 .env，又无 pydantic 派生，
+    若不回写，它的落点会和 loader 扫的 skills_dir_global 分道扬镳——用户只在 .env 配 home，或把
+    SANSHILIU_SKILLS_DIR_GLOBAL 设成空串时尤其明显（bug #1/#3：装一处、扫另一处，growth diff 永净 0）。
+    回写后 installer 的 os.environ.get("SANSHILIU_SKILLS_DIR_GLOBAL") 一定拿到 loader 认定的那条绝对路径。
+
+    用直接赋值（非 setdefault）：必须覆盖掉旧的/空的 env 值——否则空串/陈旧值仍会赢。get_settings 有
+    lru_cache，整个进程只跑一次、幂等。只动这两个 SANSHILIU_* 键、且都设成它们解析后的真值，对其他
+    子进程是良性的（dream/日常 bash 继承到的也只是这两条权威路径，不污染别的）。
+    """
     try:
-        return Settings()  # type: ignore[call-arg]  # pydantic-settings 运行时填充
+        settings = Settings()  # type: ignore[call-arg]  # pydantic-settings 运行时填充
     except Exception:
         # 保留 pydantic 原始字段错误信息
         logging.getLogger(__name__).exception("配置加载失败")
         raise
+    os.environ["SANSHILIU_HOME_DIR"] = str(settings.home_dir)
+    os.environ["SANSHILIU_SKILLS_DIR_GLOBAL"] = str(settings.skills_dir_global)
+    return settings

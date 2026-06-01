@@ -360,6 +360,8 @@ async def run_serve() -> int:
             skill_loader=skill_loader,
             # 方案 A：phase-2 装 skill 的 bash 硬超时（防 npx 冷拉/无 TTY 挂死拖久 phase-2）
             skill_install_timeout_sec=settings.skill_install_timeout_sec,
+            # phase-2 安装 prompt 据实点名 installer 落点（= loader 扫的全局目录），杜绝 prompt/落点错位
+            skills_dir_global=settings.skills_dir_global,
         )
     )
     _hb_state_path = heartbeat_state_path(settings.data_dir)

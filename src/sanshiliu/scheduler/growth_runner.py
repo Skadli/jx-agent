@@ -24,7 +24,8 @@
   成功 → 写传记 + 演化人格 + **推进状态并落盘**——全部发生在任何安装之前。
 - **phase-2（best-effort、bounded）**：状态已推进后，在成长自动放行窗口里再跑一次
   complete_turn(use_tools=True, max_turns 小)，把本章 skill_intents（**每章 ≤ _GROWTH_SKILL_INSTALL_CAP**）
-  交给 LLM：经 Skill(skill-finder) 发现、Skill(skill-installer) 装进项目 skills 目录；找不到就跳过。
+  交给 LLM：经 Skill(skill-finder) 发现、Skill(skill-installer) 装进用户级全局 skills 目录（loader 真正会扫的
+  skills_dir_global，installer 默认落点）；找不到就跳过。
   然后目录 diff 记账，回填刚推进那一章的 installed_skills 并重存。**phase-2 失败/超时/异常绝不 raise、
   绝不回退已成立的章**——只记日志，heartbeat 仍视本章为成功（"第 N 章完成，装了 K 个 skill"）。
   只有 phase-1 失败才算 error。
@@ -132,6 +133,7 @@ class GrowthRunner:
         persona_loader: PersonaLoader | None = None,
         skill_loader: SkillLoader | None = None,
         skill_install_timeout_sec: int = 60,
+        skills_dir_global: Path | None = None,
     ) -> None:
         self._engine = engine
         self._state_path = growth_state_path
@@ -142,6 +144,11 @@ class GrowthRunner:
         # phase-2 装 skill 的 bash 硬超时（秒）——写进 prompt 让 LLM 据此给 bash 的 timeout_sec，
         # 防 npx 冷拉/无 TTY 挂死把 phase-2 拖久；默认 60，serve 由 config 透传。
         self._skill_install_timeout_sec = skill_install_timeout_sec
+        # phase-2 安装 prompt 要据实写出 installer 真正的落点——即 loader 扫的那条用户级全局 skills 目录
+        # （= settings.skills_dir_global）。get_settings 已把它回写进 os.environ，故 installer 脚本默认即装
+        # 到这里，prompt 里报这条绝对路径才不会和实际落点错位（旧 bug #2：prompt 硬写 ./.sanshiliu/skills）。
+        # 缺它（单测/不传）→ prompt 退回不点名具体目录，只说"装进系统默认的用户级全局 skills 目录"。
+        self._skills_dir_global = skills_dir_global
         # PR2 人格演化所需：base core 来源（persona_dir/core）+ 版本化落盘根（data_dir/growth/persona）
         # + 写完热生效的 loader。三者缺任一则跳过人格演化（仍写传记 + 推进状态，不报错），
         # 这样单测 / 不传的调用点也能跑。
@@ -326,7 +333,7 @@ class GrowthRunner:
         无 skill_loader（单测/未启用）→ 直接 []（跳过安装尝试，章已成立）。无意图 → 也跳过。
 
         安装在第二次 complete_turn 的 tool 循环里有机发生——把本章 skill_intents 交给 LLM，让它经
-        Skill(skill-finder) 发现、Skill(skill-installer) 装进项目 skills 目录；找不到就跳过。自动放行
+        Skill(skill-finder) 发现、Skill(skill-installer) 装进用户级全局 skills 目录；找不到就跳过。自动放行
         窗口 + 非交互 npm 环境只圈这一段，finally 复位（绝不外溢/全局污染）。装完按"装前/装后目录 diff"
         记账——目录是真相源，不只信 LLM 自报。
         """
@@ -584,10 +591,12 @@ class GrowthRunner:
     def _build_install_prompt(
         self, chapter_no: int, age_range: str, intents: list[dict[str, Any]]
     ) -> str:
-        """拼 phase-2 安装 prompt：把本章 skill_intents 交给 LLM，让它发现→安装真实 skill 到项目目录。
+        """拼 phase-2 安装 prompt：把本章 skill_intents 交给 LLM，让它发现→安装真实 skill 到全局目录。
 
         传记已在 phase-1 落地，这一段**只做装 skill**：经 Skill(skill-finder) 发现、Skill(skill-installer)
-        装进项目 skills 目录；找不到就跳过。强调上限/超时/非交互由系统保障，别自造 SKILL.md。
+        装进用户级全局 skills 目录（= loader 真正会扫的 skills_dir_global）；找不到就跳过。强调上限/超时/
+        非交互由系统保障，别自造 SKILL.md。落点据实写出 self._skills_dir_global——旧 bug #2 这里硬写
+        ./.sanshiliu/skills，和实际落点（用户级全局目录）错位，会误导模型乱填 --dest。
         """
         timeout = self._skill_install_timeout_sec
         lines: list[str] = [
@@ -601,10 +610,23 @@ class GrowthRunner:
             why = str(it.get("why") or "").strip()
             lines.append(f"{i}. 领域：{domain}" + (f"；为什么：{why}" if why else ""))
         lines.append("")
+        # 落点据实告知：installer 默认就装到这条用户级全局 skills 目录（get_settings 已把它回写进
+        # os.environ，脚本读 SANSHILIU_SKILLS_DIR_GLOBAL 即拿到它），故模型不必手填 --dest；点名具体
+        # 路径是 belt-and-suspenders，万一要显式传也传这条，绝不会装到 loader 扫不到的地方。
+        if self._skills_dir_global is not None:
+            dest_clause = (
+                f"**装进用户级全局 skills 目录 `{self._skills_dir_global}`**"
+                "（脚本默认就装到这里，不必手填 --dest；若要显式指定，也只用这条路径）。"
+            )
+        else:
+            dest_clause = (
+                "**装进系统默认的用户级全局 skills 目录**"
+                "（脚本已默认装到那里，不必手填 --dest）。"
+            )
         lines.append(
             "做法（每个缺口）：先 `Skill(skill-finder)` 按领域**发现**一个真实存在的 skill"
             "（它会给出 GitHub 形式的 owner/repo + 子目录）；再 `Skill(skill-installer)` 据此"
-            "**装进项目 skills 目录**（脚本默认就装到 ./.sanshiliu/skills，不必手填 --dest）。"
+            + dest_clause
         )
         lines.append(
             f"约束：本章最多装 {_GROWTH_SKILL_INSTALL_CAP} 个；**找不到合适的真实 skill 就跳过这条**"

@@ -474,6 +474,47 @@ async def test_phase2_skipped_when_no_skill_intents(tmp_path: Path) -> None:
     assert state.current_chapter == 1
 
 
+# ── #2 phase-2 安装 prompt 据实点名落点（不再硬写 ./.sanshiliu/skills / 项目 skills 目录）────────
+
+
+def test_install_prompt_names_resolved_global_dir(tmp_path: Path) -> None:
+    # #2 复现：旧 prompt 硬写"装进项目 skills 目录（默认 ./.sanshiliu/skills）"，和实际落点（用户级全局
+    # 目录）错位。传入 skills_dir_global 后，prompt 必须点名这条绝对路径，且不含旧的项目级措辞。
+    global_dir = tmp_path / "twin" / "skills"
+    runner = GrowthRunner(
+        engine=FakeEngine(_valid_payload_text()),  # type: ignore[arg-type]  桩，鸭子类型即可
+        growth_state_path=tmp_path / "growth-state.json",
+        memdir_dir=tmp_path / "memdir",
+        start_age=5,
+        years_per_chapter=5,
+        end_age=30,
+        skills_dir_global=global_dir,
+    )
+
+    prompt = runner._build_install_prompt(
+        1, "5-10", [{"domain": "脱口秀", "why": "迷上逗人笑"}]
+    )
+
+    assert str(global_dir) in prompt  # 据实点名 installer 真正的落点
+    assert "./.sanshiliu/skills" not in prompt  # 旧硬编码项目级路径绝迹
+    assert "项目 skills 目录" not in prompt  # 旧措辞绝迹
+    assert "用户级全局" in prompt  # 新措辞
+
+
+def test_install_prompt_falls_back_when_global_dir_missing(tmp_path: Path) -> None:
+    # 不传 skills_dir_global（单测/旧调用点）→ prompt 退回不点名具体目录，但仍说"用户级全局"、
+    # 仍不出现旧项目级措辞（兜底分支也不能漏回 ./.sanshiliu/skills）。
+    runner = _make_runner(FakeEngine(_valid_payload_text()), tmp_path)
+
+    prompt = runner._build_install_prompt(
+        1, "5-10", [{"domain": "脱口秀", "why": "迷上逗人笑"}]
+    )
+
+    assert "用户级全局" in prompt
+    assert "./.sanshiliu/skills" not in prompt
+    assert "项目 skills 目录" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_phase2_install_cap_respected(tmp_path: Path) -> None:
     # 每章装 skill 上限：给超过 cap 的 skill_intents，只有 ≤cap 个被带进 phase-2 prompt
