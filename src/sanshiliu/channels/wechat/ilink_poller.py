@@ -33,7 +33,11 @@ _NON_TEXT_PLACEHOLDERS: dict[int, str] = {
     _ITEM_FILE: "[文件]",
     _ITEM_LINK: "[链接]",
 }
-_POLL_RETRY_DELAY_SECONDS = 2.0
+# 轮询失败的指数退避：base × 2^(连续失败数-1)，封顶 max；避免连不上时每 2s 空转刷日志
+_POLL_RETRY_BASE_SECONDS = 2.0
+_POLL_RETRY_MAX_SECONDS = 60.0
+# 连续失败到此阈值就停掉 poller：长期够不到 iLink 时不再无限重试，等手动重启/重扫恢复
+_MAX_CONSECUTIVE_FAILURES = 10
 # session-expired 后的退避：避免对 iLink 发起持续无效请求 + 给用户重新扫码留时间
 _EXPIRED_BACKOFF_SECONDS = 60.0
 
@@ -94,7 +98,12 @@ class ILinkLongPoller:
         self._task = None
 
     async def _run(self) -> None:
+        # 连续失败计数：驱动指数退避，并在到阈值时给上停；一旦成功/expired 即复位
+        consecutive_failures = 0
         while not self._stop.is_set():
+            # 默认值兜底，保证后面 wait_for 这行在所有分支都有定义（避免 mypy possibly-unbound）
+            wait_seconds: float = self._poll_interval
+            failed = False
             try:
                 expired = await self._poll_once()
                 if expired:
@@ -104,13 +113,33 @@ class ILinkLongPoller:
                     self._health.set("wechat", "up")
                     wait_seconds = self._poll_interval
             except ChannelError as exc:
-                self._health.set("wechat", "down")
-                wait_seconds = _POLL_RETRY_DELAY_SECONDS
+                failed = True
                 _logger.warning("官方 iLink 轮询失败，将稍后重试", error=str(exc))
             except Exception as exc:
-                self._health.set("wechat", "down")
-                wait_seconds = _POLL_RETRY_DELAY_SECONDS
+                failed = True
                 _logger.exception("官方 iLink 轮询任务异常，将稍后重试", error=str(exc))
+
+            if failed:
+                consecutive_failures += 1
+                self._health.set("wechat", "down")
+                if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    # 连续够不到 iLink 已达上限：break 退出而非继续 sleep，让 _run 自然结束、
+                    # 不再空转刷日志；恢复需手动重启服务或到 dashboard 重新扫码
+                    _logger.error(
+                        "官方 iLink 连续失败已达上限，已停止轮询；恢复方式：重启服务或到 dashboard 重新扫码登录",
+                        failures=consecutive_failures,
+                    )
+                    break
+                # 指数退避 2→4→8…封顶 _POLL_RETRY_MAX_SECONDS
+                wait_seconds = min(
+                    _POLL_RETRY_BASE_SECONDS * 2 ** (consecutive_failures - 1),
+                    _POLL_RETRY_MAX_SECONDS,
+                )
+            else:
+                # 成功或 expired 都说明够得到 iLink：expired 只是等用户重扫、不算连接失败，
+                # 一并复位计数，避免把"等重扫"误算进 give-up
+                consecutive_failures = 0
+
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=wait_seconds)
             except TimeoutError:
