@@ -346,6 +346,25 @@ class Settings(BaseSettings):
         description="成长终点年龄；跑满即定格，不再推进；默认 30 岁",
     )
 
+    # 成长 phase-2 自动装 skill 配置（仅在 growth_enabled=true 时有意义；总 kill-switch 仍是 growth_enabled）。
+    # phase-2 是 best-effort 安装：传记/状态已在 phase-1 推进，这里失败/超时绝不回退已成立的章。
+    skill_install_timeout_sec: int = Field(
+        default=60,
+        ge=5,
+        le=600,
+        validation_alias=AliasChoices(
+            "skill_install_timeout_sec", "SANSHILIU_SKILL_INSTALL_TIMEOUT_SEC"
+        ),
+        description="成长 phase-2 单次装 skill 的 bash 硬超时（秒）；防 npx 冷拉/无 TTY 挂死",
+    )
+    skill_install_prewarm: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "skill_install_prewarm", "SANSHILIU_SKILL_INSTALL_PREWARM"
+        ),
+        description="serve 启动是否预热 npx（暖 ~/.npm/_npx 缓存）；消除 3am 成长冷拉延迟/确认阻塞",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

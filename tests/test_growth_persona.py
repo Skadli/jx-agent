@@ -66,7 +66,7 @@ class FakeEngine:
 
     async def complete_turn(
         self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
-        on_user_message: Any = None,
+        on_user_message: Any = None, use_tools: bool = True,
     ) -> ChatMessage:
         self.calls += 1
         return ChatMessage(role="assistant", content=self._reply_text)

@@ -46,11 +46,13 @@ def build_growth_task(
     data_dir: Path | None = None,
     persona_loader: PersonaLoader | None = None,
     skill_loader: SkillLoader | None = None,
+    skill_install_timeout_sec: int = 60,
 ) -> HeartbeatTask:
     # PR2 人格演化（三者齐全才开启）：persona_dir = base core 来源、data_dir = 版本化人格落盘根、
     # persona_loader = 写完热生效的那个 loader（与 serve 主链路同一实例，否则改了不生效）。
     # PR3 技能习得：skill_loader = serve 主链路同一个 SkillLoader 实例——成长跑完用它 invalidate+
     # reload 做"装前/装后目录 diff"，并让新装的 skill 立刻被后续对话看到（否则装了也不生效）。
+    # 方案 A：skill_install_timeout_sec 透传给 phase-2 装 skill 的 bash 硬超时（防 npx 挂死）。
     runner = GrowthRunner(
         engine=engine,
         growth_state_path=growth_state_path,
@@ -62,6 +64,7 @@ def build_growth_task(
         data_dir=data_dir,
         persona_loader=persona_loader,
         skill_loader=skill_loader,
+        skill_install_timeout_sec=skill_install_timeout_sec,
     )
 
     # box[0] 闭包技巧（同 dream.py）：task 在 return 前还没构造好，用 list 占位，

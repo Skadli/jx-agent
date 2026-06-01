@@ -1,58 +1,35 @@
 ---
 name: skill-installer
-description: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).
+description: Install a skill from a GitHub repo path into the project skills dir (./.sanshiliu/skills/<id>/). Use when you have a GitHub owner/repo + subdir for a real skill (e.g. handed over by skill-finder) and want it installed where the loader scans. Supports private repos.
 metadata:
-  short-description: Install curated skills from openai/skills or other repos
+  short-description: Install a skill from a GitHub repo into ./.sanshiliu/skills
 ---
 
 # Skill Installer
 
-Helps install skills. By default these are from https://github.com/openai/skills/tree/main/skills/.curated, but users can also provide other locations.
+Installs a real skill from a GitHub repo path **into the project skills dir** (`./.sanshiliu/skills/<id>/`), which is exactly where the agent's loader scans — so a freshly installed skill becomes usable immediately. Hand it a GitHub `owner/repo` + subdir (skill-finder produces these) and it does a sparse checkout + copy.
 
-Use the helper scripts based on the task:
-- List skills when the user asks what is available, or if the user uses this skill without specifying what to do. Default listing is `.curated`, but you can pass `--path skills/.experimental` when they ask about experimental skills.
-- Install from the curated list when the user provides a skill name.
-- Install from another repo when the user provides a GitHub repo/path (including private repos).
-
-Install skills with the helper scripts.
-
-## Communication
-
-When listing skills, output approximately as follows, depending on the context of the user's request. If they ask about experimental skills, list from `.experimental` instead of `.curated` and label the source accordingly:
-"""
-Skills from {repo}:
-1. skill-1
-2. skill-2 (already installed)
-3. ...
-Which ones would you like installed?
-"""
-
-After installing a skill, tell the user: "Restart Codex to pick up new skills."
+Use the helper script when you have a GitHub repo + subdir for a real skill (e.g. one that `skill-finder` discovered). Install it; it lands in the project skills dir and the loader picks it up.
 
 ## Scripts
 
-All of these scripts use network, so when running in the sandbox, request escalation when running them.
+This script uses network, so when running in a sandbox, request escalation.
 
-- `scripts/list-skills.py` (prints skills list with installed annotations)
-- `scripts/list-skills.py --format json`
-- Example (experimental list): `scripts/list-skills.py --path skills/.experimental`
 - `scripts/install-skill-from-github.py --repo <owner>/<repo> --path <path/to/skill> [<path/to/skill> ...]`
 - `scripts/install-skill-from-github.py --url https://github.com/<owner>/<repo>/tree/<ref>/<path>`
-- Example (experimental skill): `scripts/install-skill-from-github.py --repo openai/skills --path skills/.experimental/<skill-name>`
+
+Result: the skill lands at `./.sanshiliu/skills/<skill-name>/SKILL.md`, where the loader scans it. No restart needed — the growth system reloads the skills dir after install.
 
 ## Behavior and Options
 
 - Defaults to direct download for public GitHub repos.
-- If download fails with auth/permission errors, falls back to git sparse checkout.
+- If download fails with auth/permission errors, falls back to git sparse checkout (HTTPS first, then SSH).
 - Aborts if the destination skill directory already exists.
-- Installs into `$CODEX_HOME/skills/<skill-name>` (defaults to `~/.codex/skills`).
+- **Installs into the project skills dir `./.sanshiliu/skills/<skill-name>` by default** (override via `SANSHILIU_SKILLS_DIR_PROJECT` env, or `--dest <path>`). This is the dir the agent's loader actually scans — do **not** point it at `~/.codex/skills`.
 - Multiple `--path` values install multiple skills in one run, each named from the path basename unless `--name` is supplied.
 - Options: `--ref <ref>` (default `main`), `--dest <path>`, `--method auto|download|git`.
 
 ## Notes
 
-- Curated listing is fetched from `https://github.com/openai/skills/tree/main/skills/.curated` via the GitHub API. If it is unavailable, explain the error and exit.
 - Private GitHub repos can be accessed via existing git credentials or optional `GITHUB_TOKEN`/`GH_TOKEN` for download.
-- Git fallback tries HTTPS first, then SSH.
-- The skills at https://github.com/openai/skills/tree/main/skills/.system are preinstalled, so no need to help users install those. If they ask, just explain this. If they insist, you can download and overwrite.
-- Installed annotations come from `$CODEX_HOME/skills`.
+- Only install **real, existing** skills (a valid `SKILL.md` with `name` + `description` frontmatter). Never hand-author a SKILL.md — that is forbidden.

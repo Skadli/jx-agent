@@ -352,6 +352,7 @@ class ConversationEngine:
         self, session: Session, user_text: MessageContent,
         *, on_user_message: Callable[[str], Awaitable[None]] | None = None,
         max_turns: int | None = None,
+        use_tools: bool = True,
     ) -> ChatMessage:
         """非流式 + tool_call 循环；返回最终 assistant 消息。
 
@@ -365,6 +366,10 @@ class ConversationEngine:
         max_turns：tool 循环轮数上限；None → 沿用默认 6（所有现有调用点不传 → 行为字节不变）。
         成长一章需 Skill(growth)→Skill(skill-finder)→搜索→查 npx→装→再一轮输出 JSON，6 轮不够，
         故 GrowthRunner 显式传更高值。
+
+        use_tools：本回合是否给 LLM 挂工具；True（默认）= 现行为（有工具就挂，所有现有调用点字节不变）。
+        False = **无论 self.tools_enabled 如何都传 tools=None**——成长 phase-1 产传记 JSON 是纯生成
+        （叙事/人格无网络、无工具需求），关掉工具就杜绝了"装 skill 烧光 turn→整章白跑"，让传记必出。
         """
         flat_text = _flatten_user_text(user_text)
         await self._refresh_memory(session)
@@ -387,8 +392,10 @@ class ConversationEngine:
                 await self._persist_message(session, limit_msg)
                 return limit_msg
 
+            # use_tools=False（成长 phase-1）时无条件不挂工具——传记是纯生成，关掉工具杜绝
+            # 工具循环烧 turn；use_tools=True（默认）时维持原逻辑：有工具才挂（旧调用点字节不变）。
             # tools_enabled 已确保 self._tool_registry is not None；mypy 看不出
-            if self.tools_enabled:
+            if use_tools and self.tools_enabled:
                 assert self._tool_registry is not None
                 tools: list[dict[str, Any]] | None = self._tool_registry.to_openai_tools()
             else:

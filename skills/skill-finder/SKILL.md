@@ -1,16 +1,26 @@
 ---
-name: "Skill Finder (Find ClawHub skills + Search Skills.sh)"
+name: "Skill Finder (Discover ClawHub + Skills.sh skills)"
 slug: skill-finder
 version: "1.1.5"
 homepage: https://clawic.com/skills/skill-finder
-description: "Find, compare, and install agent skills across ClawHub and Skills.sh when the user needs new capabilities, better workflows, stronger tools, or safer alternatives. Use when (1) they ask how to do something, how to improve or automate it, or what to install; (2) a skill could extend the agent, replace a weak manual approach, or close a capability gap; (3) you need the best-fit option, not just a direct answer."
-changelog: "Broader discovery guidance for finding better, safer, and more relevant skills faster."
+description: "DISCOVER (not install) agent skills across ClawHub and Skills.sh when the user needs new capabilities, better workflows, stronger tools, or safer alternatives. Use when (1) they ask how to do something, how to improve or automate it, or what to install; (2) a skill could extend the agent, replace a weak manual approach, or close a capability gap; (3) you need the best-fit option, not just a direct answer. This skill only SEARCHES and returns a GitHub repo+subdir; the actual install is done by Skill(skill-installer)."
+changelog: "Discovery-only: search returns a GitHub owner/repo + subdir; installation is delegated to skill-installer."
 metadata: {"clawdbot":{"emoji":"🔍","requires":{"bins":["npx"]},"os":["linux","darwin","win32"],"configPaths":["~/skill-finder/"]}}
 ---
 
 ## When to Use
 
 User asks how to do something, wonders whether a skill exists, wants a new capability, or asks for the best skill for a job. Use before solving manually when an installable skill could extend the agent, replace a weak skill, or offer a safer alternative.
+
+## This skill is DISCOVERY-ONLY
+
+This skill **finds** skills; it does **not** install them. `npx clawhub install` / `npx skills add` install into directories this agent does **not** scan (and can hang on a cold npm cache), so do not run them. Instead:
+
+1. Search with `npx skills find <query>` (preferred — it returns `owner/repo@skill`, a GitHub form) and/or `npx clawhub search "<query>"` + `npx clawhub inspect <slug>` (use `inspect` to recover the underlying GitHub `owner/repo` + subdir).
+2. Pick the best real skill and resolve it to a **GitHub `owner/repo` + subdir**.
+3. Hand that to **`Skill(skill-installer)`** to actually install it into the project skills dir (`./.sanshiliu/skills/<id>/`).
+
+Non-interactivity and per-command timeouts are enforced by the system; do not add `-y` to inner commands and do not wait on confirmation prompts.
 
 ## Architecture
 
@@ -54,10 +64,12 @@ Also activate when the user describes a missing capability, a repetitive workflo
 
 This skill can search two ecosystems:
 
-| Source | Search | Install | Best for |
+| Source | Search (discovery only) | How to install | Best for |
 |--------|--------|---------|----------|
-| `ClawHub` | `npx clawhub search "query"` | `npx clawhub install <slug>` | Curated registry search with built-in inspection |
-| `Skills.sh` | `npx skills find [query]` | `npx skills add <owner/repo@skill>` | Broad open ecosystem from the `skills` CLI |
+| `ClawHub` | `npx clawhub search "query"` + `npx clawhub inspect <slug>` | resolve to GitHub repo+subdir → `Skill(skill-installer)` | Curated registry search with built-in inspection |
+| `Skills.sh` | `npx skills find [query]` (returns `owner/repo@skill`) | split `owner/repo` + `skill` → `Skill(skill-installer)` | Broad open ecosystem; great `owner/repo@skill` output for installing |
+
+> Never run `npx clawhub install` / `npx skills add` — they target dirs this agent doesn't scan. Always install via `Skill(skill-installer)`.
 
 Default mode: search **both** sources, then compare results together.
 
@@ -70,7 +82,7 @@ Store the current mode in `~/skill-finder/memory.md`. If the user has no saved p
 
 ## Security Note
 
-This skill uses `npx clawhub` and `npx skills` to discover and install skills from two different ecosystems. Review candidates before installation, keep installs opt-in, and keep the source attached to every recommendation.
+This skill uses `npx clawhub` and `npx skills` to **discover** skills from two ecosystems (it does not install). Review candidates before handing them to `Skill(skill-installer)`, and keep the source (GitHub repo+subdir) attached to every recommendation.
 
 ## Data Storage
 
@@ -85,7 +97,7 @@ Create on first use: `mkdir -p ~/skill-finder`
 ### 1. Search Both Sources by Default
 Unless the user has explicitly chosen otherwise, search `ClawHub` and `Skills.sh` for the same need, then compare the strongest results together.
 
-Never assume a `Skills.sh` result can be installed with `clawhub`, or the reverse. Keep the source and install command attached to every recommendation.
+Keep the source and the resolved **GitHub repo+subdir** attached to every recommendation, so it can be handed to `Skill(skill-installer)`.
 
 ### 2. Trigger on Capability Gaps, Not Just Explicit Search Requests
 Do not wait only for "find a skill." Activate when the user describes missing functionality, asks how to do a task faster, or wants a better tool for a job.
@@ -146,25 +158,23 @@ If nothing is strong enough:
 - Explain why the matches are weak
 - Help directly or suggest creating a purpose-built skill
 
-## Search Commands
+## Search Commands (discovery only)
 
 ```bash
-# ClawHub search and inspect
+# ClawHub: search + inspect (inspect recovers the GitHub source for skill-installer)
 npx clawhub search "query"
 npx clawhub inspect <slug>
-npx clawhub install <slug>
-npx clawhub list
 
-# Skills.sh ecosystem
+# Skills.sh: find returns owner/repo@skill (a GitHub form)
 npx skills find [query]
-npx skills add <owner/repo@skill>
-npx skills list
-npx skills check
-npx skills update
 
-# Example install string returned by `npx skills find`
-npx skills add vercel-labs/agent-skills@vercel-react-best-practices
+# Example output from `npx skills find`:
+#   vercel-labs/agent-skills@vercel-react-best-practices
+# → split into owner/repo = vercel-labs/agent-skills, subdir/skill = vercel-react-best-practices,
+#   then install via Skill(skill-installer): --repo vercel-labs/agent-skills --path <subdir-of-skill>
 ```
+
+Do NOT run `npx clawhub install` / `npx skills add` / `npx clawhub list` for installing — installation is always `Skill(skill-installer)`.
 
 ## Workflow
 
@@ -175,7 +185,7 @@ npx skills add vercel-labs/agent-skills@vercel-react-best-practices
 5. **Evaluate** - Check quality signals (see `evaluate.md`)
 6. **Compare** - Rank results across both sources by fit + quality
 7. **Recommend** - Top 1-3 with clear reasoning and a winner
-8. **Install or fallback** - Install only with consent, otherwise help directly
+8. **Hand off to installer or fallback** - Resolve the winner to a GitHub repo+subdir and call `Skill(skill-installer)`; if nothing fits, help directly
 9. **Learn** - Store explicit feedback in memory
 
 ## Recommendation Format
@@ -186,10 +196,10 @@ When presenting results, prefer this structure:
 Best fit: <slug or owner/repo@skill>
 Source: <ClawHub or Skills.sh>
 Why it wins: <1-2 lines>
-Install: <exact command>
+GitHub: <owner/repo + subdir to hand to skill-installer>
 Tradeoffs: <what it does not cover or where alternative is stronger>
 Alternatives: <slug>, <slug>
-Next step: Install now or continue without installing
+Next step: install via Skill(skill-installer), or continue without installing
 ```
 
 ## Common Traps
@@ -198,7 +208,7 @@ Next step: Install now or continue without installing
 - Searching generic terms -> gets noise. Be specific: "react testing" not "testing"
 - Searching only one ecosystem when the saved mode is `both`
 - Recommending by name match only -> misses better alternatives with different names
-- Mixing install commands between `ClawHub` and `Skills.sh`
+- Running `npx clawhub install` / `npx skills add` -> wrong dir + can hang; always install via `Skill(skill-installer)`
 - Ignoring download counts -> low downloads often means abandoned
 - Not checking last update -> outdated skills cause problems
 
@@ -213,20 +223,14 @@ Next step: Install now or continue without installing
 - Search history (if enabled)
 
 **This skill does NOT:**
-- Install skills without user consent
+- Install skills itself (installation is delegated to `Skill(skill-installer)`)
+- Run `npx clawhub install` / `npx skills add` (wrong dir + can hang)
 - Use force-install flags to skip scanner warnings
-- Auto-confirm `npx skills add` with `-y`
-- Switch to global install scope silently
 - Collect hidden behavior data
 - Access files outside `~/skill-finder/`
 
 ## Related Skills
-Install with `npx clawhub install <slug>` if user confirms:
+Discover these via search, then install via `Skill(skill-installer)` if the user confirms:
 - `skill-manager` — manages installed skills, suggests updates
 - `skill-builder` — creates new skills from scratch
 - `skill-update` — updates existing skills
-
-## Feedback
-
-- If useful: `clawhub star skill-finder`
-- Stay updated: `clawhub sync`

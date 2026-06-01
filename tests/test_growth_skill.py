@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from sanshiliu.engine.types import ChatMessage
-from sanshiliu.scheduler.growth_runner import GrowthChapterError, GrowthRunner
+from sanshiliu.scheduler.growth_runner import GrowthRunner
 from sanshiliu.scheduler.growth_state import load_growth_state
 from sanshiliu.security.composite_confirmer import CompositeConfirmer
 from sanshiliu.security.growth_approvals import (
@@ -55,27 +55,32 @@ def _write_skill(skills_dir: Path, skill_id: str) -> None:
 
 
 class InstallingEngine:
-    """complete_turn 里"装"一个 skill（写目录）来模拟 LLM 经 skill-finder 安装的效果。
+    """方案 A 两段：phase-1（use_tools=False）回传记 JSON；phase-2（use_tools=True）"装"一个 skill。
 
-    顺带断言：装这一刻必须处在成长自动放行窗口内（contextvar 为真）——否则真实场景下
-    installer 的工具调用会被 CompositeConfirmer 拒掉。
+    顺带断言：装这一刻（phase-2）必须处在成长自动放行窗口内（contextvar 为真）——否则真实场景下
+    installer 的工具调用会被 CompositeConfirmer 拒掉。phase-1 不在窗口内（它无工具）。
     """
 
     def __init__(self, skills_dir: Path, skill_id: str, reply_payload: dict[str, Any]) -> None:
         self._skills_dir = skills_dir
         self._skill_id = skill_id
         self._reply = reply_payload
-        self.autoallow_during_call: bool | None = None
+        self.autoallow_during_install: bool | None = None
+        self.autoallow_during_phase1: bool | None = None
         self.calls = 0
 
     async def complete_turn(
         self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
-        on_user_message: Any = None,
+        on_user_message: Any = None, use_tools: bool = True,
     ) -> ChatMessage:
         self.calls += 1
-        # 记录"安装发生时"自动放行是否生效（应为真）
-        self.autoallow_during_call = in_growth_autoallow()
-        _write_skill(self._skills_dir, self._skill_id)
+        if use_tools:
+            # phase-2：装 skill 段——记录此刻自动放行是否生效（应为真）
+            self.autoallow_during_install = in_growth_autoallow()
+            _write_skill(self._skills_dir, self._skill_id)
+            return ChatMessage(role="assistant", content="装好了")
+        # phase-1：传记段（零工具，不在放行窗口内）
+        self.autoallow_during_phase1 = in_growth_autoallow()
         return ChatMessage(
             role="assistant",
             content="```json\n" + json.dumps(self._reply, ensure_ascii=False) + "\n```",
@@ -83,7 +88,7 @@ class InstallingEngine:
 
 
 class NoInstallEngine:
-    """complete_turn 不装任何 skill，只回结构化输出——模拟"找不到真实 skill，当章不装"。"""
+    """phase-1 回结构化输出；phase-2 不装任何 skill——模拟"找不到真实 skill，当章不装"。"""
 
     def __init__(self, reply_payload: dict[str, Any]) -> None:
         self._reply = reply_payload
@@ -91,9 +96,11 @@ class NoInstallEngine:
 
     async def complete_turn(
         self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
-        on_user_message: Any = None,
+        on_user_message: Any = None, use_tools: bool = True,
     ) -> ChatMessage:
         self.calls += 1
+        if use_tools:
+            return ChatMessage(role="assistant", content="都没找到合适的，跳过了")
         return ChatMessage(
             role="assistant",
             content="```json\n" + json.dumps(self._reply, ensure_ascii=False) + "\n```",
@@ -116,7 +123,7 @@ def _make_runner(engine: Any, tmp_path: Path, skills_dir: Path) -> GrowthRunner:
 
 @pytest.mark.asyncio
 async def test_installed_skill_recorded_via_dir_diff(tmp_path: Path) -> None:
-    # (a) 本章装上一个 skill（complete_turn 里写目录）→ runner 按目录 diff 记进 installed_skills
+    # (a) phase-2 装上一个 skill（写目录）→ runner 按目录 diff 回填进本章 installed_skills
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     engine = InstallingEngine(skills_dir, "talkshow", _VALID_PAYLOAD)
@@ -146,8 +153,8 @@ async def test_no_install_yields_empty_list_no_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_autoallow_set_during_run_and_reset_after(tmp_path: Path) -> None:
-    # (c) 自动放行窗口：complete_turn 期间 contextvar 为真；跑完复位为假（不外溢）
+async def test_autoallow_set_during_phase2_only_and_reset_after(tmp_path: Path) -> None:
+    # (c) 自动放行窗口只圈 phase-2：装那一刻 contextvar 为真、phase-1 为假；跑完复位为假（不外溢）
     assert in_growth_autoallow() is False  # 跑之前就不该是放行状态
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -156,35 +163,40 @@ async def test_autoallow_set_during_run_and_reset_after(tmp_path: Path) -> None:
 
     await runner({})
 
-    assert engine.autoallow_during_call is True  # 安装那一刻确实在放行窗口内
+    assert engine.autoallow_during_phase1 is False  # 传记段（phase-1）不在放行窗口内
+    assert engine.autoallow_during_install is True  # 装那一刻（phase-2）确实在放行窗口内
     assert in_growth_autoallow() is False  # 窗口已复位，不污染后续请求
 
 
 @pytest.mark.asyncio
-async def test_autoallow_reset_even_when_engine_raises(tmp_path: Path) -> None:
-    # 放行窗口必须在异常路径也复位（finally）——否则放行权限会泄漏到别的请求。
-    # #1：engine 炸现在会上抛 GrowthChapterError（如实上报 error），但 contextvar 仍须复位。
+async def test_autoallow_reset_even_when_phase2_raises(tmp_path: Path) -> None:
+    # 放行窗口必须在 phase-2 异常路径也复位（finally）——否则放行权限会泄漏到别的请求。
+    # 方案 A：phase-2 炸**不上抛**（章已成立），但 contextvar 仍须复位、状态仍推进。
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
 
-    class BoomEngine:
+    class Phase2BoomEngine:
         calls = 0
 
         async def complete_turn(
             self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
-            on_user_message: Any = None,
+            on_user_message: Any = None, use_tools: bool = True,
         ) -> ChatMessage:
-            BoomEngine.calls += 1
-            assert in_growth_autoallow() is True  # 进了窗口
-            raise RuntimeError("LLM 炸了")
+            Phase2BoomEngine.calls += 1
+            if use_tools:
+                assert in_growth_autoallow() is True  # phase-2 进了窗口
+                raise RuntimeError("phase-2 装 skill 炸了")
+            return ChatMessage(  # phase-1 正常出 JSON
+                role="assistant",
+                content="```json\n" + json.dumps(_VALID_PAYLOAD, ensure_ascii=False) + "\n```",
+            )
 
-    runner = _make_runner(BoomEngine(), tmp_path, skills_dir)
-    with pytest.raises(GrowthChapterError):
-        await runner({})  # 致命失败上抛（heartbeat 会标 error）
+    runner = _make_runner(Phase2BoomEngine(), tmp_path, skills_dir)
+    await runner({})  # phase-2 炸了也不上抛——章照常成立
 
     assert in_growth_autoallow() is False  # 异常路径也复位（finally 必复位）
     state = load_growth_state(tmp_path / "growth-state.json")
-    assert state.current_chapter == 0  # engine 炸了 → 不推进
+    assert state.current_chapter == 1  # phase-1 已推进，phase-2 炸不回退
 
 
 @pytest.mark.asyncio

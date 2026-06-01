@@ -2,34 +2,30 @@
 
 Reference for skill finder, find skills, Skills.sh search, and ClawHub search requests.
 
+> This file is for **discovery only**. Do not run `npx clawhub install` / `npx skills add` (wrong dir + can hang). Resolve the winner to a GitHub `owner/repo` + subdir and install via `Skill(skill-installer)`.
+
 ## Search Sources
 
-| Source | Search | Inspect | Install | Notes |
+| Source | Search | Inspect | How to install | Notes |
 |--------|--------|---------|---------|-------|
-| `ClawHub Search` | `npx clawhub search "query"` | `npx clawhub inspect <slug>` | `npx clawhub install <slug>` | Best for curated registry results and built-in metadata |
-| `Skills.sh Search` | `npx skills find [query]` | Inspect returned page/repo | `npx skills add <owner/repo@skill>` | Best for wider open-ecosystem discovery |
+| `ClawHub Search` | `npx clawhub search "query"` | `npx clawhub inspect <slug>` | resolve GitHub repo+subdir → `Skill(skill-installer)` | Best for curated registry results and built-in metadata |
+| `Skills.sh Search` | `npx skills find [query]` | Inspect returned page/repo | split `owner/repo@skill` → `Skill(skill-installer)` | Best for wider open-ecosystem discovery |
 
 Default mode is `both`. Search a single source only if `~/skill-finder/memory.md` says `sources: clawhub` or `sources: skills.sh`, or the user overrides it.
 
-## Commands
+## Commands (discovery only)
 
 ```bash
 # ClawHub
 npx clawhub search "query"
 npx clawhub search "react testing"
 npx clawhub inspect <slug>
-npx clawhub inspect <slug> --files  # see all files
-npx clawhub install <slug>
+npx clawhub inspect <slug> --files  # see all files (recover GitHub source)
 npx clawhub explore
-npx clawhub list
 
 # Skills.sh / skills CLI
 npx skills find
-npx skills find react performance
-npx skills add vercel-labs/agent-skills@frontend-design
-npx skills list
-npx skills check
-npx skills update
+npx skills find react performance   # returns owner/repo@skill (a GitHub form)
 ```
 
 ## Dual-Source Search Flow
@@ -40,7 +36,7 @@ For a new query:
 2. Check `Status.sources`
 3. If mode is `both`, search both ecosystems with the same intent
 4. Compare the strongest matches together before recommending
-5. Keep the source and exact install command attached to each result
+5. Keep the source and the resolved GitHub repo+subdir attached to each result (to hand to `Skill(skill-installer)`)
 
 ## Trigger Recognition
 
@@ -82,7 +78,7 @@ Normalize each result into the same decision shape:
 - Source
 - Name / identifier
 - What it does
-- Install command
+- GitHub repo + subdir (for `Skill(skill-installer)`)
 - Quality signals
 
 Typical signals:

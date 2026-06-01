@@ -16,22 +16,30 @@
   （标 ok，last_message 带"第 N 章已完成"）；降级/致命失败 = 上抛 GrowthChapterError，heartbeat
   ._execute 标 last_status="error" 且 catch 住不崩 tick。不再把致命降级吞成 ok（旧 bug：state 空转）。
 
-PR3 技能习得（落实 #2/#5）：成长协议指示 LLM 对每个知识缺口**主动调 Skill(skill-finder)**
-查找并安装真实 skill（绝不自造 SKILL.md）。安装在 complete_turn 的 tool 循环里有机发生——
-runner 不写安装逻辑，只做两件事：
-1. **无人值守自动放行**：complete_turn 全程用 growth_approvals 的 contextvar 圈一个窗口，
-   让 Skill / installer 的 bash 等工具调用免审批通过（CompositeConfirmer 据此路由）。
-   窗口严格只覆盖这一次 complete_turn，finally 必复位（不外溢到别的请求）。
-2. **目录 diff 记账**：complete_turn 前快照 skill_loader.list() 的 id 集合；跑完
-   invalidate()+reload 再 diff，**新增的 id = 本章真正装上的 skill**（目录是真相源，不只信
-   LLM 自报）。记入 ChapterRecord.installed_skills 并随状态落盘。找不到→无新增→空列表、不报错。
+方案 A 解耦（根治"装 skill 失败吃光 turn→整章白跑"）：把一章拆成两相，传记先行、必出：
+
+- **phase-1（零工具、必出）**：complete_turn(use_tools=False) 让 LLM 只产传记 JSON——叙事/人格
+  是纯生成，无网络、无工具，杜绝工具循环烧 turn。沿用 #3 一次 LLM 修复 + schema 校验；不可恢复
+  （触顶/修复后仍畸形/narrative 空/落盘失败）→ raise GrowthChapterError（heartbeat 标 error，#1）。
+  成功 → 写传记 + 演化人格 + **推进状态并落盘**——全部发生在任何安装之前。
+- **phase-2（best-effort、bounded）**：状态已推进后，在成长自动放行窗口里再跑一次
+  complete_turn(use_tools=True, max_turns 小)，把本章 skill_intents（**每章 ≤ _GROWTH_SKILL_INSTALL_CAP**）
+  交给 LLM：经 Skill(skill-finder) 发现、Skill(skill-installer) 装进项目 skills 目录；找不到就跳过。
+  然后目录 diff 记账，回填刚推进那一章的 installed_skills 并重存。**phase-2 失败/超时/异常绝不 raise、
+  绝不回退已成立的章**——只记日志，heartbeat 仍视本章为成功（"第 N 章完成，装了 K 个 skill"）。
+  只有 phase-1 失败才算 error。
+
+无人值守自动放行 + 非交互 npm 环境只圈 **phase-2**（phase-1 无工具）；窗口/环境都在 finally 复位，
+绝不外溢到别的请求。目录是真相源：只有真装进 skills/<id>/SKILL.md、能被 loader 解析的才记账。
 
 PR2 已实现：跑一章 → 写传记 → **整体演化人格（版本化覆盖 base core）** → 推进状态。
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -67,9 +75,29 @@ _logger = get_logger(__name__)
 _GROWTH_CHANNEL = "growth"
 _GROWTH_USER_ID = "growth"
 
-# 成长一章 tool 预算：load growth + skill-finder + 搜索 + 查 npx + 装 + 最后一轮输出 JSON，
-# 6 轮（默认）不够；给足余量但仍有上限（防失控烧钱）。触顶仍会返回 TOOL_TURN_LIMIT_MESSAGE。
-_GROWTH_MAX_TURNS = 16
+# phase-1 传记是零工具纯生成（1 轮即出 JSON），但留点余量给"修复重发"以外的偶发——给 4 轮足够。
+# 注意 phase-1 传 use_tools=False，根本不会进工具循环，这个上限实际上很难够到。
+_GROWTH_PHASE1_MAX_TURNS = 4
+
+# phase-2 best-effort 装 skill 的 tool 预算：发现（skill-finder）+ 装（skill-installer）每个 intent
+# 约 2-3 轮，每章 ≤ 3 个 intent，8 轮够用且有上限（失控也烧不久；触顶不影响已成立的章）。
+_GROWTH_PHASE2_MAX_TURNS = 8
+
+# 每章 phase-2 最多尝试装几个 skill——按研究：clawhub 有 server 限流、弱模型自选 slug 供应链风险，
+# 都要求克制。超过此数的 skill_intent 不带进 phase-2 prompt（防一章狂装）。
+_GROWTH_SKILL_INSTALL_CAP = 3
+
+# phase-2 跑 npx/installer 的子进程非交互 + fail-fast npm 环境（杜绝 stdin 阻塞 + 冷拉久挂）。
+# 只在 phase-2 窗口内 set 到 os.environ，finally 复位——绝不全局污染（dream/日常对话不受影响）。
+_GROWTH_NPM_ENV: dict[str, str] = {
+    "CI": "true",
+    "npm_config_yes": "true",
+    "npm_config_fetch_timeout": "20000",
+    "npm_config_fetch_retries": "1",
+    "npm_config_audit": "false",
+    "npm_config_fund": "false",
+    "npm_config_progress": "false",
+}
 
 # 从 LLM 输出里抠 JSON：优先 ```json fenced``` 块，其次裸 {...}。成长协议要求只输出一个 JSON。
 _FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -103,6 +131,7 @@ class GrowthRunner:
         data_dir: Path | None = None,
         persona_loader: PersonaLoader | None = None,
         skill_loader: SkillLoader | None = None,
+        skill_install_timeout_sec: int = 60,
     ) -> None:
         self._engine = engine
         self._state_path = growth_state_path
@@ -110,6 +139,9 @@ class GrowthRunner:
         self._start_age = start_age
         self._years_per_chapter = years_per_chapter
         self._end_age = end_age
+        # phase-2 装 skill 的 bash 硬超时（秒）——写进 prompt 让 LLM 据此给 bash 的 timeout_sec，
+        # 防 npx 冷拉/无 TTY 挂死把 phase-2 拖久；默认 60，serve 由 config 透传。
+        self._skill_install_timeout_sec = skill_install_timeout_sec
         # PR2 人格演化所需：base core 来源（persona_dir/core）+ 版本化落盘根（data_dir/growth/persona）
         # + 写完热生效的 loader。三者缺任一则跳过人格演化（仍写传记 + 推进状态，不报错），
         # 这样单测 / 不传的调用点也能跑。
@@ -151,57 +183,71 @@ class GrowthRunner:
 
         next_chapter_no = state.current_chapter + 1
         age_range = state.next_age_range()
+
+        # ── phase-1（零工具、必出）：产传记 JSON → 写传记 + 演化人格 + 推进状态并落盘 ──
+        # 全程在任何安装之前完成；不可恢复则 raise（heartbeat 标 error，#1）。
+        out_age_range, coerced = await self._run_phase1_biography(
+            state, next_chapter_no, age_range
+        )
+
+        # ── phase-2（best-effort、bounded）：状态已推进，再装本章 skill_intents（≤cap），失败绝不回退 ──
+        # 注意：传给 phase-2 的是"刚推进的那一章"年龄段/意图；它只回填 installed_skills、绝不动章本身。
+        skill_intents = coerced.get("skill_intents")
+        installed = await self._run_phase2_install(
+            next_chapter_no,
+            out_age_range,
+            skill_intents if isinstance(skill_intents, list) else [],
+        )
+
+        skill_tail = f"，装了 {len(installed)} 个 skill" if installed else ""
+        return f"第 {state.current_chapter} 章已完成（{out_age_range} 岁，{state.age} 岁）{skill_tail}"
+
+    async def _run_phase1_biography(
+        self, state: GrowthState, next_chapter_no: int, age_range: str
+    ) -> tuple[str, dict[str, Any]]:
+        """phase-1：零工具产传记 JSON → 写传记 + 演化人格 + 推进状态并落盘。返回 (年龄段, coerced)。
+
+        传记是纯生成（叙事/人格无网络、无工具），用 complete_turn(use_tools=False) 杜绝工具循环
+        烧 turn——这是"必出"的部分。沿用 #3 一次 LLM 修复 + schema 校验；触顶/修复后仍畸形/
+        narrative 空/落盘失败都属不可恢复 → raise GrowthChapterError（由 __call__ 上抛给 heartbeat 标
+        error，#1）。成功路径里 installed_skills 先留空 []——真正安装在 phase-2，回填到同一章。
+        """
         prompt = self._build_prompt(state, next_chapter_no, age_range)
         session = Session.new(channel=_GROWTH_CHANNEL, user_id=_GROWTH_USER_ID)
-        # PR3：装前快照已加载的 skill id 集合——complete_turn 跑完再 diff，新增的就是本章装上的。
-        skills_before = self._snapshot_skill_ids()
         _logger.info(
-            "成长执行器开始执行",
+            "成长 phase-1（传记，零工具）开始",
             growth_session=session.session_id,
             chapter=next_chapter_no,
             age_range=age_range,
             prompt_chars=len(prompt),
-            skills_before=len(skills_before),
         )
-        # PR3：成长无人值守自动放行窗口——complete_turn 里 LLM 调 Skill(skill-finder)/installer
-        # 及其 bash 子调用走 ask 路径时，CompositeConfirmer 据此 contextvar 免审批放行（#5）。
-        # 窗口严格只包住这一次 complete_turn；finally 必复位，绝不外溢到别的请求。
-        # 总开关仍是 growth_enabled=false（心跳任务不 enabled 则整条成长线含本放行都不跑）。
-        # #4：成长一章步骤多，默认 6 轮不够，显式抬高 tool 预算。
-        token = enter_growth_autoallow()
+        # phase-1 不挂工具（use_tools=False），故无需自动放行窗口；纯一轮生成即出 JSON。
         try:
             result = await self._engine.complete_turn(
-                session, prompt, max_turns=_GROWTH_MAX_TURNS
+                session, prompt, max_turns=_GROWTH_PHASE1_MAX_TURNS, use_tools=False
             )
         except Exception as exc:
             # #1：致命失败必须如实上抛给 heartbeat（标 error），不再静默吞成 ok。
-            # 但安装可能已在 complete_turn 异常前发生过——#2 要求无条件记账，故先 diff 再 raise。
-            self._collect_installed_skills(skills_before, next_chapter_no, advanced=False)
             _logger.error(
-                "engine.complete_turn 失败（不推进状态，上报 error）",
+                "成长 phase-1 complete_turn 失败（不推进状态，上报 error）",
                 error=str(exc),
                 growth_session=session.session_id,
             )
             raise GrowthChapterError(f"engine.complete_turn 失败：{exc}") from exc
-        finally:
-            exit_growth_autoallow(token)
 
-        # #2：技能记账无条件先跑——安装发生在 complete_turn 的 tool 循环里（先于解析），
-        # 不论后续解析成功/降级，本章目录 diff 出的已装 skill 都要被审计到，绝不漏记/静默。
-        # advanced 仅决定日志措辞（成功记入 ChapterRecord；降级则记为"已装未推进"以便排查）。
         raw_text = result.content if isinstance(result.content, str) else ""
 
         # #4：触顶时 content 是固定文案，没有真内容可修——直接当硬失败上抛，不喂给 JSON 修复。
         if raw_text.strip() == TOOL_TURN_LIMIT_MESSAGE:
-            self._collect_installed_skills(skills_before, next_chapter_no, advanced=False)
             _logger.error(
-                "成长 tool 调用触顶（不推进状态，上报 error）",
+                "成长 phase-1 tool 调用触顶（不推进状态，上报 error）",
                 growth_session=session.session_id,
                 chapter=next_chapter_no,
-                max_turns=_GROWTH_MAX_TURNS,
+                max_turns=_GROWTH_PHASE1_MAX_TURNS,
             )
             raise GrowthChapterError(
-                f"第 {next_chapter_no} 章 tool 调用触顶（上限 {_GROWTH_MAX_TURNS} 轮），未产出结果"
+                f"第 {next_chapter_no} 章 tool 调用触顶"
+                f"（上限 {_GROWTH_PHASE1_MAX_TURNS} 轮），未产出结果"
             )
 
         # #3：先走纯提取；失败（畸形/无 JSON、但有真内容）→ 一次 LLM 修复重发 → 再解析。
@@ -209,7 +255,6 @@ class GrowthRunner:
         if parsed is None:
             parsed = await self._repair_structured_output(raw_text, session.session_id)
         if parsed is None:
-            self._collect_installed_skills(skills_before, next_chapter_no, advanced=False)
             _logger.error(
                 "成长输出 JSON 修复后仍不合法（不推进状态，上报 error）",
                 growth_session=session.session_id,
@@ -221,16 +266,7 @@ class GrowthRunner:
             )
 
         # #3：schema 校验/兜底——narrative 强制非空（空则硬失败），其余字段缺失/类型错则兜底。
-        try:
-            coerced = _coerce_chapter_payload(parsed)
-        except GrowthChapterError:
-            self._collect_installed_skills(skills_before, next_chapter_no, advanced=False)
-            _logger.error(
-                "成长输出 narrative 为空（不推进状态，上报 error）",
-                growth_session=session.session_id,
-                chapter=next_chapter_no,
-            )
-            raise
+        coerced = _coerce_chapter_payload(parsed)  # narrative 空会 raise GrowthChapterError
 
         narrative = coerced["narrative"]
         # 优先用 LLM 回的 age_range，缺失/非串则用状态算出的（确保传记标题不空）
@@ -242,8 +278,7 @@ class GrowthRunner:
         try:
             self._write_biography(next_chapter_no, out_age_range, narrative, coerced)
         except Exception as exc:
-            # 落盘失败 = 本章产物没真正落地，算降级；先无条件记账已装 skill 再上抛。
-            self._collect_installed_skills(skills_before, next_chapter_no, advanced=False)
+            # 落盘失败 = 本章产物没真正落地，算降级、上抛（phase-1 还没装任何东西，无需记账）。
             _logger.error(
                 "成长传记落盘失败（不推进状态，上报 error）",
                 error=str(exc),
@@ -257,19 +292,13 @@ class GrowthRunner:
         #     以"长成的人"回应。任一步失败只记日志、跳过演化，**不影响传记 + 状态推进**。
         self._evolve_persona(next_chapter_no, state.active_persona_chapter, coerced)
 
-        # #2 技能习得记账（推进成功路径）：装好的 skill 落成 skills/<id>/，complete_turn 里已由
-        # LLM 经 Skill(skill-finder)/installer 有机安装。这里 invalidate+reload 后 diff 目录，
-        # 新增 id = 本章真正装上的（目录是真相源，不只信 LLM 自报）。带 source 标记便于 dashboard 追溯。
-        installed = self._collect_installed_skills(skills_before, next_chapter_no, advanced=True)
-
-        # R8 每日汇报：dashboard 是汇报展示面（主动推送出 scope）。report 是 LLM 给的"面向人看"的
-        # 当天成长汇报；缺失 / 非串则回落到 narrative，确保 dashboard 这一章总有汇报可看、不空白。
+        # R8 每日汇报：report 是 LLM 给的"面向人看"的当天成长汇报；缺失 / 非串则回落 narrative。
         report = _coerce_report(coerced.get("report"), fallback=narrative)
         record = ChapterRecord(
             age_range=out_age_range,
             summary=narrative,
             report=report,
-            installed_skills=installed,
+            installed_skills=[],  # phase-2 装好后回填到这一章；phase-1 先留空
         )
         state.advance(record)
         save_growth_state(self._state_path, state)
@@ -277,15 +306,131 @@ class GrowthRunner:
         if self._persona_loader is not None:
             self._persona_loader.invalidate()
         _logger.info(
-            "成长执行器完成，状态已推进",
+            "成长 phase-1 完成，状态已推进（安装前已落地，绝不被 phase-2 回退）",
             growth_session=session.session_id,
             chapter=state.current_chapter,
             age=state.age,
             active_persona_chapter=state.active_persona_chapter,
-            installed_skills=installed,
         )
-        skill_tail = f"，装了 {len(installed)} 个 skill" if installed else ""
-        return f"第 {state.current_chapter} 章已完成（{out_age_range} 岁，{state.age} 岁）{skill_tail}"
+        return out_age_range, coerced
+
+    async def _run_phase2_install(
+        self,
+        chapter_no: int,
+        age_range: str,
+        skill_intents: list[Any],
+    ) -> list[str]:
+        """phase-2：best-effort 装本章 skill_intents（≤cap），目录 diff 回填 installed_skills 并重存。
+
+        **绝不抛、绝不回退已成立的章**：任何失败/超时/异常都只记日志、返回已 diff 到的（可能为空）。
+        无 skill_loader（单测/未启用）→ 直接 []（跳过安装尝试，章已成立）。无意图 → 也跳过。
+
+        安装在第二次 complete_turn 的 tool 循环里有机发生——把本章 skill_intents 交给 LLM，让它经
+        Skill(skill-finder) 发现、Skill(skill-installer) 装进项目 skills 目录；找不到就跳过。自动放行
+        窗口 + 非交互 npm 环境只圈这一段，finally 复位（绝不外溢/全局污染）。装完按"装前/装后目录 diff"
+        记账——目录是真相源，不只信 LLM 自报。
+        """
+        if self._skill_loader is None:
+            _logger.info("成长 phase-2 跳过（无 skill_loader）", chapter=chapter_no)
+            return []
+
+        capped = self._cap_skill_intents(skill_intents)
+        if not capped:
+            _logger.info("成长 phase-2 跳过（本章无 skill_intent）", chapter=chapter_no)
+            return []
+
+        # 装前快照——phase-1 零工具没装任何东西，故此刻基线 = 章开始时的目录。
+        skills_before = self._snapshot_skill_ids()
+        prompt = self._build_install_prompt(chapter_no, age_range, capped)
+        session = Session.new(channel=_GROWTH_CHANNEL, user_id=_GROWTH_USER_ID)
+        _logger.info(
+            "成长 phase-2（装 skill，best-effort）开始",
+            growth_session=session.session_id,
+            chapter=chapter_no,
+            intents=len(capped),
+            skills_before=len(skills_before),
+        )
+
+        # 自动放行窗口 + 非交互 npm 环境：只圈 phase-2 这一次 complete_turn，两者都 finally 复位。
+        token = enter_growth_autoallow()
+        try:
+            with self._scoped_npm_env():
+                await self._engine.complete_turn(
+                    session, prompt, max_turns=_GROWTH_PHASE2_MAX_TURNS, use_tools=True
+                )
+        except Exception as exc:
+            # phase-2 失败绝不影响已成立的章——只记日志，照样去 diff 看装上了没（可能装了一半）。
+            _logger.warning(
+                "成长 phase-2 装 skill 失败（不影响已成立的章，继续记账）",
+                error=str(exc),
+                growth_session=session.session_id,
+                chapter=chapter_no,
+            )
+        finally:
+            exit_growth_autoallow(token)
+
+        # 目录 diff 记账：新增 id = 本章真正装上的（目录是真相源）。回填到刚推进那一章并重存。
+        installed = self._collect_installed_skills(skills_before, chapter_no)
+        if installed:
+            self._backfill_installed_skills(chapter_no, installed)
+        return installed
+
+    def _cap_skill_intents(self, skill_intents: list[Any]) -> list[dict[str, Any]]:
+        """规整 + 截断 skill_intents：只取形如 {domain, why} 的 dict，最多 _GROWTH_SKILL_INSTALL_CAP 个。
+
+        每章装 skill 上限——按研究，clawhub 有 server 限流、弱模型自选 slug 有供应链风险，都要求克制。
+        """
+        out: list[dict[str, Any]] = []
+        for item in skill_intents:
+            if not isinstance(item, dict):
+                continue
+            out.append(item)
+            if len(out) >= _GROWTH_SKILL_INSTALL_CAP:
+                break
+        return out
+
+    def _backfill_installed_skills(self, chapter_no: int, installed: list[str]) -> None:
+        """phase-2 装好后，把 installed_skills 回填到刚推进的那一章并重存 state（绝不动章本身）。
+
+        重新 load → 改最后一章（= 本章）的 installed_skills → save。重新 load 是为了不依赖内存里那个
+        state 对象（防并发/被改过）；改的只是 installed_skills 这一个附加字段，传记/年龄/章数全不动。
+        """
+        try:
+            fresh = load_growth_state(
+                self._state_path,
+                start_age=self._start_age,
+                years_per_chapter=self._years_per_chapter,
+                end_age=self._end_age,
+            )
+            if fresh.current_chapter == chapter_no and fresh.chapters:
+                fresh.chapters[-1].installed_skills = installed
+                save_growth_state(self._state_path, fresh)
+        except Exception as exc:
+            # 回填失败只是 installed_skills 没记上——章本身已落盘成立，绝不当失败上抛。
+            _logger.warning(
+                "成长 phase-2 回填 installed_skills 失败（章已成立，仅记账缺失）",
+                error=str(exc),
+                chapter=chapter_no,
+            )
+
+    @contextlib.contextmanager
+    def _scoped_npm_env(self) -> Any:
+        """在 phase-2 窗口内把非交互 + fail-fast npm 环境 set 到 os.environ，退出时复原。
+
+        **只圈 phase-2**（不全局污染 dream/日常对话）：进入时记下被覆盖键的原值，finally 逐键还原
+        （原本不存在的删掉、原本有的复原）。bash_exec 的子进程继承 os.environ，故 set 在这里即可让
+        npx/installer 子进程拿到 CI=true / npm_config_yes=true 等，杜绝 stdin 阻塞 + 冷拉久挂。
+        """
+        saved: dict[str, str | None] = {k: os.environ.get(k) for k in _GROWTH_NPM_ENV}
+        os.environ.update(_GROWTH_NPM_ENV)
+        try:
+            yield
+        finally:
+            for k, old in saved.items():
+                if old is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = old
 
     def _snapshot_skill_ids(self) -> set[str]:
         """装前快照当前已加载 skill 的 id 集合；无 skill_loader（单测/未启用）则空集。
@@ -301,18 +446,14 @@ class GrowthRunner:
             _logger.warning("成长 skill 装前快照失败（记账降级为空）", error=str(exc))
             return set()
 
-    def _collect_installed_skills(
-        self, before: set[str], chapter_no: int, *, advanced: bool
-    ) -> list[str]:
+    def _collect_installed_skills(self, before: set[str], chapter_no: int) -> list[str]:
         """invalidate+reload 后 diff skill 目录，返回本章新增的 skill id（带审计日志）。
 
         目录是真相源：只有真把 skills/<id>/SKILL.md 装进去、且能被 loader 解析的才算数；
         LLM 自报装了但目录没有的不计入。无 skill_loader → 直接空列表（不报错）。
 
-        #2：本方法在 complete_turn 之后**无条件**被调用——安装发生在 tool 循环里（先于解析），
-        故不论本章推进成功还是降级/失败，目录 diff 出的已装 skill 都要被审计到，绝不漏记。
-        advanced=False（降级路径）时把它们记为"已装未推进"——审计日志已捕获，不会变成静默泄漏；
-        skill 的卸载/回滚仍是二期，本方法只负责记账。
+        方案 A：本方法在 phase-2（章已推进后）被调用——故 diff 出的 skill 都是本章 best-effort
+        真装上的，记入审计 + 回填本章 installed_skills。reload 同时令后续对话立刻看到新装的 skill。
         """
         if self._skill_loader is None:
             return []
@@ -326,18 +467,10 @@ class GrowthRunner:
             )
             return []
         new_ids = sorted(after - before)
-        if new_ids and advanced:
+        if new_ids:
             # 审计：本章自动装了哪些真实 skill（落实 #5 的最低防护之一；另有 tool_calls 表留痕）
             _logger.info(
                 "成长本章自动安装 skill（免审批 #5）",
-                chapter=chapter_no,
-                installed=new_ids,
-                source=f"growth-chapter-{chapter_no}",
-            )
-        elif new_ids:
-            # #2：本章降级未推进，但 skill 已真装进目录——审计为"已装未推进"，不让它静默漏掉。
-            _logger.warning(
-                "成长本章降级未推进，但已安装 skill（记审计、不计入章产物）",
                 chapter=chapter_no,
                 installed=new_ids,
                 source=f"growth-chapter-{chapter_no}",
@@ -445,6 +578,44 @@ class GrowthRunner:
             "其中 persona 是本章演化后的**新核心人格**（{identity, personality, beliefs, style, "
             "fewshot_short} 各为可选的整段 markdown，写你这岁数已经长成的那个人）——它会真正覆盖"
             "成为分身往后的真身；只写本章有变化的段落，没变的可省略（会自动承接前章）。"
+        )
+        return "\n".join(lines)
+
+    def _build_install_prompt(
+        self, chapter_no: int, age_range: str, intents: list[dict[str, Any]]
+    ) -> str:
+        """拼 phase-2 安装 prompt：把本章 skill_intents 交给 LLM，让它发现→安装真实 skill 到项目目录。
+
+        传记已在 phase-1 落地，这一段**只做装 skill**：经 Skill(skill-finder) 发现、Skill(skill-installer)
+        装进项目 skills 目录；找不到就跳过。强调上限/超时/非交互由系统保障，别自造 SKILL.md。
+        """
+        timeout = self._skill_install_timeout_sec
+        lines: list[str] = [
+            f"你刚完成第 {chapter_no} 章成长（{age_range} 岁），传记已落盘。"
+            "现在只做一件事：为这一章学到的本事，去**装上真实存在的 skill**（不写传记、不输出 JSON）。",
+            "",
+            "本章要找的能力缺口（skill_intent）：",
+        ]
+        for i, it in enumerate(intents, 1):
+            domain = str(it.get("domain") or "").strip() or "（未注明领域）"
+            why = str(it.get("why") or "").strip()
+            lines.append(f"{i}. 领域：{domain}" + (f"；为什么：{why}" if why else ""))
+        lines.append("")
+        lines.append(
+            "做法（每个缺口）：先 `Skill(skill-finder)` 按领域**发现**一个真实存在的 skill"
+            "（它会给出 GitHub 形式的 owner/repo + 子目录）；再 `Skill(skill-installer)` 据此"
+            "**装进项目 skills 目录**（脚本默认就装到 ./.sanshiliu/skills，不必手填 --dest）。"
+        )
+        lines.append(
+            f"约束：本章最多装 {_GROWTH_SKILL_INSTALL_CAP} 个；**找不到合适的真实 skill 就跳过这条**"
+            "（不要硬凑、不要降低标准）；严禁用 file_write/bash 自造 SKILL.md。"
+        )
+        lines.append(
+            f"每条 bash 命令请设较短超时（不超过 {timeout}s）；非交互环境已配好，不要等待任何确认输入。"
+        )
+        lines.append(
+            "装没装上由系统按 skills 目录 diff 确定性记账，你不必、也不要谎报装了什么；"
+            "装完或都跳过后，直接简短说明结果即可，无需输出 JSON。"
         )
         return "\n".join(lines)
 

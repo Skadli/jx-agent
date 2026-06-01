@@ -45,10 +45,15 @@ class FakeLLM:
 
 
 class FakeEngine:
-    """最小 engine 桩；complete_turn 不跑工具循环，直接返回预置文本。
+    """最小 engine 桩；complete_turn 不跑真工具循环，直接返回预置文本。
 
-    on_complete：可选回调，在返回前执行——用于模拟"complete_turn 的 tool 循环里装了 skill"
-    （#2 验证降级也记账）。
+    方案 A 两段：phase-1（use_tools=False）产传记 JSON；phase-2（use_tools=True）装 skill。
+    本桩对两段都返回 reply_text，但用 use_tools 区分记录调用，并只在 phase-2（use_tools=True）跑
+    on_install——模拟"装 skill 在 phase-2 的 tool 循环里发生"。phase1_max_turns/phase2_max_turns
+    分别记录两段的 max_turns。
+
+    on_install：可选回调，仅在 phase-2 返回前执行（模拟装了一个 skill）。
+    phase2_raises：True 时 phase-2 抛异常（验证 phase-2 失败不回退已成立的章）。
     """
 
     def __init__(
@@ -56,13 +61,20 @@ class FakeEngine:
         reply_text: str,
         *,
         repair_text: str = "",
-        on_complete: Any = None,
+        on_install: Any = None,
+        phase2_raises: bool = False,
     ) -> None:
         self._reply_text = reply_text
         self.calls = 0
+        self.phase1_calls = 0
+        self.phase2_calls = 0
         self.last_max_turns: int | None = None
+        self.phase1_max_turns: int | None = None
+        self.phase2_max_turns: int | None = None
+        self.phase1_use_tools: bool | None = None
         self.llm = FakeLLM(repair_text)
-        self._on_complete = on_complete
+        self._on_install = on_install
+        self._phase2_raises = phase2_raises
 
     async def complete_turn(
         self,
@@ -71,11 +83,23 @@ class FakeEngine:
         *,
         max_turns: int | None = None,
         on_user_message: Any = None,
+        use_tools: bool = True,
     ) -> ChatMessage:
         self.calls += 1
         self.last_max_turns = max_turns
-        if self._on_complete is not None:
-            self._on_complete()
+        if use_tools:
+            # phase-2：装 skill 段
+            self.phase2_calls += 1
+            self.phase2_max_turns = max_turns
+            if self._phase2_raises:
+                raise RuntimeError("phase-2 装 skill 炸了")
+            if self._on_install is not None:
+                self._on_install()
+            return ChatMessage(role="assistant", content="装好了/都跳过了")
+        # phase-1：传记段（零工具）
+        self.phase1_calls += 1
+        self.phase1_max_turns = max_turns
+        self.phase1_use_tools = use_tools
         return ChatMessage(role="assistant", content=self._reply_text)
 
 
@@ -177,19 +201,24 @@ def test_coerce_payload_fills_missing_arrays_and_objects() -> None:
 
 
 @pytest.mark.asyncio
-async def test_growth_passes_high_max_turns(tmp_path: Path) -> None:
-    # GrowthRunner 调 complete_turn 时显式传更高的 max_turns（成长一章步骤多）
+async def test_phase1_runs_tool_free_with_its_own_budget(tmp_path: Path) -> None:
+    # 方案 A：phase-1 必须 use_tools=False（传记零工具），且用 phase-1 的小预算（不是 phase-2 的）。
+    # 不传 skill_loader → phase-2 跳过，故只跑 phase-1 这一段。
+    from sanshiliu.scheduler.growth_runner import _GROWTH_PHASE1_MAX_TURNS
+
     engine = FakeEngine(_valid_payload_text())
     runner = _make_runner(engine, tmp_path)
 
     await runner({})
 
-    assert engine.last_max_turns is not None
-    assert engine.last_max_turns > 6
+    assert engine.phase1_calls == 1
+    assert engine.phase1_use_tools is False  # 传记段无条件不挂工具
+    assert engine.phase1_max_turns == _GROWTH_PHASE1_MAX_TURNS
+    assert engine.phase2_calls == 0  # 无 skill_loader → phase-2 不跑
 
 
-def test_complete_turn_default_max_turns_stays_six() -> None:
-    # #4：complete_turn 不传 max_turns 时仍沿用默认 6（非 growth 通道行为字节不变）
+def test_complete_turn_default_unchanged_for_non_growth_callers() -> None:
+    # #4 + 方案 A：complete_turn 不传 max_turns 仍沿用默认 6；use_tools 默认 True（非 growth 通道字节不变）
     import inspect
 
     from sanshiliu.engine import loop as loop_mod
@@ -197,6 +226,7 @@ def test_complete_turn_default_max_turns_stays_six() -> None:
     assert loop_mod._DEFAULT_MAX_TURNS == 6
     sig = inspect.signature(loop_mod.ConversationEngine.complete_turn)
     assert sig.parameters["max_turns"].default is None
+    assert sig.parameters["use_tools"].default is True
 
 
 # ── #3 端到端：修复成功 / 修复仍坏 raise / narrative 空 raise ──────────
@@ -317,15 +347,15 @@ async def test_advanced_returns_ok_with_chapter_message(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_exception_propagates(tmp_path: Path) -> None:
-    # complete_turn 抛 → 包成 GrowthChapterError 上抛（heartbeat 标 error），不推进
+async def test_phase1_engine_exception_propagates(tmp_path: Path) -> None:
+    # phase-1 complete_turn 抛 → 包成 GrowthChapterError 上抛（heartbeat 标 error），不推进
     class BoomEngine:
         calls = 0
         llm = FakeLLM()
 
         async def complete_turn(
             self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
-            on_user_message: Any = None,
+            on_user_message: Any = None, use_tools: bool = True,
         ) -> ChatMessage:
             BoomEngine.calls += 1
             raise RuntimeError("LLM 炸了")
@@ -365,7 +395,7 @@ async def test_valid_output_advances_and_writes_biography(tmp_path: Path) -> Non
     assert "早慧又贫嘴" in body  # personality 摘要
 
 
-# ── #2 已装 skill 无条件记账（即使本章降级）────────────────────────
+# ── 方案 A phase-2：装 skill 记账（成功）+ phase-2 失败绝不回退已成立的章 ────────────
 
 
 def _seed_skill(skills_root: Path, skill_id: str) -> None:
@@ -379,37 +409,8 @@ def _seed_skill(skills_root: Path, skill_id: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_degrade_still_accounts_installed_skills(tmp_path: Path) -> None:
-    # #2：安装发生在 complete_turn 的 tool 循环里（先于解析）；本章解析降级也要把已装 skill diff 出来。
-    skills_root = tmp_path / "skills"
-    skills_root.mkdir()
-    loader = SkillLoader([skills_root])
-    loader.load()  # 装前快照基线（空）
-
-    # 模拟 complete_turn 期间装了一个 skill，然后返回畸形输出（触发降级）
-    def _install() -> None:
-        _seed_skill(skills_root, "tuokouxiu")
-
-    engine = FakeEngine(
-        "没有 JSON 的降级输出", repair_text="修复也没给", on_complete=_install
-    )
-    runner = _make_runner(engine, tmp_path, skill_loader=loader)
-
-    with pytest.raises(GrowthChapterError):
-        await runner({})
-
-    # 降级仍 raise（不推进），但 skill 记账（目录 diff）已无条件跑过：loader 被 invalidate+reload，
-    # 新装的 skill 已被扫描到（审计日志已捕获）。验证 loader 现在能看到它（diff 确实执行）。
-    after_ids = {s.id for s in loader.list()}
-    assert "tuokouxiu" in after_ids
-
-    state = load_growth_state(tmp_path / "growth-state.json")
-    assert state.current_chapter == 0  # 降级不推进
-
-
-@pytest.mark.asyncio
-async def test_advance_records_installed_skills(tmp_path: Path) -> None:
-    # 成功路径：装的 skill 记入 ChapterRecord.installed_skills 并随状态落盘
+async def test_phase2_records_installed_skills_after_advance(tmp_path: Path) -> None:
+    # 成功路径：phase-1 先推进章，phase-2 装的 skill 经目录 diff 回填到本章 installed_skills 并落盘
     skills_root = tmp_path / "skills"
     skills_root.mkdir()
     loader = SkillLoader([skills_root])
@@ -418,11 +419,89 @@ async def test_advance_records_installed_skills(tmp_path: Path) -> None:
     def _install() -> None:
         _seed_skill(skills_root, "duanzi")
 
-    engine = FakeEngine(_valid_payload_text(), on_complete=_install)
+    engine = FakeEngine(_valid_payload_text(), on_install=_install)
     runner = _make_runner(engine, tmp_path, skill_loader=loader)
 
     await runner({})
 
+    assert engine.phase1_calls == 1
+    assert engine.phase2_calls == 1  # 有 skill_intent + loader → phase-2 跑了
     state = load_growth_state(tmp_path / "growth-state.json")
     assert state.current_chapter == 1
     assert state.chapters[0].installed_skills == ["duanzi"]
+
+
+@pytest.mark.asyncio
+async def test_phase2_failure_does_not_revert_advanced_chapter(tmp_path: Path) -> None:
+    # 复现反转（PRD 核心）：phase-2 装 skill 全程抛异常时，本章传记仍产出、状态仍推进、不抛。
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    loader = SkillLoader([skills_root])
+    loader.load()
+
+    engine = FakeEngine(_valid_payload_text(), phase2_raises=True)
+    runner = _make_runner(engine, tmp_path, skill_loader=loader)
+    ctx: dict[str, Any] = {}
+
+    await runner(ctx)  # phase-2 炸了也不上抛——章照常成立
+
+    assert engine.phase2_calls == 1  # phase-2 确实跑了（并抛了，被吞）
+    state = load_growth_state(tmp_path / "growth-state.json")
+    assert state.current_chapter == 1  # 章已推进，绝不被 phase-2 回退
+    assert state.chapters[0].installed_skills == []  # 没装上 → 空，但章成立
+    assert "第 1 章已完成" in ctx["result_message"]  # heartbeat 仍视为成功
+
+
+@pytest.mark.asyncio
+async def test_phase2_skipped_when_no_skill_intents(tmp_path: Path) -> None:
+    # 本章无 skill_intent → phase-2 直接跳过（不跑第二次 complete_turn），章照常推进
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    loader = SkillLoader([skills_root])
+    loader.load()
+
+    payload = {"narrative": "长大了，但这章没提出技能意图", "age_range": "5-10"}
+    engine = FakeEngine(
+        "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+    )
+    runner = _make_runner(engine, tmp_path, skill_loader=loader)
+
+    await runner({})
+
+    assert engine.phase1_calls == 1
+    assert engine.phase2_calls == 0  # 无意图 → phase-2 跳过
+    state = load_growth_state(tmp_path / "growth-state.json")
+    assert state.current_chapter == 1
+
+
+@pytest.mark.asyncio
+async def test_phase2_install_cap_respected(tmp_path: Path) -> None:
+    # 每章装 skill 上限：给超过 cap 的 skill_intents，只有 ≤cap 个被带进 phase-2 prompt
+    from sanshiliu.scheduler import growth_runner as gr_mod
+
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    loader = SkillLoader([skills_root])
+    loader.load()
+
+    over_cap = gr_mod._GROWTH_SKILL_INSTALL_CAP + 2
+    payload = {
+        "narrative": "长大了，这章贪心提了一堆技能意图。",
+        "age_range": "5-10",
+        "skill_intents": [
+            {"domain": f"领域{i}", "why": f"理由{i}"} for i in range(over_cap)
+        ],
+    }
+    engine = FakeEngine(
+        "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+    )
+    runner = _make_runner(engine, tmp_path, skill_loader=loader)
+
+    # 直接验证截断函数（runner 内部按它截）：超过 cap 的意图被砍到 cap
+    capped = runner._cap_skill_intents(payload["skill_intents"])
+    assert len(capped) == gr_mod._GROWTH_SKILL_INSTALL_CAP
+
+    await runner({})
+    assert engine.phase2_calls == 1  # 有意图 → 仍跑 phase-2（只是带进去的意图被截断）
+    state = load_growth_state(tmp_path / "growth-state.json")
+    assert state.current_chapter == 1

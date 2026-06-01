@@ -8,6 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
+from sanshiliu.bootstrap.preflight import prewarm_npx_for_growth
 from sanshiliu.channels.web.api import (
     make_channels_handler,
     make_health_api_handler,
@@ -351,6 +352,8 @@ async def run_serve() -> int:
             # PR3 技能习得：同一个 SkillLoader 实例——成长跑完做"装前/装后目录 diff"记账，
             # 并 invalidate+reload 让新装 skill 立刻对后续对话生效（serve 进程内共享一份）
             skill_loader=skill_loader,
+            # 方案 A：phase-2 装 skill 的 bash 硬超时（防 npx 冷拉/无 TTY 挂死拖久 phase-2）
+            skill_install_timeout_sec=settings.skill_install_timeout_sec,
         )
     )
     _hb_state_path = heartbeat_state_path(settings.data_dir)
@@ -566,6 +569,15 @@ async def run_serve() -> int:
             loop.add_signal_handler(sig, _request_stop)
 
     await persona_watcher.start()
+    # 方案 A·D：成长开启时 best-effort 预热 npx 缓存（暖 ~/.npm/_npx），消除 3am phase-2 首次冷拉/
+    # 无 TTY 确认阻塞（实跑挂 84s 的那条 bash）。非阻塞：超时/失败/缺 npx 都只 warn，不拖慢启动。
+    _prewarm = await prewarm_npx_for_growth(
+        enabled=settings.growth_enabled, prewarm=settings.skill_install_prewarm,
+    )
+    if _prewarm.status != "ok":
+        _logger.warning("npx 预热未就绪（不阻塞）", detail=_prewarm.detail, hint=_prewarm.hint)
+    else:
+        _logger.info("npx 预热完成", detail=_prewarm.detail)
     await heartbeat.start()
     server.start()
     if wechat_bot is not None:

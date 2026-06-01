@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Install a skill from a GitHub repo path into $CODEX_HOME/skills."""
+"""Install a skill from a GitHub repo path into the jx-agent project skills dir.
+
+注：本脚本原是 OpenAI Codex 的 skill-installer（默认装到 ~/.codex/skills），但 jx-agent 的
+SkillLoader 只扫 ./.sanshiliu/skills 与 ./skills——装到 ~/.codex/skills 等于装了个寂寞（growth
+目录 diff 永远净 0）。故 _default_dest() 改为优先 jx-agent 的项目 skills 目录：
+SANSHILIU_SKILLS_DIR_PROJECT（有则用）→ 否则 ./.sanshiliu/skills（相对 cwd=仓库根）。--dest 仍可覆盖。
+"""
 
 from __future__ import annotations
 
@@ -40,10 +46,6 @@ class Source:
 
 class InstallError(Exception):
     pass
-
-
-def _codex_home() -> str:
-    return os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
 
 
 def _tmp_root() -> str:
@@ -241,7 +243,12 @@ def _resolve_source(args: Args) -> Source:
 
 
 def _default_dest() -> str:
-    return os.path.join(_codex_home(), "skills")
+    # 优先 jx-agent 项目 skills 目录（loader 真正会扫的地方）：env 覆盖 → 否则 ./.sanshiliu/skills。
+    # 不再回落 ~/.codex/skills——那是 Codex 的目录，jx-agent 装到那等于装了个寂寞。
+    project_dir = os.environ.get("SANSHILIU_SKILLS_DIR_PROJECT")
+    if project_dir:
+        return os.path.expanduser(project_dir)
+    return os.path.join(".sanshiliu", "skills")
 
 
 def _parse_args(argv: list[str]) -> Args:
