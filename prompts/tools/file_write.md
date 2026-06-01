@@ -2,7 +2,6 @@
 name: file_write
 description: |
   写入文本文件；路径必须在当前工作目录内；覆盖式写。父目录会自动创建。
-  危险操作——Phase 8 启用时会触发权限确认。
 parameters:
   type: object
   properties:

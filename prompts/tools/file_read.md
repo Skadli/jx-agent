@@ -1,7 +1,7 @@
 ---
 name: file_read
 description: |
-  读本地文件内容；路径必须在当前工作目录内（Phase 8 启用白名单严格校验）。
+  读本地文件内容；路径必须在当前工作目录内。
   支持 offset/limit 读部分行。
 parameters:
   type: object
