@@ -63,7 +63,7 @@ L1 Bootstrap (wire.App) — orchestrator
 
 Where to look for a given concern:
 - **request flow**: `engine/loop.py` `ConversationEngine` — runs the tool-call loop with dedupe (threshold 4 for repeat `(name, args)`)
-- **system prompt assembly**: `engine/session.py:_effective_system` — order is `memory_block` → `core_persona` (messages[0]) → `persona_modules_listing` → `active_module_text` → `active_skills_text` → `compact_summary`. core 全量常驻；module listing 常驻；module 正文按引擎关键词预判或 `LoadPersonaModule` 工具调用注入
+- **system prompt assembly**: `engine/session.py:_effective_system` — order is `core_persona` (messages[0]) → `persona_modules_listing` → `active_skills_text` → `active_module_text` → `memory_block` → `compact_summary` → `reply_length_anchor`（静态段在前、易变段在后，让 DeepSeek 自动前缀缓存吃到稳定前缀；memory_block 含每 session 变的 Recent Sessions，故排到静态段之后）. core 全量常驻；module listing 常驻；module 正文按引擎关键词预判或 `LoadPersonaModule` 工具调用注入
 - **adding a tool**: drop a builtin module under `tools/builtin/`, register in `tools/bootstrap.build_tool_stack`, write a description md in `prompts/tools/<name>.md` (frontmatter has `name` / `description` / `parameters`)
 - **permission decisions**: `security/permission.py` `PermissionManager` — pattern syntax matches Claude exactly (`Bash(ls:*)`, `Read(./**)`, `WebSearch`)
 - **persona swap**:

@@ -60,17 +60,35 @@ class Compactor:
             return False
 
         # 待压缩 = 去掉 system（msgs[0]）和尾巴
-        to_compact = session.messages[1:-tail_keep] if tail_keep > 0 else session.messages[1:]
-        if not to_compact:
-            return False
+        if tail_keep > 0:
+            # 从 -tail_keep 处向前回退到最近一个 user 消息作切点，
+            # 保证 tool 消息永远和它前面的 assistant.tool_calls 同侧，避免孤儿 tool_result 触发 400
+            cut = len(session.messages) - tail_keep
+            while cut > 1 and session.messages[cut].role != "user":
+                cut -= 1
+            to_compact = session.messages[1:cut]
+            if not to_compact:
+                return False  # 无法安全切出待压段（尾部全是未结束的 tool 序列等），本轮跳过
+            kept_tail = session.messages[cut:]
+        else:
+            # tail_keep == 0 退化分支：无尾巴；cut=len 会让 messages[cut] 越界，故保持旧行为不走 snap
+            to_compact = session.messages[1:]
+            if not to_compact:
+                return False
+            kept_tail = []
 
         history_text = _serialize_history(to_compact)
         if not history_text.strip():
             return False
 
+        # 把已有摘要折进 LLM 输入，让模型在旧摘要基础上累积合并，避免多轮 compact 渐进性丢史
+        prior = session.compact_summary.strip()
+        user_content = (
+            f"【已有摘要】\n{prior}\n\n【新增对话】\n{history_text}" if prior else history_text
+        )
         prompt_messages = [
             {"role": "system", "content": self._prompts.compact_instruction},
-            {"role": "user", "content": history_text},
+            {"role": "user", "content": user_content},
         ]
 
         try:
@@ -96,8 +114,8 @@ class Compactor:
             return False
 
         # 写回 session：替换历史为 system + 尾巴；摘要存到 compact_summary 字段
+        # kept_tail 已在前面按 user 边界 snap 算好，这里直接用，勿再按 -tail_keep 重切
         session.compact_summary = new_summary
-        kept_tail = session.messages[-tail_keep:] if tail_keep > 0 else []
         session.messages = [session.messages[0], *kept_tail]
 
         self._budget.note_compact()

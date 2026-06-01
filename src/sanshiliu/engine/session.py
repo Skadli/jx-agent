@@ -75,9 +75,13 @@ class Session:
         return msg
 
     def _effective_system(self) -> str:
-        """合并顺序（空段跳过）：
-        memory_block → core_persona(messages[0]) → persona_modules_listing
-        → active_module(正文) → active_skills → compact_summary → reply_length_anchor
+        """合并顺序（空段跳过）：静态段在前、易变段在后，让 DeepSeek 自动前缀缓存吃到稳定前缀。
+        core_persona(messages[0]) → persona_modules_listing → active_skills → active_module(正文)
+        → memory_block → compact_summary → reply_length_anchor
+
+        为什么 memory_block 从最前挪到静态段之后：它含 Recent Sessions，每个 session 都变；
+        原来排第一会让它后面所有静态人格的前缀缓存整段失效，每轮都得重算。静态大块前置后，
+        跨轮/跨 session 的相同前缀才能命中缓存。anchor 仍留最末尾吃 recency。
         """
         if self.messages and self.messages[0].role == "system":
             raw = self.messages[0].content
@@ -87,13 +91,13 @@ class Session:
             persona = ""
         parts = [
             p for p in (
-                self.memory_block_text,
-                persona,
-                self.persona_modules_listing,
-                self.active_module_text,
-                self.active_skills_text,
-                self.compact_summary,
-                _REPLY_LENGTH_ANCHOR,
+                persona,                       # 静态大块 → 稳定前缀，跨轮/跨 session 命中 DeepSeek 自动前缀缓存
+                self.persona_modules_listing,  # 静态
+                self.active_skills_text,       # 易变（每轮激活）
+                self.active_module_text,       # 易变（每轮激活）
+                self.memory_block_text,        # 易变（Recent Sessions 每 session 变）——必须排在静态段之后
+                self.compact_summary,          # 易变（压缩时变）
+                _REPLY_LENGTH_ANCHOR,          # 留最后吃 recency
             ) if p
         ]
         return _SUMMARY_JOINER.join(parts)
