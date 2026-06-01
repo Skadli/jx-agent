@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from sanshiliu.engine.types import ChatMessage
-from sanshiliu.scheduler.growth_runner import GrowthRunner
+from sanshiliu.scheduler.growth_runner import GrowthChapterError, GrowthRunner
 from sanshiliu.scheduler.growth_state import load_growth_state
 from sanshiliu.security.composite_confirmer import CompositeConfirmer
 from sanshiliu.security.growth_approvals import (
@@ -68,7 +68,10 @@ class InstallingEngine:
         self.autoallow_during_call: bool | None = None
         self.calls = 0
 
-    async def complete_turn(self, _session: Any, _user_text: Any) -> ChatMessage:
+    async def complete_turn(
+        self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
+        on_user_message: Any = None,
+    ) -> ChatMessage:
         self.calls += 1
         # 记录"安装发生时"自动放行是否生效（应为真）
         self.autoallow_during_call = in_growth_autoallow()
@@ -86,7 +89,10 @@ class NoInstallEngine:
         self._reply = reply_payload
         self.calls = 0
 
-    async def complete_turn(self, _session: Any, _user_text: Any) -> ChatMessage:
+    async def complete_turn(
+        self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
+        on_user_message: Any = None,
+    ) -> ChatMessage:
         self.calls += 1
         return ChatMessage(
             role="assistant",
@@ -156,22 +162,27 @@ async def test_autoallow_set_during_run_and_reset_after(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_autoallow_reset_even_when_engine_raises(tmp_path: Path) -> None:
-    # 放行窗口必须在异常路径也复位（finally）——否则放行权限会泄漏到别的请求
+    # 放行窗口必须在异常路径也复位（finally）——否则放行权限会泄漏到别的请求。
+    # #1：engine 炸现在会上抛 GrowthChapterError（如实上报 error），但 contextvar 仍须复位。
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
 
     class BoomEngine:
         calls = 0
 
-        async def complete_turn(self, _session: Any, _user_text: Any) -> ChatMessage:
+        async def complete_turn(
+            self, _session: Any, _user_text: Any, *, max_turns: int | None = None,
+            on_user_message: Any = None,
+        ) -> ChatMessage:
             BoomEngine.calls += 1
             assert in_growth_autoallow() is True  # 进了窗口
             raise RuntimeError("LLM 炸了")
 
     runner = _make_runner(BoomEngine(), tmp_path, skills_dir)
-    await runner({})  # 异常被吞、不冒泡
+    with pytest.raises(GrowthChapterError):
+        await runner({})  # 致命失败上抛（heartbeat 会标 error）
 
-    assert in_growth_autoallow() is False  # 异常路径也复位
+    assert in_growth_autoallow() is False  # 异常路径也复位（finally 必复位）
     state = load_growth_state(tmp_path / "growth-state.json")
     assert state.current_chapter == 0  # engine 炸了 → 不推进
 

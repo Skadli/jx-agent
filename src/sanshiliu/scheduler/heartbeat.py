@@ -320,7 +320,12 @@ class HeartbeatScheduler:
                 return
 
             task.last_status = "ok"
-            task.last_message = ctx.get("gate_reason") or "完成"
+            # 三态 last_message：on_due 可经 ctx["result_message"] 写更精确的成功结果
+            # （如成长区分"第 N 章已完成"与"已定格"）；未设则回落 gate_reason（dream 仍走此路，
+            # 行为字节不变），再回落"完成"。
+            task.last_message = (
+                ctx.get("result_message") or ctx.get("gate_reason") or "完成"
+            )
         finally:
             task.last_run_at = time.time()
             task.last_duration_ms = int((time.time() - start_ms) * 1000)

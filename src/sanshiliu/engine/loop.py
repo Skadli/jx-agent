@@ -39,6 +39,13 @@ _logger = get_logger(__name__)
 # fail-fast：相同调用第 3 次直接拒（前 2 次允许，第 3 次返"重复"错误）
 _DEDUPE_THRESHOLD = 2
 
+# tool 循环默认轮数上限；complete_turn 不传 max_turns 时沿用此值（保持所有旧调用点字节不变）。
+_DEFAULT_MAX_TURNS = 6
+
+# 触顶（超过 max_turns）时返回的固定文案；growth_runner 需 import 它把"触顶"识别为硬失败
+# （而非误当正常 LLM 内容喂给 JSON 修复——那是没有真内容可修的）。
+TOOL_TURN_LIMIT_MESSAGE = "[已达 tool 调用上限，请缩小问题范围或重试]"
+
 # 长期记忆索引注入 system_prompt 的说明头：告诉模型这是它的记忆目录、怎么用。
 _MEMORY_INDEX_HEADER = (
     "# 你的长期记忆 · 索引\n"
@@ -344,6 +351,7 @@ class ConversationEngine:
     async def complete_turn(
         self, session: Session, user_text: MessageContent,
         *, on_user_message: Callable[[str], Awaitable[None]] | None = None,
+        max_turns: int | None = None,
     ) -> ChatMessage:
         """非流式 + tool_call 循环；返回最终 assistant 消息。
 
@@ -353,6 +361,10 @@ class ConversationEngine:
         （content 非空 + tool_calls），在执行工具**前**用该 preamble 调用一次，
         让通道把它作为独立的"状态"消息先发出（拟人化"状态→结果"）。最终回复仍走返回值。
         dream_runner 等不传则保持原单条行为。
+
+        max_turns：tool 循环轮数上限；None → 沿用默认 6（所有现有调用点不传 → 行为字节不变）。
+        成长一章需 Skill(growth)→Skill(skill-finder)→搜索→查 npx→装→再一轮输出 JSON，6 轮不够，
+        故 GrowthRunner 显式传更高值。
         """
         flat_text = _flatten_user_text(user_text)
         await self._refresh_memory(session)
@@ -364,12 +376,14 @@ class ConversationEngine:
         await self._persist_message(session, user_msg)
         await self._touch_session(session)
 
-        loop_state = ToolLoopState(max_turns=6)
+        loop_state = ToolLoopState(
+            max_turns=max_turns if max_turns is not None else _DEFAULT_MAX_TURNS
+        )
         while True:
             loop_state.turn += 1
             if loop_state.turn > loop_state.max_turns:
                 _logger.warning("tool_call 循环超限", session_id=session.session_id, turn=loop_state.turn)
-                limit_msg = session.add_assistant("[已达 tool 调用上限，请缩小问题范围或重试]")
+                limit_msg = session.add_assistant(TOOL_TURN_LIMIT_MESSAGE)
                 await self._persist_message(session, limit_msg)
                 return limit_msg
 
