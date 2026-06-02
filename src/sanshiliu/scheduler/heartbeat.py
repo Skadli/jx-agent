@@ -136,7 +136,10 @@ class HeartbeatScheduler:
         task = self._tasks.get(name)
         if task is None:
             return False
+        old_enabled = task.enabled
         task.enabled = enabled
+        if not old_enabled and enabled and task.last_run_at is None:
+            task._schedule_anchor_at = time.time()
         _logger.info("heartbeat task 开关", name=name, enabled=enabled)
         self._emit_change()
         return True
@@ -346,20 +349,14 @@ def _next_fire_at(task: HeartbeatTask) -> float:
         return base + task.interval_seconds
 
     if task.daily_at_hour is not None:
-        now = datetime.now()
-        target_today = now.replace(
+        base_ts = task.last_run_at if task.last_run_at is not None else task._schedule_anchor_at
+        base_dt = datetime.fromtimestamp(base_ts)
+        target_on_base_day = base_dt.replace(
             hour=task.daily_at_hour, minute=0, second=0, microsecond=0
         )
-        if task.last_run_at is None:
-            next_dt = target_today if now < target_today else target_today + timedelta(days=1)
-            return next_dt.timestamp()
-        last_dt = datetime.fromtimestamp(task.last_run_at)
-        target_on_last_day = last_dt.replace(
-            hour=task.daily_at_hour, minute=0, second=0, microsecond=0
-        )
-        next_dt = target_on_last_day
-        if last_dt >= target_on_last_day:
-            next_dt = target_on_last_day + timedelta(days=1)
+        next_dt = target_on_base_day
+        if base_dt >= target_on_base_day:
+            next_dt = target_on_base_day + timedelta(days=1)
         return next_dt.timestamp()
 
     return float("inf")
