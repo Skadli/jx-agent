@@ -25,7 +25,7 @@ keywords:
 
 1. **一段成长传记**（本章 5 年里发生了什么、长成了什么样）；
 2. **一次整体人格演化**（成长成什么就是什么人格——长成博主就是博主，长成校长就是校长）；
-3. **若干技能查找意图**（这一章学到的本事，下一步交给 skill-finder 去找真实 skill）。
+3. **若干技能安装线索**（`learned` 和 `skill_intents` 都会被系统拿去找真实 skill）。
 
 > 一句话：**dream 告诉分身"这些事之间有什么关系"。growth 告诉它"我这五年长成了谁"。**
 
@@ -79,16 +79,16 @@ keywords:
 
 根据本章成长，找出若干"长成这样的人应该具备、值得用一个真实 skill 来支撑"的能力缺口，
 每个缺口记成一条 **skill_intent**（`domain` 领域 + `why` 为什么这章该有），写进第 6 步的 JSON 里。
+同时，`learned` 里的具体知识点也会被系统当作安装线索。例如本章真的学会了粤语，
+`learned` 里要写"会说粤语"；即使你忘了把它写进 `skill_intents`，系统也会尝试找对应 skill。
 
 成长系统把"产传记"和"装 skill"**分成两段**跑，互不绑架：
 
 - **产传记这一段（你现在这轮）没有工具**——你只需把 skill_intent 列进 JSON，**不要在这轮去装**
   （这轮也调不动 skill-finder/installer，去试只会浪费）。传记 JSON 才是这轮的唯一产物。
-- **装 skill 是之后单独一段**（系统会把你这章的 skill_intents 再交给你，那一段才有工具）。那一段里：
-  - 对每个 intent，先 **`Skill(skill-finder)` 发现**一个**真实存在**的 skill（它给出 GitHub 形式的
-    `owner/repo` + 子目录），再 **`Skill(skill-installer)` 装进用户级全局 skills 目录**
-    （脚本默认就装到 `~/.sanshiliu/skills/<id>/`，不必手填目标目录；**不要**用 `npx clawhub install` /
-    `npx skills add` 自己装——那会装到系统扫不到的目录还可能卡死）。
+- **装 skill 是之后单独一段**。系统会把本章 `skill_intents`（优先）和 `learned` 合并、去重、
+  截断到 2-3 个，然后用确定性代码搜索 Skills.sh / ClawHub 并装进用户级全局 skills 目录。
+  （`skill_intents` 是你刻意挑的缺口，优先占额度；`learned` 是补漏，别让它把 skill_intents 挤掉。）
   - **每章最多装 2-3 个**；**找到才装，找不到就跳过这条**（不要硬凑、不要降低标准）。
   - 你处在后台无人值守会话里，安装类工具调用会被**自动放行（免人工审批）**、且有**硬超时**——
     正因如此更要克制：只装真正对得上缺口的真实 skill。

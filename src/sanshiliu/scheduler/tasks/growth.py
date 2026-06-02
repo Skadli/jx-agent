@@ -21,6 +21,7 @@ from sanshiliu.scheduler.heartbeat import GateResult, HeartbeatTask
 if TYPE_CHECKING:
     from sanshiliu.engine.loop import ConversationEngine
     from sanshiliu.identity.loader import PersonaLoader
+    from sanshiliu.security.permission import PermissionManager
     from sanshiliu.skills.loader import SkillLoader
     from sanshiliu.storage.db import Database
 
@@ -34,7 +35,7 @@ _DEFAULT_END_AGE = 30
 def build_growth_task(
     *,
     engine: ConversationEngine,
-    db: Database | None,  # 保留与 dream 一致的签名；skill 审计另落 tool_calls/permission_decisions
+    db: Database | None,  # 透传给 GrowthRunner：直连 phase-2 自记 tool_calls 审计（#3）
     growth_state_path: Path,
     memdir_dir: Path,
     fire_hour: int = _DEFAULT_FIRE_HOUR,
@@ -48,6 +49,7 @@ def build_growth_task(
     skill_loader: SkillLoader | None = None,
     skill_install_timeout_sec: int = 60,
     skills_dir_global: Path | None = None,
+    permission_manager: PermissionManager | None = None,
 ) -> HeartbeatTask:
     # PR2 人格演化（三者齐全才开启）：persona_dir = base core 来源、data_dir = 版本化人格落盘根、
     # persona_loader = 写完热生效的那个 loader（与 serve 主链路同一实例，否则改了不生效）。
@@ -69,6 +71,8 @@ def build_growth_task(
         skill_loader=skill_loader,
         skill_install_timeout_sec=skill_install_timeout_sec,
         skills_dir_global=skills_dir_global,
+        permission_manager=permission_manager,
+        db=db,
     )
 
     # box[0] 闭包技巧（同 dream.py）：task 在 return 前还没构造好，用 list 占位，

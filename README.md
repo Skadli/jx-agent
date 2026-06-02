@@ -274,7 +274,7 @@ Dashboard 的 Skills 页支持把每个 skill 的 `structure.json` 渲染成 Dif
 
 - **传记**：写入 memdir `reference_growth-chapter-N.md`（永久，作为下一章输入）。
 - **人格整体演化**：把核心人格**整盘改写**成"这岁数已经长成的那个人"，版本化存进 `data/growth/persona/chapter-N/`，由 `PersonaLoader` 的 active-core provider 在成长激活时**覆盖** base `persona/core/`（base 文件全程不写、可回滚；切回/回退 `active_persona_chapter` 即换人格）。世界观不隔离——长成校长就是校长人格，日常对话即以长成的人回应。
-- **技能习得**：LLM 在成长会话里自己调 `Skill(skill-finder)` 查找并自动安装真实 skill（按 skills 目录前后 diff 记账，`source=growth-chapter-N`）；**不自造 skill**，找不到当章不装。
+- **技能习得**：成长系统把本章 `skill_intents`（优先）和 `learned` 合并成安装线索，由代码确定性搜索 Skills.sh / ClawHub 并自动安装真实 skill（按 skills 目录前后 diff 记账，`source=growth-chapter-N`）；**不自造 skill**，找不到当章不装。
 
 ### 开启与触发
 

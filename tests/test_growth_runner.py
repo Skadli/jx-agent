@@ -19,6 +19,8 @@ from sanshiliu.scheduler.growth_runner import (
     GrowthRunner,
     _coerce_chapter_payload,
     _coerce_report,
+    _CommandResult,
+    _derive_skill_install_intents,
     _parse_structured_output,
 )
 from sanshiliu.scheduler.growth_state import load_growth_state
@@ -103,11 +105,22 @@ class FakeEngine:
         return ChatMessage(role="assistant", content=self._reply_text)
 
 
+class _FakeDB:
+    """最小 db 桩：只记录 insert_tool_call 调用，验证直连 phase-2 的命令审计落库（#3）。"""
+
+    def __init__(self) -> None:
+        self.tool_calls: list[dict[str, Any]] = []
+
+    async def insert_tool_call(self, **kwargs: Any) -> int:
+        self.tool_calls.append(kwargs)
+        return len(self.tool_calls)
+
+
 def _make_runner(
     engine: Any, tmp_path: Path, *, skill_loader: SkillLoader | None = None
 ) -> GrowthRunner:
     return GrowthRunner(
-        engine=engine,  # type: ignore[arg-type]  测试桩，鸭子类型即可
+        engine=engine,
         growth_state_path=tmp_path / "growth-state.json",
         memdir_dir=tmp_path / "memdir",
         start_age=5,
@@ -137,6 +150,57 @@ def test_parse_plain_json_object() -> None:
     parsed = _parse_structured_output(raw)
     assert parsed is not None
     assert parsed["narrative"] == "长大了"
+
+
+def test_derive_skill_intents_includes_learned_language() -> None:
+    payload = {
+        "narrative": "这五年我学会粤语，开始能用广东话接梗。",
+        "learned": ["会说粤语", "写打油诗"],
+        "skill_intents": [{"domain": "脱口秀", "why": "拿来练段子"}],
+    }
+
+    intents = _derive_skill_install_intents(payload)
+
+    # 显式 skill_intents 排最前（优先占 cap），其后才是隐式语言("粤语")与 learned("写打油诗")；
+    # learned 里的"会说粤语"归一化后与隐式"粤语"同领域，被先到的隐式项去重吃掉。
+    assert [it["domain"] for it in intents] == ["脱口秀", "粤语", "写打油诗"]
+
+
+def test_derive_prioritizes_skill_intents_over_learned_under_cap(tmp_path: Path) -> None:
+    # 回归（修优先级反转）：learned 条数 ≥ cap 时，刻意挑的 skill_intents 不能被 learned 挤出 cap。
+    from sanshiliu.scheduler import growth_runner as gr_mod
+
+    over = gr_mod._GROWTH_SKILL_INSTALL_CAP + 1
+    payload = {
+        "narrative": "长大了。",
+        "learned": [f"本事{i}" for i in range(over)],
+        "skill_intents": [{"domain": "脱口秀", "why": "刻意要装"}],
+    }
+
+    derived = _derive_skill_install_intents(payload)
+    assert derived[0]["domain"] == "脱口秀"  # 显式意图排最前
+
+    runner = _make_runner(FakeEngine(_valid_payload_text()), tmp_path)
+    capped = [it["domain"] for it in runner._cap_skill_intents(derived)]
+    assert "脱口秀" in capped  # 截断到 cap 后刻意意图仍在（旧逻辑会被 learned 全挤掉）
+
+
+def test_derive_keeps_learned_language_even_with_many_skill_intents(tmp_path: Path) -> None:
+    # #2：粤语只出现在 learned（narrative 未触发隐式提取），且 skill_intents 已塞满 cap。
+    # 轮转交错必须给 learned 留名额，否则"learned 粤语→装粤语 skill"的业务目标落空。
+    from sanshiliu.scheduler import growth_runner as gr_mod
+
+    cap = gr_mod._GROWTH_SKILL_INSTALL_CAP
+    payload = {
+        "narrative": "这五年忙东忙西。",  # 不含"学会粤语"式触发词
+        "learned": ["会说粤语"],
+        "skill_intents": [{"domain": f"领域{i}", "why": "x"} for i in range(cap)],
+    }
+
+    derived = _derive_skill_install_intents(payload)
+    runner = _make_runner(FakeEngine(_valid_payload_text()), tmp_path)
+    capped = [it["domain"] for it in runner._cap_skill_intents(derived)]
+    assert "粤语" in capped  # 交错后仍占到名额（纯 skill_intents-在前会把它全挤掉）
 
 
 def test_parse_fenced_json_block() -> None:
@@ -432,6 +496,268 @@ async def test_phase2_records_installed_skills_after_advance(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_phase2_direct_installs_skill_from_learned_without_llm_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 生产接线会传 skills_dir_global；此时 phase-2 不再让 LLM 自由工具循环，而是代码直接
+    # search/inspect/install。这里用 learned=会说粤语 复现用户提到的漏装场景。
+    skills_root = tmp_path / "global-skills"
+    skills_root.mkdir()
+    loader = SkillLoader([skills_root])
+    loader.load()
+    payload = {
+        "narrative": "5 到 10 岁，我学会粤语，能用广东话接邻居的梗。",
+        "age_range": "5-10",
+        "learned": ["会说粤语"],
+        "skill_intents": [],
+    }
+    engine = FakeEngine("```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```")
+    engine_any: Any = engine
+    runner = GrowthRunner(
+        engine=engine_any,
+        growth_state_path=tmp_path / "growth-state.json",
+        memdir_dir=tmp_path / "memdir",
+        start_age=5,
+        years_per_chapter=5,
+        end_age=30,
+        skill_loader=loader,
+        skills_dir_global=skills_root,
+    )
+
+    async def fake_run_command(args: list[str], *, timeout_sec: int) -> _CommandResult:
+        del timeout_sec
+        joined = " ".join(args)
+        if "clawhub@0.18.0 search" in joined:
+            return _CommandResult(
+                tuple(args),
+                0,
+                "language-learning  @chipagosfinest  Language Learning Tutor  (0.090)\n",
+                "",
+            )
+        if "clawhub@0.18.0 inspect" in joined:
+            return _CommandResult(
+                tuple(args),
+                0,
+                json.dumps(
+                    {
+                        "skill": {
+                            "slug": "language-learning",
+                            "displayName": "Language Learning Tutor",
+                            "summary": "Supports Chinese (Mandarin/Cantonese) conversation practice.",
+                            "tags": {"language": "1.0.0"},
+                        },
+                        "version": {"security": {"status": "clean"}},
+                    },
+                    ensure_ascii=False,
+                ),
+                "",
+            )
+        if "clawhub@0.18.0 --no-input" in joined and " install " in joined:
+            _seed_skill(skills_root, "language-learning")
+            return _CommandResult(tuple(args), 0, "Installed language-learning", "")
+        return _CommandResult(tuple(args), 1, "", "unexpected command")
+
+    monkeypatch.setattr("sanshiliu.scheduler.growth_runner.shutil.which", lambda name: name)
+    monkeypatch.setattr(runner, "_run_command", fake_run_command)
+
+    await runner({})
+
+    assert engine.phase1_calls == 1
+    assert engine.phase2_calls == 0  # direct phase-2 没有再调用 LLM 工具循环
+    state = load_growth_state(tmp_path / "growth-state.json")
+    assert state.chapters[0].installed_skills == ["language-learning"]
+
+
+@pytest.mark.asyncio
+async def test_phase2_direct_records_nothing_when_install_lands_nowhere(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #2：clawhub install 报成功(rc=0)但 skill 没落到全局目录(--dir/--workdir 落点不对)。
+    # phase-2 不能误记成功——目录 diff 仍为空、installed_skills 保持 []，且整章照常成立、不抛。
+    skills_root = tmp_path / "global-skills"
+    skills_root.mkdir()
+    loader = SkillLoader([skills_root])
+    loader.load()
+    payload = {
+        "narrative": "5 到 10 岁，我学会粤语。",
+        "age_range": "5-10",
+        "learned": ["会说粤语"],
+        "skill_intents": [],
+    }
+    engine = FakeEngine("```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```")
+    engine_any: Any = engine
+    runner = GrowthRunner(
+        engine=engine_any,
+        growth_state_path=tmp_path / "growth-state.json",
+        memdir_dir=tmp_path / "memdir",
+        start_age=5,
+        years_per_chapter=5,
+        end_age=30,
+        skill_loader=loader,
+        skills_dir_global=skills_root,
+    )
+
+    async def fake_run_command(args: list[str], *, timeout_sec: int) -> _CommandResult:
+        del timeout_sec
+        joined = " ".join(args)
+        if "clawhub@0.18.0 search" in joined:
+            return _CommandResult(
+                tuple(args),
+                0,
+                "language-learning  @chipagosfinest  Language Learning Tutor  (0.090)\n",
+                "",
+            )
+        if "clawhub@0.18.0 inspect" in joined:
+            return _CommandResult(
+                tuple(args),
+                0,
+                json.dumps(
+                    {
+                        "skill": {
+                            "slug": "language-learning",
+                            "summary": "Cantonese conversation practice.",
+                            "tags": {"language": "1.0.0"},
+                        },
+                        "version": {"security": {"status": "clean"}},
+                    },
+                    ensure_ascii=False,
+                ),
+                "",
+            )
+        if "clawhub@0.18.0 --no-input" in joined and " install " in joined:
+            # 关键：命令报成功但不落任何目录（模拟落点不对，loader 扫不到）
+            return _CommandResult(tuple(args), 0, "Installed (somewhere)", "")
+        return _CommandResult(tuple(args), 1, "", "unexpected command")
+
+    monkeypatch.setattr("sanshiliu.scheduler.growth_runner.shutil.which", lambda name: name)
+    monkeypatch.setattr(runner, "_run_command", fake_run_command)
+
+    await runner({})
+
+    state = load_growth_state(tmp_path / "growth-state.json")
+    assert state.current_chapter == 1  # 章照常成立（phase-2 失败绝不回退）
+    assert state.chapters[0].installed_skills == []  # 没误记（目录里确实没东西）
+
+
+@pytest.mark.asyncio
+async def test_phase2_direct_records_tool_calls_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #3：直连安装不经 engine._record_tool_call，必须自己把每条外部命令落 tool_calls，
+    # 否则 ask 模式下无人值守自动安装 DB 全程无痕。
+    skills_root = tmp_path / "global-skills"
+    skills_root.mkdir()
+    loader = SkillLoader([skills_root])
+    loader.load()
+    fake_db = _FakeDB()
+    db_any: Any = fake_db
+    payload = {
+        "narrative": "5 到 10 岁，我学会粤语。",
+        "age_range": "5-10",
+        "learned": ["会说粤语"],
+        "skill_intents": [],
+    }
+    engine = FakeEngine("```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```")
+    engine_any: Any = engine
+    runner = GrowthRunner(
+        engine=engine_any,
+        growth_state_path=tmp_path / "growth-state.json",
+        memdir_dir=tmp_path / "memdir",
+        start_age=5,
+        years_per_chapter=5,
+        end_age=30,
+        skill_loader=loader,
+        skills_dir_global=skills_root,
+        db=db_any,
+    )
+
+    async def fake_run_command(args: list[str], *, timeout_sec: int) -> _CommandResult:
+        del timeout_sec
+        joined = " ".join(args)
+        if "clawhub@0.18.0 search" in joined:
+            return _CommandResult(
+                tuple(args), 0, "language-learning  @x  Language Learning Tutor  (0.09)\n", ""
+            )
+        if "clawhub@0.18.0 inspect" in joined:
+            return _CommandResult(
+                tuple(args),
+                0,
+                json.dumps(
+                    {
+                        "skill": {"slug": "language-learning", "summary": "Cantonese practice."},
+                        "version": {"security": {"status": "clean"}},
+                    },
+                    ensure_ascii=False,
+                ),
+                "",
+            )
+        if "clawhub@0.18.0 --no-input" in joined and " install " in joined:
+            _seed_skill(skills_root, "language-learning")
+            return _CommandResult(tuple(args), 0, "Installed", "")
+        return _CommandResult(tuple(args), 1, "", "unexpected command")
+
+    monkeypatch.setattr("sanshiliu.scheduler.growth_runner.shutil.which", lambda name: name)
+    monkeypatch.setattr(runner, "_run_command", fake_run_command)
+
+    await runner({})
+
+    assert fake_db.tool_calls, "直连 phase-2 应把外部命令落 tool_calls"
+    assert all(tc["tool_name"] == "bash_exec" for tc in fake_db.tool_calls)
+    assert all(tc["permission_decision"] == "allow" for tc in fake_db.tool_calls)
+    # 安装命令本身必须在审计里留痕（无人值守自动装了什么，事后可追）
+    assert any(
+        " install " in json.loads(tc["arguments"])["command"] for tc in fake_db.tool_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_checked_command_normalizes_verb_for_permission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #1：args[0] 是 shutil.which/sys.executable 的绝对路径；送权限检查前必须归一化成裸程序名，
+    # 否则 settings.deny 自然写法 Bash(npx:*)/Bash(python:*) 的 verb 精确比对会漏匹配。
+    from sanshiliu.security.types import PermissionDecision
+
+    seen: list[str] = []
+
+    class _FakePM:
+        async def check(self, *, tool_name: str, arguments: dict[str, Any], session_id: str) -> Any:
+            seen.append(arguments["command"])
+            return PermissionDecision(kind="allow", source="test")
+
+    pm_any: Any = _FakePM()
+    engine_any: Any = FakeEngine(_valid_payload_text())
+    runner = GrowthRunner(
+        engine=engine_any,
+        growth_state_path=tmp_path / "growth-state.json",
+        memdir_dir=tmp_path / "memdir",
+        start_age=5,
+        years_per_chapter=5,
+        end_age=30,
+        permission_manager=pm_any,
+    )
+
+    async def fake_run_command(args: list[str], *, timeout_sec: int) -> _CommandResult:
+        del timeout_sec
+        return _CommandResult(tuple(args), 0, "ok", "")
+
+    monkeypatch.setattr(runner, "_run_command", fake_run_command)
+
+    await runner._run_checked_command(
+        ["/usr/bin/npx", "--yes", "clawhub@0.18.0", "install", "x"],
+        session_id="s",
+        timeout_sec=5,
+    )
+
+    assert seen
+    assert seen[0].split()[0] == "npx"  # 权限看到的是裸 npx，而非 /usr/bin/npx（旧逻辑会漏匹配）
+
+
+@pytest.mark.asyncio
 async def test_phase2_failure_does_not_revert_advanced_chapter(tmp_path: Path) -> None:
     # 复现反转（PRD 核心）：phase-2 装 skill 全程抛异常时，本章传记仍产出、状态仍推进、不抛。
     skills_root = tmp_path / "skills"
@@ -481,8 +807,9 @@ def test_install_prompt_names_resolved_global_dir(tmp_path: Path) -> None:
     # #2 复现：旧 prompt 硬写"装进项目 skills 目录（默认 ./.sanshiliu/skills）"，和实际落点（用户级全局
     # 目录）错位。传入 skills_dir_global 后，prompt 必须点名这条绝对路径，且不含旧的项目级措辞。
     global_dir = tmp_path / "twin" / "skills"
+    engine: Any = FakeEngine(_valid_payload_text())
     runner = GrowthRunner(
-        engine=FakeEngine(_valid_payload_text()),  # type: ignore[arg-type]  桩，鸭子类型即可
+        engine=engine,
         growth_state_path=tmp_path / "growth-state.json",
         memdir_dir=tmp_path / "memdir",
         start_age=5,
@@ -526,12 +853,13 @@ async def test_phase2_install_cap_respected(tmp_path: Path) -> None:
     loader.load()
 
     over_cap = gr_mod._GROWTH_SKILL_INSTALL_CAP + 2
+    skill_intents: list[Any] = [
+        {"domain": f"领域{i}", "why": f"理由{i}"} for i in range(over_cap)
+    ]
     payload = {
         "narrative": "长大了，这章贪心提了一堆技能意图。",
         "age_range": "5-10",
-        "skill_intents": [
-            {"domain": f"领域{i}", "why": f"理由{i}"} for i in range(over_cap)
-        ],
+        "skill_intents": skill_intents,
     }
     engine = FakeEngine(
         "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
@@ -539,7 +867,7 @@ async def test_phase2_install_cap_respected(tmp_path: Path) -> None:
     runner = _make_runner(engine, tmp_path, skill_loader=loader)
 
     # 直接验证截断函数（runner 内部按它截）：超过 cap 的意图被砍到 cap
-    capped = runner._cap_skill_intents(payload["skill_intents"])
+    capped = runner._cap_skill_intents(skill_intents)
     assert len(capped) == gr_mod._GROWTH_SKILL_INSTALL_CAP
 
     await runner({})

@@ -362,6 +362,7 @@ async def run_serve() -> int:
             skill_install_timeout_sec=settings.skill_install_timeout_sec,
             # phase-2 安装 prompt 据实点名 installer 落点（= loader 扫的全局目录），杜绝 prompt/落点错位
             skills_dir_global=settings.skills_dir_global,
+            permission_manager=permission_manager,
         )
     )
     _hb_state_path = heartbeat_state_path(settings.data_dir)
