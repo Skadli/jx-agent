@@ -17,11 +17,13 @@ from sanshiliu.engine.types import ChatMessage
 from sanshiliu.scheduler.growth_runner import (
     GrowthChapterError,
     GrowthRunner,
+    _clean_intent_domain,
     _coerce_chapter_payload,
     _coerce_report,
     _CommandResult,
     _derive_skill_install_intents,
     _parse_structured_output,
+    _queries_for_intent,
 )
 from sanshiliu.scheduler.growth_state import load_growth_state
 from sanshiliu.skills.loader import SkillLoader
@@ -201,6 +203,72 @@ def test_derive_keeps_learned_language_even_with_many_skill_intents(tmp_path: Pa
     runner = _make_runner(FakeEngine(_valid_payload_text()), tmp_path)
     capped = [it["domain"] for it in runner._cap_skill_intents(derived)]
     assert "粤语" in capped  # 交错后仍占到名额（纯 skill_intents-在前会把它全挤掉）
+
+
+def test_coerce_payload_normalizes_logged_growth_shapes() -> None:
+    # 线上真实输出曾把 learned 写成编号字符串，把 skill_intents 写成 skill/reason、
+    # intent_name/reason 或字符串数组；这些都不能被静默丢掉。
+    out = _coerce_chapter_payload(
+        {
+            "narrative": "长大了。",
+            "learned": "1. 站在台上被几百个人笑，那种感觉会上瘾。\n"
+            "2. 同样一个故事，加个反转和意外，效果就完全不一样。",
+            "skill_intents": [
+                {
+                    "skill": "storytelling_timing",
+                    "reason": "需要系统学习笑点和停顿。",
+                },
+                {"intent_name": "写作结构方法论", "reason": "整理成可复用的方法。"},
+                "希望能学习故事创作技巧或表演基本功",
+            ],
+        }
+    )
+
+    assert out["learned"] == [
+        "站在台上被几百个人笑，那种感觉会上瘾。",
+        "同样一个故事，加个反转和意外，效果就完全不一样。",
+    ]
+    assert [it["domain"] for it in out["skill_intents"]] == [
+        "storytelling_timing",
+        "写作结构方法论",
+        "故事创作技巧或表演基本功",
+    ]
+    assert out["skill_intents"][0]["why"] == "需要系统学习笑点和停顿。"
+
+
+def test_derive_handles_logged_nonstandard_intents_and_learned_dict() -> None:
+    payload = {
+        "narrative": "这一年我开始把笑话拆成四拍来写。",
+        "learned": {
+            "skill_1": "有意识地写结构（四拍结构），从段子手思维转向作品思维",
+            "skill_2": "即兴反应能力——能在舞台上接住意外并转化为笑点",
+        },
+        "skill_intents": [
+            {"intent_name": "写作结构方法论", "reason": "开始写四拍结构"},
+            {"intent_name": "即兴应答练习工具", "reason": "发现即兴反应能救场"},
+        ],
+    }
+
+    intents = _derive_skill_install_intents(payload)
+
+    domains = [it["domain"] for it in intents]
+    assert domains[0] == "写作结构方法论"
+    assert "即兴应答练习工具" in domains
+    assert "喜剧写作" in domains
+    assert "即兴喜剧" in domains
+
+
+def test_storytelling_intents_get_searchable_aliases() -> None:
+    assert "storytelling" in _queries_for_intent({"domain": "storytelling_timing"})
+    assert "public speaking" in _queries_for_intent({"domain": "讲故事节奏"})
+
+
+def test_clean_intent_domain_only_strips_dui_in_interest_frame() -> None:
+    # 裸“对”曾被无条件当请求前缀剥掉，会把“对白/对话”削成“白/话”；
+    # 收紧后只在“对…感兴趣”框架里剥，合法领域词不再被误伤。
+    assert _clean_intent_domain("对白节奏") == "对白节奏"
+    assert _clean_intent_domain("对话写作") == "对话写作"
+    assert _clean_intent_domain("对喜剧写作感兴趣") == "喜剧写作"
 
 
 def test_build_prompt_includes_calendar_year(tmp_path: Path) -> None:

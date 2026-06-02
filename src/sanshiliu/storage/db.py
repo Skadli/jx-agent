@@ -15,6 +15,11 @@ _logger = get_logger(__name__)
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
+# growth（成长）/ scheduler（做梦）是内部合成会话，各有专属看板（成长视图 / 做梦记录），
+# 不该混进人看的会话列表。channel 字面量见 scheduler/growth_runner.py 与 scheduler/dream_runner.py；
+# 这里 L0 存储层不反向依赖 L10 scheduler，故就地写死（channel 是落库的稳定协议值）。
+_INTERNAL_SESSION_CHANNELS: tuple[str, ...] = ("growth", "scheduler")
+
 
 class Database:
     """sqlite DAO 封装；生产走单例，测试可直接构造。"""
@@ -358,6 +363,12 @@ class Database:
         if channel:
             where = "WHERE s.channel = ?"
             params = (channel,)
+        else:
+            # 不带 channel 过滤（会话列表的“全部”）时，剔除成长/做梦内部会话；
+            # 显式按 channel 取仍可单独拿到（供各自看板/排障）。
+            placeholders = ", ".join("?" for _ in _INTERNAL_SESSION_CHANNELS)
+            where = f"WHERE s.channel NOT IN ({placeholders})"
+            params = _INTERNAL_SESSION_CHANNELS
         sql = f"""
             SELECT
               s.id, s.channel, s.user_id, s.created_at, s.last_active_at,

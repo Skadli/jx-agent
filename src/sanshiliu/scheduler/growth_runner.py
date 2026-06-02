@@ -115,6 +115,35 @@ _GROWTH_CLAWHUB_NPX_PKG = "clawhub@0.18.0"
 # 小规模别名表：成长输出常是中文领域词，但公开 skill 生态多用英文检索。
 # 这里只放高频、低歧义词；未知领域仍按原文搜索。
 _GROWTH_QUERY_ALIASES: dict[str, tuple[str, ...]] = {
+    "storytelling_timing": ("storytelling", "public speaking", "standup comedy"),
+    "公共演讲": ("public speaking", "presentation", "storytelling"),
+    "喜剧表演": ("standup comedy", "improv comedy", "acting"),
+    "喜剧写作": ("comedy writing", "standup comedy", "humor writing"),
+    "创意写作": ("creative writing", "writing", "content creation"),
+    "表演和台词": ("acting", "script writing", "public speaking"),
+    "音频制作": ("audio production", "podcasting", "voice acting"),
+    "讲故事": ("storytelling", "public speaking", "standup comedy"),
+    "讲古": ("storytelling", "oral storytelling", "public speaking"),
+    "叙事": ("storytelling", "creative writing", "public speaking"),
+    "口语节奏": ("public speaking", "storytelling", "standup comedy"),
+    "节奏感": ("public speaking", "storytelling", "standup comedy"),
+    "节奏控制": ("public speaking", "storytelling", "standup comedy"),
+    "笑点": ("standup comedy", "comedy writing", "humor writing"),
+    "包袱": ("standup comedy", "comedy writing", "humor writing"),
+    "幽默": ("standup comedy", "comedy writing", "humor writing"),
+    "段子": ("standup comedy", "comedy writing", "humor writing"),
+    "即兴": ("improv comedy", "public speaking", "standup comedy"),
+    "控场": ("public speaking", "presentation", "improv comedy"),
+    "表演": ("acting", "public speaking", "storytelling"),
+    "台词": ("acting", "script writing", "public speaking"),
+    "对白": ("acting", "script writing", "storytelling"),
+    "配音": ("voice acting", "dubbing", "acting"),
+    "素材": ("creative writing", "content creation", "writing"),
+    "写下来再改": ("creative writing", "writing", "content creation"),
+    "写作结构": ("creative writing", "comedy writing", "storytelling"),
+    "四拍结构": ("comedy writing", "standup comedy", "storytelling"),
+    "录音": ("audio production", "podcasting", "voice acting"),
+    "电台": ("podcasting", "audio production", "broadcasting"),
     "粤语": ("Cantonese language", "Cantonese", "粤语"),
     "广东话": ("Cantonese language", "Cantonese", "广东话"),
     "cantonese": ("Cantonese language", "Cantonese"),
@@ -1079,6 +1108,12 @@ class GrowthRunner:
             "personality / report / skill_intents / persona），不要在 JSON 之外写多余文字。"
         )
         lines.append(
+            "字段形状必须严格遵守：learned 是字符串数组；skill_intents 是对象数组，"
+            '每项只用 {"domain": "短领域词", "why": "原因"}，不要写成 skill/reason、'
+            "intent_name/reason、编号字符串或对象字典。domain 要短、可搜索，例如“讲故事节奏”、"
+            "“即兴喜剧”、“喜剧写作”、“粤语”。"
+        )
+        lines.append(
             "其中 report 是这一章面向人看的**当天成长汇报**（dashboard 会展示给主人看，"
             "用第一人称、口语化地讲清楚你这一年长成了谁、有什么变化）。"
         )
@@ -1205,27 +1240,21 @@ def _derive_skill_install_intents(parsed: dict[str, Any]) -> list[dict[str, Any]
 
     explicit: list[dict[str, Any]] = []
     raw_intents = parsed.get("skill_intents")
-    if isinstance(raw_intents, list):
-        for item in raw_intents:
-            if isinstance(item, dict):
-                _append_intent(explicit, seen, item)
+    for item in _coerce_skill_intents(raw_intents):
+        _append_intent(explicit, seen, item)
 
     implicit: list[dict[str, Any]] = []
     for item in _implicit_language_intents(parsed):
         _append_intent(implicit, seen, item)
 
     learned_out: list[dict[str, Any]] = []
-    learned = parsed.get("learned")
-    if isinstance(learned, list):
-        for item in learned:
-            if not isinstance(item, str):
-                continue
-            domain = _clean_learned_domain(item)
-            _append_intent(
-                learned_out,
-                seen,
-                {"domain": domain, "why": "本章 learned 中出现的习得能力"},
-            )
+    for learned_item in _coerce_learned_items(parsed.get("learned")):
+        domain = _clean_learned_domain(learned_item)
+        _append_intent(
+            learned_out,
+            seen,
+            {"domain": domain, "why": "本章 learned 中出现的习得能力"},
+        )
 
     return _interleave(explicit, implicit, learned_out)
 
@@ -1254,8 +1283,96 @@ def _append_intent(out: list[dict[str, Any]], seen: set[str], item: dict[str, An
         return
     copied = dict(item)
     copied["domain"] = domain
+    why = _intent_why(copied)
+    if why and not isinstance(copied.get("why"), str):
+        copied["why"] = why
     out.append(copied)
     seen.add(key)
+
+
+def _coerce_skill_intents(raw: Any) -> list[dict[str, Any]]:
+    """把 LLM 常见的 skill_intents 变体规整成 {domain, why} 列表。
+
+    线上日志里出现过：
+    - ["希望能学习故事创作技巧或表演基本功"]
+    - [{"skill": "storytelling_timing", "reason": "..."}]
+    - [{"intent_name": "写作结构方法论", "reason": "..."}]
+    协议仍推荐 domain/why；这里是兼容层，避免一章白白没有安装意图。
+    """
+    if isinstance(raw, dict):
+        raw_items: list[Any] = [raw]
+    elif isinstance(raw, list):
+        raw_items = raw
+    elif isinstance(raw, str):
+        raw_items = _split_text_items(raw)
+    else:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            domain = _intent_domain(item)
+            if not domain:
+                continue
+            copied = dict(item)
+            copied["domain"] = domain
+            why = _intent_why(copied)
+            if why:
+                copied["why"] = why
+            out.append(copied)
+        elif isinstance(item, str):
+            domain = _clean_intent_domain(item)
+            if domain:
+                out.append(
+                    {
+                        "domain": domain,
+                        "why": "本章 skill_intents 中出现的能力缺口",
+                    }
+                )
+    return out
+
+
+def _coerce_learned_items(raw: Any) -> list[str]:
+    """把 learned 规整成字符串列表；只接受能拆成明确条目的字符串/字典/list。
+
+    单个普通字符串常是模型把类型写错的散文片段，直接拿去搜会变成超长查询；只有编号、
+    bullet、多行、分号分隔或含明确“学会/掌握”等习得动词时才保留。
+    """
+    if isinstance(raw, list):
+        return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    if isinstance(raw, dict):
+        return [item.strip() for item in raw.values() if isinstance(item, str) and item.strip()]
+    if not isinstance(raw, str):
+        return []
+    return _split_text_items(raw, allow_single=_looks_like_learned_item(raw))
+
+
+def _split_text_items(text: str, *, allow_single: bool = True) -> list[str]:
+    """拆 bullet/编号/多行/分号列表，顺手去掉前缀符号。"""
+    s = text.strip()
+    if not s:
+        return []
+    has_list_shape = bool(re.search(r"(^|\n)\s*(?:[-*•]|\d+[.、)])\s+", s))
+    has_separator = "\n" in s or "；" in s or ";" in s
+    if not has_list_shape and not has_separator:
+        return [s] if allow_single else []
+
+    parts = re.split(r"\n+|[；;]", s)
+    out: list[str] = []
+    for part in parts:
+        item = re.sub(r"^\s*(?:[-*•]|\d+[.、)])\s*", "", part).strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def _looks_like_learned_item(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(学会|学习|掌握|练会|开始会|会说|能说|懂得|熟悉|认识到|知道了|接触到|形成|养成)",
+            text,
+        )
+    )
 
 
 def _implicit_language_intents(parsed: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1299,14 +1416,64 @@ def _clean_learned_domain(text: str) -> str:
         "",
         s,
     ).strip(" \t\r\n-：:，,。；;")
-    return s or text.strip()
+    for pattern, domain in (
+        (r"粤语|广东话|Cantonese", "粤语"),
+        (r"潮汕话|潮州话|Teochew|Chaoshan", "潮汕话"),
+        (r"普通话|Mandarin", "普通话"),
+        (r"四拍结构|写作结构|写本子|改稿|删.*好笑|作品思维", "喜剧写作"),
+        (r"即兴|救场|接住意外", "即兴喜剧"),
+        (r"口语节奏|节奏感|节奏控制|节奏|停顿|笑点|包袱", "讲故事节奏"),
+        (r"讲古|讲故事|叙事|故事.*结构", "讲故事"),
+        (r"站在台上|上台|舞台|观众|控场", "公共演讲"),
+        (r"课堂搞笑|搞笑本能|搞笑作品|让人笑", "喜剧表演"),
+        (r"配音|模仿.*语调|模仿腔调|台词|对白|表演", "表演和台词"),
+        (r"录音|电台|麦克风|播出|演播室|广播电视中心", "音频制作"),
+        (r"素材|写下来再改|创作习惯", "创意写作"),
+    ):
+        if re.search(pattern, s, re.I):
+            return domain
+    return _trim_search_domain(s or text.strip())
+
+
+def _clean_intent_domain(text: str) -> str:
+    s = re.sub(r"\s+", " ", text).strip(" \t\r\n-：:，,。；;")
+    # “对”是裸的高频字（对白/对话/对联…），只在确实是“对…感兴趣”框架时才剥，避免误伤合法领域词
+    s = re.sub(
+        r"^(希望能学习|希望学习|想学习|学习|对(?=.*感兴趣)|或许需要一些关于|需要一些关于|需要|想找|想要)",
+        "",
+        s,
+    ).strip(" \t\r\n-：:，,。；;")
+    s = re.sub(r"(感兴趣|的方法|的方法论|的工具|的技巧)$", "", s).strip(" \t\r\n-：:，,。；;")
+    return _trim_search_domain(s or text.strip())
+
+
+def _trim_search_domain(text: str) -> str:
+    """把超长叙事句压到更像搜索词的长度，避免拿整句中文去搜技能市场。"""
+    s = text.strip()
+    if len(s) <= 32:
+        return s
+    pieces = re.split(r"[，,。；;：:（(——-]", s)
+    for piece in pieces:
+        p = piece.strip()
+        if 2 <= len(p) <= 32:
+            return p
+    return s[:32].strip()
 
 
 def _intent_domain(intent: dict[str, Any]) -> str:
-    domain = intent.get("domain")
-    if not isinstance(domain, str):
-        return ""
-    return domain.strip()
+    for key in ("domain", "skill", "intent_name", "name", "topic", "ability"):
+        domain = intent.get(key)
+        if isinstance(domain, str) and domain.strip():
+            return _clean_intent_domain(domain)
+    return ""
+
+
+def _intent_why(intent: dict[str, Any]) -> str:
+    for key in ("why", "reason", "rationale", "description"):
+        value = intent.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _queries_for_intent(intent: dict[str, Any]) -> list[str]:
@@ -1517,7 +1684,7 @@ def _coerce_chapter_payload(parsed: dict[str, Any]) -> dict[str, Any]:
     """#3 schema 校验/兜底：解析出的 dict 仍可能字段缺失/类型错；规整成可安全落盘的形状。
 
     - narrative：**强制非空字符串**，否则本章没有真内容可落盘 → raise GrowthChapterError（硬失败）。
-    - learned / skill_intents：非 list → []（不让畸形类型流到传记/状态）。
+    - learned / skill_intents：兼容常见 LLM 变体并规整成 list；无法拆成明确条目的再置 []。
     - persona：非 dict → {}（filter_persona_sections 据此安全跳过演化）。
     - personality：非 str → ""。
     - age_range / report：保持原值，由调用方现有的回落逻辑兜底（age_range 回落状态算值、
@@ -1531,11 +1698,9 @@ def _coerce_chapter_payload(parsed: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = dict(parsed)
     out["narrative"] = narrative
 
-    learned = parsed.get("learned")
-    out["learned"] = learned if isinstance(learned, list) else []
+    out["learned"] = _coerce_learned_items(parsed.get("learned"))
 
-    skill_intents = parsed.get("skill_intents")
-    out["skill_intents"] = skill_intents if isinstance(skill_intents, list) else []
+    out["skill_intents"] = _coerce_skill_intents(parsed.get("skill_intents"))
 
     persona = parsed.get("persona")
     out["persona"] = persona if isinstance(persona, dict) else {}
