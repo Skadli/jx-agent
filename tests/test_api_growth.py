@@ -354,3 +354,41 @@ def test_persona_snapshot_rejects_traversal(tmp_path: Path) -> None:
         req = FakeReq(bad)
         handler(req)
         assert req.status == 400, bad
+
+
+# ── /api/persona（人设视图）× 成长覆盖 ─────────────────────────────────
+
+
+def test_resolve_persona_file_reads_growth_override(tmp_path: Path) -> None:
+    # bug 回归：成长激活时 core_dir 是 data/growth/persona/chapter-N/（在 persona_dir 之外），
+    # 旧 resolve_persona_file 用 relative_to(persona_dir) 把它整段跳过 → dashboard 人设视图
+    # 列得出文件却 404 读不到。修复后两者都该指向覆盖目录并真正读到。
+    from sanshiliu.channels.web.api import resolve_persona_file
+    from sanshiliu.identity.loader import PersonaLoader
+
+    (tmp_path / "persona" / "core").mkdir(parents=True)
+    (tmp_path / "persona" / "core" / "identity.md").write_text("base", encoding="utf-8")
+    growth_dir = tmp_path / "data" / "growth" / "persona" / "chapter-3"
+    growth_dir.mkdir(parents=True)
+    (growth_dir / "identity.md").write_text("grown", encoding="utf-8")
+
+    loader = PersonaLoader(tmp_path / "persona", active_core_provider=lambda: growth_dir)
+
+    assert "identity.md" in loader.get().sections  # 列表（/api/persona）走覆盖目录
+    resolved = resolve_persona_file(loader, "identity.md")  # 单文件读（/api/persona/{name}）
+    assert resolved is not None
+    assert resolved.read_text(encoding="utf-8") == "grown"
+
+
+def test_resolve_persona_file_still_blocks_traversal(tmp_path: Path) -> None:
+    # 守卫仍要挡住逃出候选目录的相对路径（防 `..` 穿越），不能因放开成长目录而漏掉。
+    from sanshiliu.channels.web.api import resolve_persona_file
+    from sanshiliu.identity.loader import PersonaLoader
+
+    (tmp_path / "persona" / "core").mkdir(parents=True)
+    (tmp_path / "persona" / "core" / "identity.md").write_text("base", encoding="utf-8")
+    (tmp_path / "persona" / "secret.md").write_text("secret", encoding="utf-8")  # 在 core 之外
+
+    loader = PersonaLoader(tmp_path / "persona")
+    assert resolve_persona_file(loader, "identity.md") is not None
+    assert resolve_persona_file(loader, "../secret.md") is None  # 逃出 core/ → 拒绝

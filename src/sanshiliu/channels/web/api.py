@@ -364,21 +364,26 @@ def make_persona_handler(
 
 
 def resolve_persona_file(persona_loader: PersonaLoader, fname: str) -> Path | None:
-    """按 basename 查 core/ 优先、modules/ fallback；通过 .resolve() 校验仍在 persona_dir 之下，
-    防 `..` path traversal。找不到返回 None。"""
-    persona_root = persona_loader.persona_dir.resolve()
-    for candidate in (
-        persona_loader.core_dir / fname,
-        persona_loader.persona_dir / MODULES_DIRNAME / fname,
+    """按 basename 查激活 core/ 优先、modules/ fallback；校验解析后仍**直属候选目录**，防 `..` 穿越。
+
+    守卫按"解析后是否就在该候选目录里"判定，而**不是**旧的"必须在 persona_dir 之下"——因为
+    成长激活时 core_dir 是覆盖目录 data/growth/persona/chapter-N/，它在 persona_dir 之外，旧逻辑
+    的 relative_to(persona_dir) 会抛 ValueError 把它整段跳过：dashboard 列得出文件却 404 读不到
+    （bug）。fname 已在 handler 侧校验为纯 .md basename，这里的目录归属守卫是再加一层防护。
+    找不到返回 None。
+    """
+    for base_dir in (
+        persona_loader.core_dir,
+        persona_loader.persona_dir / MODULES_DIRNAME,
     ):
+        candidate = base_dir / fname
         try:
             resolved = candidate.resolve()
+            base_resolved = base_dir.resolve()
         except OSError:
             continue
-        try:
-            resolved.relative_to(persona_root)
-        except ValueError:
-            continue
+        if resolved.parent != base_resolved:
+            continue  # fname 夹了 `..` 等逃出候选目录 → 拒绝
         if resolved.is_file():
             return resolved
     return None
