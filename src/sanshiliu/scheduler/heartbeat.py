@@ -105,6 +105,11 @@ class HeartbeatScheduler:
         except Exception as exc:
             _logger.error("heartbeat on_state_change 失败（不阻塞）", error=str(exc))
 
+    def is_running(self, name: str) -> bool:
+        """某 task 当前是否正在执行；供外部（如成长删除 API）避开与其状态写入竞争。"""
+        task = self._tasks.get(name)
+        return task is not None and task._running
+
     def register(self, task: HeartbeatTask) -> None:
         if task.name in self._tasks:
             raise ValueError(f"heartbeat task 重名: {task.name}")

@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from sanshiliu.channels.web.api import resolve_persona_file
 from sanshiliu.channels.web.handlers import SessionStore
@@ -22,9 +23,13 @@ from sanshiliu.memory.longterm.memdir import MemdirLoader, write_memory_file
 from sanshiliu.memory.types import (
     MEMORY_APPLIES,
     MEMORY_TYPES,
-    MemoryApply,
     MemoryEntry,
-    MemoryType,
+)
+from sanshiliu.scheduler.growth_persona import chapter_persona_dir
+from sanshiliu.scheduler.growth_state import (
+    load_growth_state,
+    save_growth_state,
+    seed_growth_state,
 )
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.loader import SkillLoader
@@ -211,8 +216,9 @@ def make_memory_create_handler(
         if apply is not None and apply not in MEMORY_APPLIES:
             _write_json(req, {"error": f"apply 必须是 {MEMORY_APPLIES}"}, status=400)
             return
-        memory_type = cast(MemoryType, mtype)
-        memory_apply = cast(MemoryApply, apply) if apply is not None else None
+        # mypy 已由上面的 `not in MEMORY_TYPES` / `not in MEMORY_APPLIES` 守卫收窄类型，无需 cast
+        memory_type = mtype
+        memory_apply = apply if apply is not None else None
         try:
             entry = MemoryEntry(
                 name=name, description=desc, memory_type=memory_type,
@@ -416,6 +422,132 @@ def make_instance_reload_handler(
         _write_json(req, {"ok": True, "results": results})
 
     return handler
+
+
+# ────────── DELETE /api/growth/chapters/{n} ──────────
+
+def make_growth_chapter_delete_handler(
+    growth_state_path: Path,
+    *,
+    start_age: int,
+    years_per_chapter: int,
+    end_age: int,
+    data_dir: Path,
+    memdir_loader: MemdirLoader | None,
+    persona_loader: PersonaLoader | None,
+    growth_running: Callable[[], bool] | None = None,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """删第 n 章及其后所有章（成长是连续时间线，不能留空洞）。删 1 = 清空全部。
+
+    一并清理：传记 md + 人格快照目录 data/growth/persona/chapter-N/（#2），并令人格回退即时生效。
+    清空到 0 章时按当前 config 重新 seed cadence（#1：把旧 5 年/章迁到现默认 1 年/章）。
+    成长心跳任务正在跑时返回 409（#3）——它也在 load→改→save 同一状态文件，并发会丢更新。
+    已装外部 skill 不卸载（二期，与 rollback 一致）。
+    """
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        raw = req.path.split("?", 1)[0]
+        prefix = "/api/growth/chapters/"
+        if not raw.startswith(prefix):
+            _write_json(req, {"error": "bad path"}, status=400)
+            return
+        token = urllib.parse.unquote(raw[len(prefix):].strip("/"))
+        # 只认 ASCII 十进制正整数（同 api_growth._parse_chapter_no：挡全角/上标/.. 注入）
+        if not (token.isascii() and token.isdecimal()):
+            _write_json(req, {"error": "invalid chapter number"}, status=400)
+            return
+        n = int(token)
+        if n <= 0:  # 与 GET 端点一致：非正章号是非法请求(400)，而非"找不到"(404)
+            _write_json(req, {"error": "invalid chapter number"}, status=400)
+            return
+        # #3：成长任务正在跑时拒绝——它也在 load→改→save 同一个 growth-state.json，并发会丢更新
+        if growth_running is not None and growth_running():
+            _write_json(
+                req,
+                {"error": "成长任务正在运行，请稍后再删", "code": "growth-busy"},
+                status=409,
+            )
+            return
+        state = load_growth_state(
+            growth_state_path,
+            start_age=start_age,
+            years_per_chapter=years_per_chapter,
+            end_age=end_age,
+        )
+        if n > state.current_chapter:
+            _write_json(
+                req,
+                {"error": "chapter not found", "chapter_no": n, "completed": state.current_chapter},
+                status=404,
+            )
+            return
+        removed = state.delete_from(n)
+        if state.current_chapter == 0:
+            # #1：清空到起点 → 按当前 config 重新 seed，否则旧 years_per_chapter/end_chapter 一直粘着、
+            # 和现默认/文档（1 年/章）不一致。等价于删掉状态文件重建。
+            state = seed_growth_state(
+                start_age=start_age, years_per_chapter=years_per_chapter, end_age=end_age
+            )
+        save_growth_state(growth_state_path, state)
+        # 清被回退章的传记 md + 人格快照目录（否则残留脏数据 / 过期人格）；都 best-effort
+        deleted_bios = _delete_growth_biographies(memdir_loader, removed)
+        deleted_persona = _delete_growth_persona_dirs(data_dir, removed)
+        # 人格回退即时生效：active_persona_chapter 可能已收敛，loader 缓存需手动失效
+        if persona_loader is not None:
+            persona_loader.invalidate()
+        _write_json(req, {
+            "ok": True,
+            "removed_chapters": removed,
+            "current_chapter": state.current_chapter,
+            "age": state.age,
+            "active_persona_chapter": state.active_persona_chapter,
+            "deleted_biographies": deleted_bios,
+            "deleted_persona_dirs": deleted_persona,
+        })
+
+    return handler
+
+
+def _delete_growth_biographies(
+    memdir_loader: MemdirLoader | None, chapter_nos: list[int]
+) -> int:
+    """删被回退章的传记 md：reference_growth-chapter-N_*.md（N 后带 _，不会误伤 chapter-10）。
+
+    删完重建 MEMORY.md 索引并 reload。memdir 关闭则返 0；删不动只跳过（best-effort）。
+    """
+    if memdir_loader is None:
+        return 0
+    root = memdir_loader.root
+    count = 0
+    for n in chapter_nos:
+        for p in root.glob(f"reference_growth-chapter-{n}_*.md"):
+            try:
+                p.unlink()
+                count += 1
+            except OSError:
+                pass
+    if count:
+        _rebuild_memdir_index(memdir_loader)
+    return count
+
+
+def _delete_growth_persona_dirs(data_dir: Path, chapter_nos: list[int]) -> int:
+    """删被回退章的人格快照目录 data/growth/persona/chapter-N/（N≥1；chapter-0 起点快照保留）。
+
+    回退/清空后这些目录是孤儿（active 指针已收敛）：留着既是脏数据、又会让
+    /api/growth/persona/{N} 读到过期人格。best-effort：删不动只跳过。
+    """
+    count = 0
+    for n in chapter_nos:
+        if n <= 0:  # chapter-0 是 5 岁起点快照（= base core），永不随回退删除
+            continue
+        d = chapter_persona_dir(data_dir, n)
+        if d.is_dir():
+            try:
+                shutil.rmtree(d)
+                count += 1
+            except OSError:
+                pass
+    return count
 
 
 # ────────── settings.json 编辑辅助 ──────────

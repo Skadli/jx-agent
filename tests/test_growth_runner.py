@@ -382,9 +382,10 @@ async def test_frozen_state_returns_ok_with_message(tmp_path: Path) -> None:
     path = tmp_path / "growth-state.json"
     from sanshiliu.scheduler.growth_state import ChapterRecord, GrowthState, save_growth_state
 
+    # 推到定格为止（与 cadence 解耦：不论每章几年，长满 end_chapter 即冻结）
     state = GrowthState()
-    for i in range(5):
-        state.advance(ChapterRecord(age_range=f"ch{i}", summary=f"第{i + 1}章"))
+    while state.can_advance():
+        state.advance(ChapterRecord(age_range="frozen", summary="长满定格"))
     save_growth_state(path, state)
 
     engine = FakeEngine('{"narrative": "n", "age_range": "30-35"}')

@@ -46,6 +46,7 @@ from sanshiliu.channels.web.api_wechat import (
     make_wechat_qr_status_handler,
 )
 from sanshiliu.channels.web.api_writes import (
+    make_growth_chapter_delete_handler,
     make_instance_reload_handler,
     make_memory_create_handler,
     make_memory_modify_handler,
@@ -442,6 +443,18 @@ async def run_serve() -> int:
         end_age=settings.growth_end_age,
     ))
     router.register_prefix("GET", "/api/growth/persona/", make_growth_persona_handler(settings.data_dir))
+    # 删某章及其后所有章（成长是连续时间线）：回退状态机 + 清传记 + 人格回退即时生效；删 1 = 清空
+    router.register_prefix("DELETE", "/api/growth/chapters/", make_growth_chapter_delete_handler(
+        growth_state_path,
+        start_age=settings.growth_start_age,
+        years_per_chapter=settings.growth_years_per_chapter,
+        end_age=settings.growth_end_age,
+        data_dir=settings.data_dir,
+        memdir_loader=memdir_loader,
+        persona_loader=persona_for_api,
+        # #3：成长心跳正在跑时拒删（避免与 GrowthRunner 抢同一 growth-state.json）
+        growth_running=lambda: heartbeat.is_running("growth"),
+    ))
 
     # ─── 写 endpoints ───
     router.register("POST", "/api/sessions/new", make_session_new_handler(session_store))

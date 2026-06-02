@@ -1042,6 +1042,9 @@ class GrowthRunner:
         lines: list[str] = [
             f"现在是你的第 {chapter_no} 次成长梦（共 {state.end_chapter} 章，本章覆盖 {age_range} 岁）。",
             "请按 Skill(growth) 协议完整走六步——读 growth skill 正文，承接前文继续成长。",
+            "把本章这段时间写得**具体**——落到具体的事件/场景/人物/对话/细节，"
+            "别写成跨好几年的流水概述；**可以天马行空**（奇遇/脑洞/穿越/夸张转折都欢迎），"
+            "只要能从前文自洽地圆回来。",
             "",
         ]
         if state.chapters:
@@ -1065,7 +1068,7 @@ class GrowthRunner:
         )
         lines.append(
             "其中 report 是这一章面向人看的**当天成长汇报**（dashboard 会展示给主人看，"
-            "用第一人称、口语化地讲清楚你这五年长成了谁、有什么变化）。"
+            "用第一人称、口语化地讲清楚你这一年长成了谁、有什么变化）。"
         )
         lines.append(
             "其中 persona 是本章演化后的**新核心人格**（{identity, personality, beliefs, style, "

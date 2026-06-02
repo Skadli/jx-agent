@@ -334,12 +334,12 @@ class Settings(BaseSettings):
         description="成长定时器醒来的小时（local time，0-23）；默认夜里 3 点",
     )
     growth_years_per_chapter: int = Field(
-        default=5,
+        default=1,
         ge=1,
         validation_alias=AliasChoices(
             "growth_years_per_chapter", "SANSHILIU_GROWTH_YEARS_PER_CHAPTER"
         ),
-        description="每章成长梦跨多少年；默认 5 年/章",
+        description="每章成长梦跨多少年；默认 1 年/章（5→30 岁共 25 章，每梦更具体）",
     )
     growth_start_age: int = Field(
         default=5,

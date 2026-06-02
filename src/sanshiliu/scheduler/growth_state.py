@@ -1,6 +1,6 @@
 """成长状态机；data/growth-state.json 的 load/save/advance/rollback + gate 判定。
 
-为什么单独成一个纯模块：成长推进是有限状态机（5 岁→30 岁、共 5 章），逻辑必须
+为什么单独成一个纯模块：成长推进是有限状态机（5 岁→30 岁、共 25 章），逻辑必须
 可单测、不依赖 LLM / engine / 文件系统副作用。load/save 只碰一个 JSON 文件，advance/
 rollback/can_advance 是纯函数式状态变换，便于 mypy strict + pytest 覆盖边界。
 
@@ -36,9 +36,9 @@ from sanshiliu.foundation.logging import get_logger
 
 _logger = get_logger(__name__)
 
-# 默认值——首次建状态时 seed；与 config.growth_* 默认一致（5 岁起、5 年/章、30 岁止 → 共 5 章）
+# 默认值——首次建状态时 seed；与 config.growth_* 默认一致（5 岁起、1 年/章、30 岁止 → 共 25 章）
 _DEFAULT_START_AGE = 5
-_DEFAULT_YEARS_PER_CHAPTER = 5
+_DEFAULT_YEARS_PER_CHAPTER = 1
 _DEFAULT_END_AGE = 30
 
 
@@ -62,7 +62,7 @@ class GrowthState:
     active_persona_chapter: int = 0
     start_age: int = _DEFAULT_START_AGE
     years_per_chapter: int = _DEFAULT_YEARS_PER_CHAPTER
-    # 总章数；由 (end_age - start_age) / years_per_chapter 推出（默认 (30-5)/5 = 5）
+    # 总章数；由 (end_age - start_age) / years_per_chapter 推出（默认 (30-5)/1 = 25）
     end_chapter: int = (_DEFAULT_END_AGE - _DEFAULT_START_AGE) // _DEFAULT_YEARS_PER_CHAPTER
     chapters: list[ChapterRecord] = field(default_factory=list)
 
@@ -106,6 +106,30 @@ class GrowthState:
                 f"to_chapter 必须在 0..{self.current_chapter}，收到 {to_chapter}"
             )
         self.active_persona_chapter = to_chapter
+
+    def delete_from(self, chapter_no: int) -> list[int]:
+        """删除第 chapter_no 章及其后**所有**章，状态回退到删除前一章。返回被删章号（1-based）。
+
+        成长是连续时间线（每章年龄段按位置推出），不能在中间留空洞——故删第 N 章 = 把 N 及之后
+        全删、current_chapter 退到 N-1、age 随之回退、active_persona_chapter 收敛到 ≤ 新章数。
+        删 1 = 清空全部（回到 5 岁起点）。删完 can_advance 重新为真（可再往后长）。
+
+        与 rollback 的区别：rollback 只改激活指针、保留全部历史；delete_from 真正抹掉记录与状态。
+        被删章的传记 md / 已装 skill 由调用方按需清理（skill 卸载是二期，不在此处）。
+        chapter_no 必须在 1..current_chapter，否则 ValueError（防越界写脏）。
+        """
+        if not 1 <= chapter_no <= self.current_chapter:
+            raise ValueError(
+                f"chapter_no 必须在 1..{self.current_chapter}，收到 {chapter_no}"
+            )
+        removed = list(range(chapter_no, self.current_chapter + 1))
+        keep = chapter_no - 1
+        self.chapters = self.chapters[:keep]
+        self.current_chapter = keep
+        self.age = self.start_age + keep * self.years_per_chapter
+        if self.active_persona_chapter > keep:
+            self.active_persona_chapter = keep
+        return removed
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -160,6 +184,26 @@ def _coerce_state(raw: dict[str, Any]) -> GrowthState:
     )
 
 
+def seed_growth_state(
+    *,
+    start_age: int = _DEFAULT_START_AGE,
+    years_per_chapter: int = _DEFAULT_YEARS_PER_CHAPTER,
+    end_age: int = _DEFAULT_END_AGE,
+) -> GrowthState:
+    """按 config 造一个全新（0 章、起点年龄）的成长状态；end_chapter 由年龄跨度/每章年数推出。
+
+    供"首次建状态"和"清空全部后按当前 config 重新播种"复用——后者是把已存在的旧 cadence
+    （如 5 年/章）迁到当前默认（1 年/章）的入口，否则文件作为真相源会一直粘着旧参数。
+    """
+    end_chapter = (end_age - start_age) // years_per_chapter if years_per_chapter else 0
+    return GrowthState(
+        age=start_age,
+        start_age=start_age,
+        years_per_chapter=years_per_chapter,
+        end_chapter=max(end_chapter, 0),
+    )
+
+
 def load_growth_state(
     path: Path,
     *,
@@ -170,29 +214,24 @@ def load_growth_state(
     """读 growth-state.json；不存在/坏 JSON 返回按 config 初始化的全新状态（不抛）。
 
     config 的 start_age/years_per_chapter/end_age 只在**首次**建状态时 seed；状态文件存在后
-    以文件为真相源（避免改 env 把跑到一半的成长线打乱）。
+    以文件为真相源（避免改 env 把跑到一半的成长线打乱）。改了默认 cadence 又想迁移旧状态，
+    走"清空全部"（delete_from(1)）让调用方按当前 config 重新 seed_growth_state。
     """
     if not path.is_file():
-        end_chapter = (end_age - start_age) // years_per_chapter if years_per_chapter else 0
-        return GrowthState(
-            age=start_age,
-            start_age=start_age,
-            years_per_chapter=years_per_chapter,
-            end_chapter=max(end_chapter, 0),
+        return seed_growth_state(
+            start_age=start_age, years_per_chapter=years_per_chapter, end_age=end_age
         )
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         _logger.warning("growth-state.json 解析失败，按新状态启动", path=str(path), error=str(exc))
-        end_chapter = (end_age - start_age) // years_per_chapter if years_per_chapter else 0
-        return GrowthState(
-            age=start_age,
-            start_age=start_age,
-            years_per_chapter=years_per_chapter,
-            end_chapter=max(end_chapter, 0),
+        return seed_growth_state(
+            start_age=start_age, years_per_chapter=years_per_chapter, end_age=end_age
         )
     if not isinstance(raw, dict):
-        return GrowthState(age=start_age, start_age=start_age, years_per_chapter=years_per_chapter)
+        return seed_growth_state(
+            start_age=start_age, years_per_chapter=years_per_chapter, end_age=end_age
+        )
     return _coerce_state(raw)
 
 

@@ -1,5 +1,5 @@
 /* Growth — 成长模块（PR4 / prd #1/#3/#4）。
- * 数字分身每天做一次"成长梦"，从 5 岁起每章跨 5 年长到 30 岁定格。本视图只管"看结果 + 设置说明"：
+ * 数字分身每天做一次"成长梦"，从 5 岁起每章跨 1 年长到 30 岁定格。本视图只管"看结果 + 设置说明"：
  *   ① 设置：growth_enabled 状态 + 指向心跳模块做调度/手动推进（触发与心跳合并，#3）。
  *   ② 时间线：start_age→end_age、当前章/岁、进度。
  *   ③ 每章卡片：传记/叙事、汇报、习得 skills、人格快照（按需 fetch /api/growth/persona/{n}）。
@@ -21,6 +21,12 @@ function Growth({ onJump }) {
     setErr("");
     setData(r);
   }, []);
+
+  // 删除某章后：清掉按章缓存（避免回退/重长后还显示旧详情）+ 重新拉总览
+  const afterDelete = React.useCallback(() => {
+    setExpanded({}); setDetail({}); setPersona({});
+    refresh();
+  }, [refresh]);
 
   React.useEffect(() => {
     refresh();
@@ -99,7 +105,7 @@ function Growth({ onJump }) {
               </div>
             )}
 
-            <DreamHistory chapters={chapters} />
+            <GrowthHistory chapters={chapters} onChanged={afterDelete} />
           </>
         )}
       </div>
@@ -258,13 +264,34 @@ function ChapterCard({ ch, active, open, detail, persona, onToggle }) {
   );
 }
 
-/* 做梦 / 成长历史：按章倒序列出年龄段 + 创建时间 + skills 数，给一个时间脉络。 */
-function DreamHistory({ chapters }) {
+/* 成长历史：按章倒序列出年龄段 + 创建时间 + skills 数 + 删除。
+ * 删某章 = 删它及其之后所有章（成长是连续时间线，不能留空洞），并把人格回退到上一章；
+ * 删第 1 章 = 清空全部。删除走 DELETE /api/growth/chapters/{n}，完成后 onChanged 刷新。 */
+function GrowthHistory({ chapters, onChanged }) {
+  const [busy, setBusy] = React.useState(0);  // 正在删的章号（0 = 空闲）
   if (!chapters || chapters.length === 0) return null;
   const rows = [...chapters].reverse();
+  const total = chapters.length;
+
+  const del = async (chapterNo) => {
+    const later = total - chapterNo;  // 这一章之后还有几章会被连带删除
+    const msg = later > 0
+      ? `删除第 ${chapterNo} 章会连同其后 ${later} 章一起删除（成长是连续时间线，不能留空洞），并把人格回退到第 ${chapterNo - 1} 章。\n已装的外部 skill 不会卸载。确定？`
+      : `删除第 ${chapterNo} 章，并把人格回退到第 ${chapterNo - 1} 章。\n已装的外部 skill 不会卸载。确定？`;
+    if (!confirm(msg)) return;
+    setBusy(chapterNo);
+    const r = await API.del(`/api/growth/chapters/${chapterNo}`);
+    setBusy(0);
+    if (r.error) { alert("删除失败：" + r.error); return; }
+    onChanged && onChanged();
+  };
+
   return (
     <>
-      <div className="t-section" style={{ margin: "24px 0 12px" }}>做梦历史</div>
+      <div className="t-section" style={{ margin: "24px 0 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>成长历史</span>
+        <button className="btn btn-ghost btn-sm" disabled={busy > 0} onClick={() => del(1)}>清空全部</button>
+      </div>
       <div className="card">
         <table className="tbl">
           <thead>
@@ -272,8 +299,9 @@ function DreamHistory({ chapters }) {
               <th style={{ width: 60 }}>章</th>
               <th style={{ width: 110 }}>年龄段</th>
               <th>汇报摘要</th>
-              <th style={{ width: 100 }}>习得</th>
-              <th style={{ width: 160 }}>时间</th>
+              <th style={{ width: 80 }}>习得</th>
+              <th style={{ width: 140 }}>时间</th>
+              <th style={{ width: 64 }}></th>
             </tr>
           </thead>
           <tbody>
@@ -284,6 +312,12 @@ function DreamHistory({ chapters }) {
                 <td className="t-row">{truncate(ch.report || ch.summary, 80)}</td>
                 <td className="t-meta">{(ch.installed_skills || []).length} 个</td>
                 <td className="t-meta">{ch.created_at ? API.relTime(ch.created_at * 1000) : "—"}</td>
+                <td>
+                  <button className="btn btn-ghost btn-sm" disabled={busy > 0}
+                          title="删除此章及其之后所有章" onClick={() => del(ch.chapter_no)}>
+                    {busy === ch.chapter_no ? "…" : "删除"}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
