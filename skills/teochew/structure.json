@@ -1,0 +1,207 @@
+{
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "custom",
+      "position": {
+        "x": 0,
+        "y": 260
+      },
+      "data": {
+        "type": "trigger",
+        "title": "潮汕话触发",
+        "desc": "潮汕话、潮州话、潮语、Teochew",
+        "raw": "用户要求用潮汕话/潮州话/潮语/Teochew 交流、翻译、改写、角色扮演或给出 Peng'im 读音时使用。"
+      }
+    },
+    {
+      "id": "variant",
+      "type": "custom",
+      "position": {
+        "x": 300,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "确认口音范围",
+        "desc": "默认潮州/汕头常见说法",
+        "raw": "如果用户没指定地区，默认常见潮州/汕头系说法；指定汕头、潮州、揭阳、潮阳、澄海、普宁或海外社区时相应调整或说明限制。"
+      }
+    },
+    {
+      "id": "format",
+      "type": "custom",
+      "position": {
+        "x": 600,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "选择书写格式",
+        "desc": "汉字、Peng'im、混合格式",
+        "raw": "普通聊天用可读汉字；读音/学习任务用广东拼音 Peng'im；字形不稳定时用拼音加简短说明。"
+      }
+    },
+    {
+      "id": "draft",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "按潮语语法起草",
+        "desc": "代词、否定、疑问、语气词",
+        "raw": "使用潮汕话代词、否定形式、疑问词和语气词，避免普通话句式套上几个潮语词。"
+      }
+    },
+    {
+      "id": "check",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "校准准确性",
+        "desc": "地区差异、字形不确定、声调变调",
+        "raw": "不确定时标注默认地区或给保守说法；正常输出用本调，需要教学时才补变调。"
+      }
+    },
+    {
+      "id": "output",
+      "type": "custom",
+      "position": {
+        "x": 1500,
+        "y": 260
+      },
+      "data": {
+        "type": "output",
+        "title": "输出潮汕话回应",
+        "desc": "自然、地区敏感、必要时附拼音",
+        "raw": "输出自然潮汕话；必要时附 Peng'im 与普通话/英文释义。"
+      }
+    },
+    {
+      "id": "ref-conversation",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "conversation-guide.md",
+        "desc": "代词、否定、疑问、语气词",
+        "raw": "需要检查潮汕话表达是否自然时读取。"
+      }
+    },
+    {
+      "id": "ref-pronunciation",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "pronunciation-and-romanization.md",
+        "desc": "Peng'im、声调、变调、字形问题",
+        "raw": "用户要求读音、声调、变调或地区口音时读取。"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-variant",
+      "source": "trigger",
+      "target": "variant",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-variant-format",
+      "source": "variant",
+      "target": "format",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-format-draft",
+      "source": "format",
+      "target": "draft",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-draft-check",
+      "source": "draft",
+      "target": "check",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-check-output",
+      "source": "check",
+      "target": "output",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-draft-ref-conversation",
+      "source": "draft",
+      "target": "ref-conversation",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    },
+    {
+      "id": "e-check-ref-pronunciation",
+      "source": "check",
+      "target": "ref-pronunciation",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    }
+  ],
+  "meta": {
+    "structure_version": 2,
+    "skill_id": "teochew",
+    "skill_name": "teochew",
+    "description": "自然使用潮汕话/潮州话交流、翻译、改写、教学，并在需要时提供 Peng'im。",
+    "keywords": [
+      "潮汕话",
+      "潮汕話",
+      "潮州话",
+      "潮州話",
+      "潮语",
+      "潮語",
+      "Teochew",
+      "Teo-Swa",
+      "Chaoshan",
+      "Peng'im"
+    ],
+    "source": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\teochew\\SKILL.md",
+    "structure_file": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\teochew\\structure.json",
+    "has_workflow": true,
+    "warnings": [],
+    "step_count": 5,
+    "tool_count": 0,
+    "subagent_count": 0,
+    "resource_count": 2
+  }
+}

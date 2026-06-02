@@ -1,0 +1,7 @@
+interface:
+  display_name: "潮汕话"
+  short_description: "自然使用潮汕话交流、翻译、改写和教学"
+  default_prompt: "Use $teochew to reply naturally in Teochew."
+
+policy:
+  allow_implicit_invocation: true

@@ -203,6 +203,30 @@ def test_derive_keeps_learned_language_even_with_many_skill_intents(tmp_path: Pa
     assert "粤语" in capped  # 交错后仍占到名额（纯 skill_intents-在前会把它全挤掉）
 
 
+def test_build_prompt_includes_calendar_year(tmp_path: Path) -> None:
+    # 年代锚点：birth_year=1992 → 5-6 岁 = 公历 1997-1998；prompt 要带上，让"写实对应现实"有年代可依。
+    from sanshiliu.scheduler.growth_state import GrowthState
+
+    engine_any: Any = FakeEngine(_valid_payload_text())
+    runner = GrowthRunner(
+        engine=engine_any,
+        growth_state_path=tmp_path / "growth-state.json",
+        memdir_dir=tmp_path / "memdir",
+        start_age=5,
+        years_per_chapter=1,
+        end_age=30,
+        birth_year=1992,
+    )
+    state = GrowthState(
+        current_chapter=0, age=5, start_age=5, years_per_chapter=1, end_chapter=25
+    )
+
+    prompt = runner._build_prompt(state, 1, state.next_age_range())
+
+    assert "5-6 岁" in prompt
+    assert "1997-1998" in prompt  # 公历年代锚点已注入
+
+
 def test_parse_fenced_json_block() -> None:
     raw = '前面有废话\n```json\n{"narrative": "x", "age_range": "5-10"}\n```\n后面也有'
     parsed = _parse_structured_output(raw)

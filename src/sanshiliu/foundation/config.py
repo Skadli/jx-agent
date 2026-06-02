@@ -353,6 +353,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("growth_end_age", "SANSHILIU_GROWTH_END_AGE"),
         description="成长终点年龄；跑满即定格，不再推进；默认 30 岁",
     )
+    growth_birth_year: int = Field(
+        default=1992,
+        ge=1900,
+        le=2100,
+        validation_alias=AliasChoices("growth_birth_year", "SANSHILIU_GROWTH_BIRTH_YEAR"),
+        description="成长起点对应的出生年（年龄 0 = 该公历年）；让每章算出公历年代，"
+        "写实经历据此对应现实年代。默认 1992（即 1 岁≈1993）",
+    )
 
     # 成长 phase-2 自动装 skill 配置（仅在 growth_enabled=true 时有意义；总 kill-switch 仍是 growth_enabled）。
     # phase-2 是 best-effort 安装：传记/状态已在 phase-1 推进，这里失败/超时绝不回退已成立的章。

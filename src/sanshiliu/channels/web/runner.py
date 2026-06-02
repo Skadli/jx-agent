@@ -352,6 +352,7 @@ async def run_serve() -> int:
             start_age=settings.growth_start_age,
             years_per_chapter=settings.growth_years_per_chapter,
             end_age=settings.growth_end_age,
+            birth_year=settings.growth_birth_year,
             # PR2 人格演化：传 base core 来源 + 版本化落盘根 + 同一 loader 实例（写完热生效）
             persona_dir=settings.persona_dir,
             data_dir=settings.data_dir,

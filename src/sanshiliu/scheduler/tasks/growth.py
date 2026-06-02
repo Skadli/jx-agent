@@ -30,6 +30,7 @@ _DEFAULT_FIRE_HOUR = 3
 _DEFAULT_START_AGE = 5
 _DEFAULT_YEARS_PER_CHAPTER = 1
 _DEFAULT_END_AGE = 30
+_DEFAULT_BIRTH_YEAR = 1992  # 年龄 0 对应的公历年（1 岁≈1993）；每章据此算公历年代
 
 
 def build_growth_task(
@@ -43,6 +44,7 @@ def build_growth_task(
     start_age: int = _DEFAULT_START_AGE,
     years_per_chapter: int = _DEFAULT_YEARS_PER_CHAPTER,
     end_age: int = _DEFAULT_END_AGE,
+    birth_year: int = _DEFAULT_BIRTH_YEAR,
     persona_dir: Path | None = None,
     data_dir: Path | None = None,
     persona_loader: PersonaLoader | None = None,
@@ -65,6 +67,7 @@ def build_growth_task(
         start_age=start_age,
         years_per_chapter=years_per_chapter,
         end_age=end_age,
+        birth_year=birth_year,
         persona_dir=persona_dir,
         data_dir=data_dir,
         persona_loader=persona_loader,

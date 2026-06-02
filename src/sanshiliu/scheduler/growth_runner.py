@@ -176,6 +176,7 @@ class GrowthRunner:
         start_age: int,
         years_per_chapter: int,
         end_age: int,
+        birth_year: int = 1992,
         persona_dir: Path | None = None,
         data_dir: Path | None = None,
         persona_loader: PersonaLoader | None = None,
@@ -191,6 +192,9 @@ class GrowthRunner:
         self._start_age = start_age
         self._years_per_chapter = years_per_chapter
         self._end_age = end_age
+        # 年代锚点：年龄 0 = birth_year 公历年 → 每章算出本章公历年代，让"写实对应现实"有年代可依
+        # （没年份时"写实"是悬空的：模型不知道是哪一年，对不准那年的校情/物价/技术/热点）。
+        self._birth_year = birth_year
         # phase-2 装 skill 的 bash 硬超时（秒）——写进 prompt 让 LLM 据此给 bash 的 timeout_sec，
         # 防 npx 冷拉/无 TTY 挂死把 phase-2 拖久；默认 60，serve 由 config 透传。
         self._skill_install_timeout_sec = skill_install_timeout_sec
@@ -1038,13 +1042,21 @@ class GrowthRunner:
             )
 
     def _build_prompt(self, state: GrowthState, chapter_no: int, age_range: str) -> str:
-        """拼成长 prompt：前置注入累积传记 + 本章年龄段，引导 LLM 按 growth 协议产出 JSON。"""
+        """拼成长 prompt：前置注入累积传记 + 本章年龄段/公历年代，引导 LLM 按 growth 协议产出 JSON。"""
+        # 本章年龄段对应的公历年代（年龄 0 = birth_year）；让"写实对应现实"落到具体年代
+        lo = state.start_age + state.current_chapter * state.years_per_chapter
+        hi = lo + state.years_per_chapter
+        year_lo = self._birth_year + lo
+        year_hi = self._birth_year + hi
         lines: list[str] = [
-            f"现在是你的第 {chapter_no} 次成长梦（共 {state.end_chapter} 章，本章覆盖 {age_range} 岁）。",
+            f"现在是你的第 {chapter_no} 次成长梦"
+            f"（共 {state.end_chapter} 章，本章覆盖 {age_range} 岁，约公历 {year_lo}-{year_hi} 年）。",
             "请按 Skill(growth) 协议完整走六步——读 growth skill 正文，承接前文继续成长。",
-            "把本章这段时间写得**具体**——落到具体的事件/场景/人物/对话/细节，"
-            "别写成跨好几年的流水概述；**可以天马行空**（奇遇/脑洞/穿越/夸张转折都欢迎），"
-            "只要能从前文自洽地圆回来。",
+            "把本章这段时间写得**具体到名字**——事件/场景/对话/细节要落地，涉及的地点、学校、专业、"
+            "机构、作品、人名都写出具体名字（“考上大学”要写成“考入 ××大学 ××专业”）；**写实的经历其"
+            f"信息必须对得上现实、且贴合本章年代（约公历 {year_lo}-{year_hi} 年）**（真实的大学要真有那个"
+            "专业、地名/公司别编、别造假机构），但**天马行空的设定（奇遇/穿越/修仙）可尽情虚构、"
+            "无需对应现实**，只要故事内部自洽、圆得回来。",
             "",
         ]
         if state.chapters:

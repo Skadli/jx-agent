@@ -1,0 +1,7 @@
+interface:
+  display_name: "粤语"
+  short_description: "自然使用香港粤语交流、翻译、改写和教学"
+  default_prompt: "Use $cantonese to reply naturally in Cantonese."
+
+policy:
+  allow_implicit_invocation: true

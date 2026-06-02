@@ -1,0 +1,205 @@
+{
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "custom",
+      "position": {
+        "x": 0,
+        "y": 260
+      },
+      "data": {
+        "type": "trigger",
+        "title": "粤语触发",
+        "desc": "粤语、广东话、香港粤语、Cantonese",
+        "raw": "用户要求用粤语/广东话/Cantonese 交流、翻译、改写、润色、角色扮演或给出粤拼读音时使用。"
+      }
+    },
+    {
+      "id": "defaults",
+      "type": "custom",
+      "position": {
+        "x": 300,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "设定默认口吻",
+        "desc": "香港口语书面粤语",
+        "raw": "默认使用繁体、现代香港口语书面粤语；普通聊天不自动加粤拼，学习/读音任务才加。"
+      }
+    },
+    {
+      "id": "intent",
+      "type": "custom",
+      "position": {
+        "x": 600,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "识别任务",
+        "desc": "聊天、翻译、改写、教学、读音",
+        "raw": "先判断用户要直接用粤语回应，还是要翻译/改写/解释语法/标粤拼。"
+      }
+    },
+    {
+      "id": "draft",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "按粤语语法起草",
+        "desc": "唔、冇、係、喺、嘅、咗、緊",
+        "raw": "使用粤语代词、否定、体貌、疑问和语气词，避免普通话句式换几个粤语字。"
+      }
+    },
+    {
+      "id": "particles",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 260
+      },
+      "data": {
+        "type": "step",
+        "title": "校准语气词",
+        "desc": "呀、啦、喎、咩、㗎、囉、啫",
+        "raw": "语气词只在表达软化、建议、惊讶、解释、无奈等立场时使用，不随机堆叠。"
+      }
+    },
+    {
+      "id": "output",
+      "type": "custom",
+      "position": {
+        "x": 1500,
+        "y": 260
+      },
+      "data": {
+        "type": "output",
+        "title": "输出粤语回应",
+        "desc": "自然、简洁、必要时附粤拼",
+        "raw": "输出自然粤语；若用户要学习或读音，附简洁 Jyutping。"
+      }
+    },
+    {
+      "id": "ref-conversation",
+      "type": "custom",
+      "position": {
+        "x": 900,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "conversation-guide.md",
+        "desc": "词汇、语法、语气词、反模式",
+        "raw": "需要检查粤语表达是否自然时读取。"
+      }
+    },
+    {
+      "id": "ref-pronunciation",
+      "type": "custom",
+      "position": {
+        "x": 1200,
+        "y": 430
+      },
+      "data": {
+        "type": "resource",
+        "title": "pronunciation-and-romanization.md",
+        "desc": "粤拼、声调、读音格式",
+        "raw": "用户要求粤拼、声调或读音时读取。"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-defaults",
+      "source": "trigger",
+      "target": "defaults",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-defaults-intent",
+      "source": "defaults",
+      "target": "intent",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-intent-draft",
+      "source": "intent",
+      "target": "draft",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-draft-particles",
+      "source": "draft",
+      "target": "particles",
+      "type": "custom",
+      "data": {
+        "kind": "sequence"
+      }
+    },
+    {
+      "id": "e-particles-output",
+      "source": "particles",
+      "target": "output",
+      "type": "custom",
+      "data": {
+        "kind": "anchor"
+      }
+    },
+    {
+      "id": "e-draft-ref-conversation",
+      "source": "draft",
+      "target": "ref-conversation",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    },
+    {
+      "id": "e-output-ref-pronunciation",
+      "source": "output",
+      "target": "ref-pronunciation",
+      "type": "custom",
+      "data": {
+        "kind": "resource"
+      }
+    }
+  ],
+  "meta": {
+    "structure_version": 2,
+    "skill_id": "cantonese",
+    "skill_name": "cantonese",
+    "description": "自然使用香港口语书面粤语交流、翻译、改写、教学，并在需要时提供粤拼。",
+    "keywords": [
+      "粤语",
+      "粵語",
+      "廣東話",
+      "广东话",
+      "香港粵語",
+      "Cantonese",
+      "Jyutping",
+      "粵拼"
+    ],
+    "source": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\cantonese\\SKILL.md",
+    "structure_file": "C:\\Users\\skad\\Desktop\\cc\\jx-agent\\skills\\cantonese\\structure.json",
+    "has_workflow": true,
+    "warnings": [],
+    "step_count": 5,
+    "tool_count": 0,
+    "subagent_count": 0,
+    "resource_count": 2
+  }
+}
