@@ -31,6 +31,7 @@ from sanshiliu.scheduler.growth_persona import (
     PERSONA_SECTION_FILES,
     chapter_persona_dir,
     growth_persona_root,
+    split_growth_persona_overlay,
 )
 from sanshiliu.scheduler.growth_state import GrowthState, load_growth_state
 
@@ -251,9 +252,11 @@ def make_growth_persona_handler(
                 if not p.is_file():
                     continue
                 try:
-                    body = p.read_text(encoding="utf-8")
+                    raw_body = p.read_text(encoding="utf-8")
                 except OSError:
                     continue
+                scaffold, overlay = split_growth_persona_overlay(raw_body)
+                body = overlay if overlay is not None else scaffold
                 # 段落键（去 .md 后缀）：让前端能按 identity/style 等分组展示
                 section = next(
                     (k for k, v in PERSONA_SECTION_FILES.items() if v == p.name),
@@ -263,7 +266,11 @@ def make_growth_persona_handler(
                     "name": p.name,
                     "section": section,
                     "body": body,
+                    "scaffold": scaffold,
+                    "overlay": overlay,
+                    "has_overlay": overlay is not None,
                     "chars": len(body),
+                    "raw_chars": len(raw_body),
                 })
             _write_json(req, {
                 "chapter_no": n,

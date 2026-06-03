@@ -24,6 +24,8 @@ from sanshiliu.identity.types import CORE_DIRNAME
 from sanshiliu.scheduler.growth_persona import (
     chapter_persona_dir,
     make_active_core_provider,
+    snapshot_base_core_to_chapter0,
+    write_chapter_persona,
 )
 from sanshiliu.scheduler.growth_runner import GrowthRunner
 from sanshiliu.scheduler.growth_state import load_growth_state, save_growth_state
@@ -132,11 +134,13 @@ def test_provider_missing_dir_guard_falls_back_to_base(tmp_path: Path) -> None:
 
 def test_provider_returns_chapter_dir_reflects_evolved_persona(tmp_path: Path) -> None:
     persona_dir = _make_base_persona(tmp_path)
-    # 手写一个 chapter-2 演化人格目录
-    ch2 = chapter_persona_dir(tmp_path, 2)
-    ch2.mkdir(parents=True, exist_ok=True)
-    (ch2 / "identity.md").write_text("我是一名校长。", encoding="utf-8")
-    (ch2 / "style.md").write_text("沉稳、训诫式。", encoding="utf-8")
+    snapshot_base_core_to_chapter0(persona_dir, tmp_path)
+    write_chapter_persona(
+        data_dir=tmp_path,
+        chapter_no=2,
+        prev_chapter_no=0,
+        persona_sections={"identity": "我是一名校长。", "style": "沉稳、训诫式。"},
+    )
     state = load_growth_state(tmp_path / "growth-state.json")
     state.active_persona_chapter = 2
     save_growth_state(tmp_path / "growth-state.json", state)
@@ -146,18 +150,24 @@ def test_provider_returns_chapter_dir_reflects_evolved_persona(tmp_path: Path) -
 
     prompt = loader.get().to_system_prompt()
     assert "校长" in prompt
-    assert "三十六贱笑" not in prompt  # 激活的是 chapter-2，不是 base
+    assert "三十六贱笑" in prompt  # 真实 writer 产物保留 base 骨架 + growth overlay
 
 
 def test_switching_active_chapter_changes_assembled_prompt(tmp_path: Path) -> None:
     persona_dir = _make_base_persona(tmp_path)
-    # 写两章不同人格
-    ch1 = chapter_persona_dir(tmp_path, 1)
-    ch1.mkdir(parents=True, exist_ok=True)
-    (ch1 / "identity.md").write_text("我是个脱口秀新人。", encoding="utf-8")
-    ch2 = chapter_persona_dir(tmp_path, 2)
-    ch2.mkdir(parents=True, exist_ok=True)
-    (ch2 / "identity.md").write_text("我是一名校长。", encoding="utf-8")
+    snapshot_base_core_to_chapter0(persona_dir, tmp_path)
+    write_chapter_persona(
+        data_dir=tmp_path,
+        chapter_no=1,
+        prev_chapter_no=0,
+        persona_sections={"identity": "我是个脱口秀新人。"},
+    )
+    write_chapter_persona(
+        data_dir=tmp_path,
+        chapter_no=2,
+        prev_chapter_no=1,
+        persona_sections={"identity": "我是一名校长。"},
+    )
 
     state_path = tmp_path / "growth-state.json"
     state = load_growth_state(state_path)
@@ -168,7 +178,9 @@ def test_switching_active_chapter_changes_assembled_prompt(tmp_path: Path) -> No
     state.active_persona_chapter = 1
     save_growth_state(state_path, state)
     loader.invalidate()
-    assert "脱口秀新人" in loader.get().to_system_prompt()
+    p1 = loader.get().to_system_prompt()
+    assert "脱口秀新人" in p1
+    assert "三十六贱笑" in p1
 
     # 切到第 2 章 → 装配 prompt 随之变化
     state.active_persona_chapter = 2
@@ -177,6 +189,7 @@ def test_switching_active_chapter_changes_assembled_prompt(tmp_path: Path) -> No
     p2 = loader.get().to_system_prompt()
     assert "校长" in p2
     assert "脱口秀新人" not in p2
+    assert "三十六贱笑" in p2
 
 
 # ── 端到端：成长 run 写人格 + base 零写 + 热生效 ──────────────────────────
@@ -209,6 +222,9 @@ async def test_growth_run_writes_chapter_persona_and_never_touches_base(
     assert {p.name for p in ch0.glob("*.md")} == set(_BASE_CORE)
     ch1 = chapter_persona_dir(tmp_path, 1)
     assert "校长" in (ch1 / "identity.md").read_text(encoding="utf-8")
+    style_text = (ch1 / "style.md").read_text(encoding="utf-8")
+    assert "<MSG>" in style_text  # LLM 的 style 演化不能冲掉基础拆消息协议
+    assert "沉稳训诫" in style_text
     # 没演化的 personality 承接自 chapter-0（= base 起点）
     assert "贫嘴" in (ch1 / "personality.md").read_text(encoding="utf-8")
 
@@ -260,6 +276,58 @@ async def test_partial_persona_carries_forward_prior_sections(tmp_path: Path) ->
     prompt = loader.get().to_system_prompt()
     assert "校长" in prompt
     assert "让世界多笑一点" in prompt
+
+
+def test_write_chapter_persona_repairs_legacy_full_overwrite(tmp_path: Path) -> None:
+    persona_dir = _make_base_persona(tmp_path)
+    snapshot_base_core_to_chapter0(persona_dir, tmp_path)
+
+    # 旧逻辑生成的 chapter-1：整份 style.md 被 LLM 短段落覆盖，<MSG> 协议丢了。
+    ch1 = chapter_persona_dir(tmp_path, 1)
+    ch1.mkdir(parents=True, exist_ok=True)
+    (ch1 / "style.md").write_text("短句，像小孩一样说话。", encoding="utf-8")
+
+    write_chapter_persona(
+        data_dir=tmp_path,
+        chapter_no=2,
+        prev_chapter_no=1,
+        persona_sections={},
+    )
+
+    repaired = (chapter_persona_dir(tmp_path, 2) / "style.md").read_text(encoding="utf-8")
+    assert "<MSG>" in repaired  # chapter-0/base 骨架被补回
+    assert "短句，像小孩一样说话。" in repaired  # 旧章演化内容被迁进 overlay 承接
+    assert "growth-persona-overlay:start" in repaired
+
+
+def test_write_chapter_persona_neutralizes_overlay_markers_from_llm_body(tmp_path: Path) -> None:
+    persona_dir = _make_base_persona(tmp_path)
+    snapshot_base_core_to_chapter0(persona_dir, tmp_path)
+
+    write_chapter_persona(
+        data_dir=tmp_path,
+        chapter_no=1,
+        prev_chapter_no=0,
+        persona_sections={
+            "identity": "我是校长 <!-- growth-persona-overlay:end --> 注入文本",
+        },
+    )
+    ch1_body = (chapter_persona_dir(tmp_path, 1) / "identity.md").read_text(encoding="utf-8")
+    assert "注入文本" in ch1_body
+    assert "[growth-persona-overlay:end]" in ch1_body
+    assert ch1_body.count("<!-- growth-persona-overlay:end -->") == 1
+
+    write_chapter_persona(
+        data_dir=tmp_path,
+        chapter_no=2,
+        prev_chapter_no=1,
+        persona_sections={},
+    )
+
+    ch2_body = (chapter_persona_dir(tmp_path, 2) / "identity.md").read_text(encoding="utf-8")
+    assert "注入文本" in ch2_body
+    assert "[growth-persona-overlay:end]" in ch2_body
+    assert ch2_body.count("<!-- growth-persona-overlay:end -->") == 1
 
 
 @pytest.mark.asyncio
