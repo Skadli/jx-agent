@@ -1119,16 +1119,22 @@ class GrowthRunner:
         )
         lines.append(
             "其中 persona 是本章演化后的**新核心人格**（{identity, personality, beliefs, style, "
-            "fewshot_short} 各为一段 markdown，写你这岁数已经长成的那个人）——它会写入受控的"
-            "成长演化区块，并与 base core 合并成为分身往后的真身；不要复写或删除基础硬约束。"
+            "fewshot_short} 各为一整段 markdown，写你这岁数已经长成的那个人）——给了哪段就**整段**"
+            "成为分身往后的真身（长成校长就只剩校长，不留旧身份残影）。载体协议（≤60字、<MSG>、禁 "
+            "markdown 等）和安全红线另有 _protocol.md 永驻层兜底，你**不用写、也不要复写**进 persona。"
             "**本章必须演化人格，不允许把 persona 整个省略**：至少给 identity"
             "（“我现在是谁”每长一岁都在变），再加上本章经历真正影响到的段落（这年口吻变了就给 "
             "style、价值观变了就给 beliefs、性格变了就给 personality、典型样例变了就给 "
             "fewshot_short）；只有确实毫无变化的段落才省略（省略的会自动承接前章）。"
         )
         lines.append(
+            "**每段都要写成规整的 markdown 文档**，不是一坨大白话：以 `#` 标题起头（如 "
+            "`# 核心身份 · 我是谁`），再按内容用 `##` 分小节、合适处用列表/引用——像基础人格文件那样有层次。"
+            "各段会按 `---` 拼进 system prompt，没标题没结构就糊成一团、分不清哪段是身份哪段是口吻。"
+        )
+        lines.append(
             "注意区分两个同名字段：顶层 personality 是**一句话摘要**（写进传记回看），"
-            "persona.personality 是**性格演化 markdown**（写入人格文件的成长区块）——两者都要给，"
+            "persona.personality 是**整段性格 markdown**（整段覆盖性格人格文件）——两者都要给，"
             "别只填顶层那个就把 persona 整段漏掉。"
         )
         return "\n".join(lines)

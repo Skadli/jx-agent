@@ -8,6 +8,7 @@
 - 切换 active_persona_chapter → 装配出的 system prompt 随之变化。
 - 一次成长 run 全程不改 base persona/core/*.md。
 - partial persona（只给部分段落）→ 缺的段落承接上一章，核心永不为空。
+- 人设 5 段整段替换（长成校长无博主残留）；协议层 _protocol.md 每章原样带走、永不被冲掉。
 """
 
 from __future__ import annotations
@@ -33,18 +34,20 @@ from sanshiliu.scheduler.growth_state import load_growth_state, save_growth_stat
 # ── fixtures：在 tmp_path 下搭一份 base persona/core ──────────────────────
 
 
-# base core 的五份文件初始内容；用可识别的中文片段方便断言
+# base core 的初始内容；用可识别的中文片段方便断言。
+# _protocol.md = 永驻协议层（不在演化的 5 段内，每章原样带走）；其余 5 份是会被整段替换的人设。
 _BASE_CORE: dict[str, str] = {
+    "_protocol.md": "载体协议：默认 ≤60 字；自然停顿用 <MSG> 拆多条；禁 markdown。红线：不编隐私、不假装联网。",
     "identity.md": "我是三十六贱笑，一个爱讲段子的博主。",
     "personality.md": "贫嘴、早慧、爱玩梗。",
     "beliefs.md": "把生活编成段子。",
-    "style.md": "口语化，爱用 <MSG> 拆多条。",
+    "style.md": "口语化、短句，爱用自嘲和热梗。",
     "fewshot_short.md": "用户：在吗\n贱笑：永远在。",
 }
 
 
 def _make_base_persona(tmp_path: Path) -> Path:
-    """在 tmp_path/persona/core 下写出 base core 五份文件，返回 persona 根目录。"""
+    """在 tmp_path/persona/core 下写出 base core 各份文件，返回 persona 根目录。"""
     persona_dir = tmp_path / "persona"
     core = persona_dir / CORE_DIRNAME
     core.mkdir(parents=True, exist_ok=True)
@@ -150,7 +153,7 @@ def test_provider_returns_chapter_dir_reflects_evolved_persona(tmp_path: Path) -
 
     prompt = loader.get().to_system_prompt()
     assert "校长" in prompt
-    assert "三十六贱笑" in prompt  # 真实 writer 产物保留 base 骨架 + growth overlay
+    assert "三十六贱笑" not in prompt  # 人设整段替换：博主身份不再残留（冲突根除）
 
 
 def test_switching_active_chapter_changes_assembled_prompt(tmp_path: Path) -> None:
@@ -180,7 +183,7 @@ def test_switching_active_chapter_changes_assembled_prompt(tmp_path: Path) -> No
     loader.invalidate()
     p1 = loader.get().to_system_prompt()
     assert "脱口秀新人" in p1
-    assert "三十六贱笑" in p1
+    assert "三十六贱笑" not in p1  # identity 整段被替换，无博主残留
 
     # 切到第 2 章 → 装配 prompt 随之变化
     state.active_persona_chapter = 2
@@ -189,7 +192,7 @@ def test_switching_active_chapter_changes_assembled_prompt(tmp_path: Path) -> No
     p2 = loader.get().to_system_prompt()
     assert "校长" in p2
     assert "脱口秀新人" not in p2
-    assert "三十六贱笑" in p2
+    assert "三十六贱笑" not in p2
 
 
 # ── 端到端：成长 run 写人格 + base 零写 + 热生效 ──────────────────────────
@@ -217,14 +220,16 @@ async def test_growth_run_writes_chapter_persona_and_never_touches_base(
     assert state.current_chapter == 1
     assert state.active_persona_chapter == 1
 
-    # chapter-0 起点快照 = base 五份；chapter-1 含演化的 identity + 承接的其余段落
+    # chapter-0 起点快照 = base 全份；chapter-1 含整段替换的 identity + 承接的其余段落
     ch0 = chapter_persona_dir(tmp_path, 0)
     assert {p.name for p in ch0.glob("*.md")} == set(_BASE_CORE)
     ch1 = chapter_persona_dir(tmp_path, 1)
     assert "校长" in (ch1 / "identity.md").read_text(encoding="utf-8")
     style_text = (ch1 / "style.md").read_text(encoding="utf-8")
-    assert "<MSG>" in style_text  # LLM 的 style 演化不能冲掉基础拆消息协议
-    assert "沉稳训诫" in style_text
+    assert "沉稳训诫" in style_text  # style 被本章整段替换
+    assert "<MSG>" not in style_text  # 载体协议已不在 style 里
+    # 协议层每章原样带走：<MSG> 永驻在 _protocol.md，成长不改写
+    assert "<MSG>" in (ch1 / "_protocol.md").read_text(encoding="utf-8")
     # 没演化的 personality 承接自 chapter-0（= base 起点）
     assert "贫嘴" in (ch1 / "personality.md").read_text(encoding="utf-8")
 
@@ -278,56 +283,35 @@ async def test_partial_persona_carries_forward_prior_sections(tmp_path: Path) ->
     assert "让世界多笑一点" in prompt
 
 
-def test_write_chapter_persona_repairs_legacy_full_overwrite(tmp_path: Path) -> None:
+def test_protocol_layer_survives_full_persona_replacement(tmp_path: Path) -> None:
+    """人设 5 段整段替换成"校长"，协议层 _protocol.md 每章原样带走、永不被冲掉。"""
     persona_dir = _make_base_persona(tmp_path)
     snapshot_base_core_to_chapter0(persona_dir, tmp_path)
 
-    # 旧逻辑生成的 chapter-1：整份 style.md 被 LLM 短段落覆盖，<MSG> 协议丢了。
-    ch1 = chapter_persona_dir(tmp_path, 1)
-    ch1.mkdir(parents=True, exist_ok=True)
-    (ch1 / "style.md").write_text("短句，像小孩一样说话。", encoding="utf-8")
-
-    write_chapter_persona(
-        data_dir=tmp_path,
-        chapter_no=2,
-        prev_chapter_no=1,
-        persona_sections={},
-    )
-
-    repaired = (chapter_persona_dir(tmp_path, 2) / "style.md").read_text(encoding="utf-8")
-    assert "<MSG>" in repaired  # chapter-0/base 骨架被补回
-    assert "短句，像小孩一样说话。" in repaired  # 旧章演化内容被迁进 overlay 承接
-    assert "growth-persona-overlay:start" in repaired
-
-
-def test_write_chapter_persona_neutralizes_overlay_markers_from_llm_body(tmp_path: Path) -> None:
-    persona_dir = _make_base_persona(tmp_path)
-    snapshot_base_core_to_chapter0(persona_dir, tmp_path)
-
+    # 连续两章把 identity/style 整段换成校长，全程不提协议
     write_chapter_persona(
         data_dir=tmp_path,
         chapter_no=1,
         prev_chapter_no=0,
-        persona_sections={
-            "identity": "我是校长 <!-- growth-persona-overlay:end --> 注入文本",
-        },
+        persona_sections={"identity": "我是一名中学校长。", "style": "沉稳、训诫式。"},
     )
-    ch1_body = (chapter_persona_dir(tmp_path, 1) / "identity.md").read_text(encoding="utf-8")
-    assert "注入文本" in ch1_body
-    assert "[growth-persona-overlay:end]" in ch1_body
-    assert ch1_body.count("<!-- growth-persona-overlay:end -->") == 1
-
     write_chapter_persona(
         data_dir=tmp_path,
         chapter_no=2,
         prev_chapter_no=1,
-        persona_sections={},
+        persona_sections={"identity": "我是一名退休返聘的老校长。"},
     )
 
-    ch2_body = (chapter_persona_dir(tmp_path, 2) / "identity.md").read_text(encoding="utf-8")
-    assert "注入文本" in ch2_body
-    assert "[growth-persona-overlay:end]" in ch2_body
-    assert ch2_body.count("<!-- growth-persona-overlay:end -->") == 1
+    ch2 = chapter_persona_dir(tmp_path, 2)
+    identity = (ch2 / "identity.md").read_text(encoding="utf-8")
+    # 人设整段替换 → 博主身份零残留（冲突根除）
+    assert "校长" in identity
+    assert "三十六贱笑" not in identity
+    assert "博主" not in identity
+    # 协议层永驻：<MSG> / 红线每章都在（不在演化 5 段内，被 _copy_core_md 原样带走）
+    protocol = (ch2 / "_protocol.md").read_text(encoding="utf-8")
+    assert "<MSG>" in protocol
+    assert "不编隐私" in protocol
 
 
 @pytest.mark.asyncio

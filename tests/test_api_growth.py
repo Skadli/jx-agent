@@ -27,7 +27,7 @@ from sanshiliu.channels.web.api_growth import (
 from sanshiliu.channels.web.api_writes import make_growth_chapter_delete_handler
 from sanshiliu.memory.longterm.memdir import write_memory_file
 from sanshiliu.memory.types import MemoryEntry
-from sanshiliu.scheduler.growth_persona import chapter_persona_dir, write_chapter_persona
+from sanshiliu.scheduler.growth_persona import chapter_persona_dir
 from sanshiliu.scheduler.growth_state import (
     ChapterRecord,
     GrowthState,
@@ -329,33 +329,6 @@ def test_persona_snapshot_reads_chapter_dir(tmp_path: Path) -> None:
     by_section = {f["section"]: f["body"] for f in body["files"]}
     assert by_section["identity"] == "我现在是校园博主。"
     assert by_section["style"] == "口语、爱玩梗。"
-
-
-def test_persona_snapshot_returns_display_body_without_overlay_markers(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data"
-    ch0 = chapter_persona_dir(data_dir, 0)
-    ch0.mkdir(parents=True, exist_ok=True)
-    (ch0 / "identity.md").write_text("base 身份骨架，含 <MSG> 协议。", encoding="utf-8")
-    write_chapter_persona(
-        data_dir=data_dir,
-        chapter_no=1,
-        prev_chapter_no=0,
-        persona_sections={"identity": "我现在是校园博主。"},
-    )
-
-    handler = make_growth_persona_handler(data_dir)
-    req = FakeReq("/api/growth/persona/1")
-    handler(req)
-
-    assert req.status == 200
-    body = req.json()
-    identity = next(f for f in body["files"] if f["section"] == "identity")
-    assert identity["body"] == "我现在是校园博主。"
-    assert identity["overlay"] == "我现在是校园博主。"
-    assert identity["has_overlay"] is True
-    assert "<MSG>" in identity["scaffold"]
-    assert "growth-persona-overlay" not in identity["body"]
-    assert "本区块由成长系统自动维护" not in identity["body"]
 
 
 def test_persona_snapshot_missing_dir_404(tmp_path: Path) -> None:
