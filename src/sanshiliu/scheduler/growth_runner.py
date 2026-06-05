@@ -1157,8 +1157,10 @@ class GrowthRunner:
         lines.append(
             "字段形状必须严格遵守：learned 是字符串数组；skill_intents 是对象数组，"
             '每项只用 {"domain": "短领域词", "why": "原因"}，不要写成 skill/reason、'
-            "intent_name/reason、编号字符串或对象字典。domain 要短、可搜索，例如“讲故事节奏”、"
-            "“即兴喜剧”、“喜剧写作”、“粤语”。"
+            "intent_name/reason、编号字符串或对象字典。**domain 要写成公开 skill 库搜得到的通用大类词、"
+            "优先英文**（如 “comedy writing”、“public speaking”、“storytelling”、“improv comedy”、"
+            "“Cantonese”），别用自造的窄中文短语（“双人喜剧配合”“预设陷阱式编剧”那种几乎搜不到、装不上）；"
+            "宁可宽一点、可检索，也别精确但没人收录。"
         )
         lines.append(
             "其中 report 是这一章面向人看的**当天成长汇报**（dashboard 会展示给主人看，"
