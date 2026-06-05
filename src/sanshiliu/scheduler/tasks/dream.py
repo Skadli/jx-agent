@@ -34,8 +34,17 @@ def build_dream_task(
     fire_hour: int = _DEFAULT_FIRE_HOUR,
     min_sessions: int = _DEFAULT_MIN_SESSIONS,
     enabled: bool = False,
+    dream_log_path: Path | None = None,
 ) -> HeartbeatTask:
-    runner = DreamRunner(engine=engine, db=db, sessions_dir=sessions_dir)
+    # memdir_dir：做梦产物落点（diff 记本次写入的记忆）；dream_log_path：做梦历史日志落点
+    # （每次 ok/skipped/error 追加一条，供心跳页回看）。二者透传给 DreamRunner。
+    runner = DreamRunner(
+        engine=engine,
+        db=db,
+        sessions_dir=sessions_dir,
+        memdir_dir=memdir_dir,
+        dream_log_path=dream_log_path,
+    )
 
     # task 需要被闭包引用——但 task 对象在 return 之前还没构造好。
     # 解决：用一个 mutable 容器（list）当占位，build 完后把 task 放进去；闭包读 box[0]。
@@ -54,7 +63,9 @@ def build_dream_task(
     async def on_due(ctx: dict[str, Any]) -> None:
         last_ts = _last_dream_mtime(memdir_dir)
         count = _count_sessions_since(sessions_dir, last_ts)
-        await runner(count, last_ts)
+        # runner 返回人话结果（完成/跳过/失败）→ 写进 ctx 让 heartbeat 标到 last_message，
+        # 心跳页那行不再是笼统"完成"；完整历史另在 dream-log（DreamRunner 内已落）。
+        ctx["result_message"] = await runner(count, last_ts)
 
     task = HeartbeatTask(
         name="dream",

@@ -13,11 +13,13 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sanshiliu.engine.session import Session
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.scheduler.dream_log import append_dream_record
 
 if TYPE_CHECKING:
     from sanshiliu.engine.loop import ConversationEngine
@@ -38,6 +40,8 @@ class DreamRunner:
         engine: ConversationEngine,
         db: Database | None,
         sessions_dir: Path,
+        memdir_dir: Path | None = None,
+        dream_log_path: Path | None = None,
         max_sessions: int = 8,
         max_msgs_per_session: int = 6,
         max_chars_per_msg: int = 400,
@@ -45,21 +49,44 @@ class DreamRunner:
         self._engine = engine
         self._db = db
         self._sessions_dir = sessions_dir
+        # memdir_dir：做梦产物（SaveMemory 写的反思条目）落点；用"做梦前/后目录 diff"记账本次
+        # 写了哪些记忆（parse-free，目录是真相源）。缺它（单测/旧调用点）则 saved 记空，不报错。
+        self._memdir_dir = memdir_dir
+        # dream_log_path：做梦历史日志落点（<data_dir>/dream-log.json）；每次 ok/skipped/error 都
+        # 追加一条，供心跳页回看。缺它则不记历史（只记日志），不影响做梦本身。
+        self._dream_log_path = dream_log_path
         self._max_sessions = max_sessions
         self._max_msgs = max_msgs_per_session
         self._max_chars = max_chars_per_msg
 
-    async def __call__(self, new_session_count: int, last_dream_ts: float) -> None:
-        """OnDueCallback 签名；new_session_count 是 scheduler 已统计好的新 session 数量。"""
+    async def __call__(self, new_session_count: int, last_dream_ts: float) -> str:
+        """跑一次做梦；返回一句人话结果（on_due 据此写 heartbeat last_message）。
+
+        三态都**留痕**到 dream-log（#无法查看历史）：收集失败/engine 失败=error、0 材料=skipped、
+        完成=ok（带摘要 + memdir 前后 diff 出的本次写入记忆）。错误仍不冒泡（后台任务不能因一次
+        做梦失败退出），但不再"无声蒸发"——每次都进日志、可在心跳页回看。
+        """
         try:
             materials = await self._collect_materials(last_dream_ts)
         except Exception as exc:
             _logger.error("收集做梦材料失败", error=str(exc))
-            return
+            self._log_dream(
+                status="error",
+                detail=f"收集材料失败：{exc}",
+                new_session_count=new_session_count,
+                materials_count=0,
+            )
+            return "做梦失败：收集材料异常"
 
         if not materials:
             _logger.warning("dream runner 收到 0 条材料，跳过")
-            return
+            self._log_dream(
+                status="skipped",
+                detail="无新增对话素材",
+                new_session_count=new_session_count,
+                materials_count=0,
+            )
+            return "跳过做梦：无新增素材"
 
         prompt = self._build_prompt(materials, new_session_count)
         session = Session.new(channel=_SCHEDULER_CHANNEL, user_id=_SCHEDULER_USER_ID)
@@ -69,6 +96,7 @@ class DreamRunner:
             materials_count=len(materials),
             prompt_chars=len(prompt),
         )
+        memdir_before = self._memdir_snapshot()
         try:
             result = await self._engine.complete_turn(session, prompt)
         except Exception as exc:
@@ -77,12 +105,50 @@ class DreamRunner:
                 error=str(exc),
                 scheduler_session=session.session_id,
             )
-            return
+            self._log_dream(
+                status="error",
+                detail=f"engine.complete_turn 失败：{exc}",
+                new_session_count=new_session_count,
+                materials_count=len(materials),
+                session_id=session.session_id,
+            )
+            return "做梦失败：engine 异常"
+
+        content = result.content if isinstance(result.content, str) else ""
+        saved = sorted(self._memdir_snapshot() - memdir_before)
         _logger.info(
             "dream runner 完成",
             scheduler_session=session.session_id,
-            assistant_chars=len(result.content) if isinstance(result.content, str) else -1,
+            assistant_chars=len(content),
+            saved_memories=saved,
         )
+        self._log_dream(
+            status="ok",
+            detail="",
+            new_session_count=new_session_count,
+            materials_count=len(materials),
+            session_id=session.session_id,
+            summary=content[:280],
+            saved_memories=saved,
+        )
+        tail = f"，写入 {len(saved)} 条记忆" if saved else ""
+        return f"做梦完成（{len(materials)} 条素材{tail}）"
+
+    def _memdir_snapshot(self) -> set[str]:
+        """快照 memdir 下 *.md 文件名集合；用于 diff 出本次做梦写入的记忆。缺目录则空集。"""
+        if self._memdir_dir is None or not self._memdir_dir.is_dir():
+            return set()
+        try:
+            return {p.name for p in self._memdir_dir.glob("*.md")}
+        except OSError:
+            return set()
+
+    def _log_dream(self, **record: Any) -> None:
+        """追加一条做梦历史（best-effort）；缺 dream_log_path（单测/旧调用点）则跳过。"""
+        if self._dream_log_path is None:
+            return
+        record.setdefault("ts", time.time())
+        append_dream_record(self._dream_log_path, record)
 
     async def _collect_materials(self, since_ts: float) -> list[dict[str, Any]]:
         """扫 sessions_dir 取 mtime > since_ts 的 jsonl，按 mtime 倒序取最多 max_sessions 个。

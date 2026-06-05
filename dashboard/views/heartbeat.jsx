@@ -129,6 +129,7 @@ function Heartbeat({ onJump }) {
                     {expanded[t.name] && (
                       <tr>
                         <td colSpan={6} style={{ background: "var(--canvas)", padding: 16 }}>
+                          {t.name === "dream" && <DreamHistory />}
                           <ConfigForm task={t} busy={!!busy[t.name]} onSave={patch => saveConfig(t.name, patch)} />
                         </td>
                       </tr>
@@ -252,6 +253,71 @@ function ConfigForm({ task, busy, onSave }) {
         </button>
       </div>
     </form>
+  );
+}
+
+/* 做梦历史——做梦任务展开时读 /api/dream/log，列最近几次（ok/跳过/出错 + 摘要 + 写入的记忆）。
+ * 做梦无结构化状态机、产物写进 memdir；这里只做"可回看"的轻量历史，对齐成长的可追溯性。 */
+function DreamHistory() {
+  const [records, setRecords] = React.useState(null);
+  React.useEffect(() => {
+    let alive = true;
+    API.get("/api/dream/log").then(r => {
+      if (alive) setRecords(r.error ? [] : (r.records || []));
+    });
+    return () => { alive = false; };
+  }, []);
+
+  if (records === null) {
+    return <div className="t-meta" style={{ marginBottom: 14, color: "var(--ink-60)" }}>加载做梦历史…</div>;
+  }
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div className="t-row-strong" style={{ marginBottom: 8 }}>做梦历史（最近 {records.length} 次）</div>
+      {records.length === 0 ? (
+        <div className="t-meta" style={{ color: "var(--ink-60)" }}>
+          还没有做梦记录。做梦只在 <code>serve</code> 模式跑、每天定时且新增对话达阈值才触发；
+          手动“立即执行”当天没新对话也会跳过（现在跳过/出错也会记一条）。
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {records.map((r, i) => <DreamRecord key={i} r={r} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DreamRecord({ r }) {
+  const map = {
+    "ok":      { label: "完成", cls: "chip-success" },
+    "skipped": { label: "跳过", cls: "chip"         },
+    "error":   { label: "出错", cls: "chip-danger"  },
+  };
+  const s = map[r.status] || { label: r.status, cls: "chip" };
+  const saved = r.saved_memories || [];
+  return (
+    <div style={{ padding: "8px 10px", background: "var(--pearl)", border: "1px solid var(--hairline)", borderRadius: "var(--r-md)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span className={`chip ${s.cls}`} style={{ fontSize: 10 }}>{s.label}</span>
+        <span className="t-meta" style={{ color: "var(--ink-60)" }}>{r.ts ? API.relTime(r.ts * 1000) : "—"}</span>
+        <span className="t-meta" style={{ color: "var(--ink-48)" }}>
+          素材 {r.materials_count ?? 0} · 新增 session {r.new_session_count ?? 0}
+          {saved.length > 0 && ` · 写入 ${saved.length} 条记忆`}
+        </span>
+      </div>
+      {r.summary && (
+        <div className="t-meta" style={{ marginTop: 6, color: "var(--ink-80)", whiteSpace: "pre-wrap" }}>
+          {r.summary}{r.summary.length >= 280 ? "…" : ""}
+        </div>
+      )}
+      {r.detail && r.status !== "ok" && (
+        <div className="t-meta" style={{ marginTop: 4, color: "var(--ink-60)" }}>{r.detail}</div>
+      )}
+      {saved.length > 0 && (
+        <div className="t-meta" style={{ marginTop: 4, color: "var(--ink-48)" }}>记忆：{saved.join("、")}</div>
+      )}
+    </div>
   );
 }
 

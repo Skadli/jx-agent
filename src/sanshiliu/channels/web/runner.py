@@ -32,6 +32,7 @@ from sanshiliu.channels.web.api_growth import (
     make_growth_persona_handler,
 )
 from sanshiliu.channels.web.api_heartbeat import (
+    make_dream_log_handler,
     make_heartbeat_dispatch_handler,
     make_heartbeat_list_handler,
 )
@@ -152,6 +153,8 @@ async def run_serve() -> int:
     # 在成长激活时解析到 data/growth/persona/chapter-N/、否则回落 base core。serve 进程跑
     # scheduler，成长写完 invalidate 即热生效，日常对话以"长成的人"回应（满足 prd #7）。
     growth_state_path = settings.data_dir / "growth-state.json"
+    # 做梦历史日志：DreamRunner 每次 ok/skipped/error 追加一条，心跳页 GET /api/dream/log 回看
+    dream_log_path = settings.data_dir / "dream-log.json"
     active_core_provider = make_active_core_provider(growth_state_path, settings.data_dir)
 
     # 人设 + 系统 prompts
@@ -337,6 +340,7 @@ async def run_serve() -> int:
             fire_hour=settings.dream_scheduler_hour,
             min_sessions=settings.dream_scheduler_min_sessions,
             enabled=settings.dream_scheduler_enabled,
+            dream_log_path=dream_log_path,
         )
     )
     # 成长任务：数字分身每天做一次成长梦（满 30 岁定格）；与 dream 同走心跳模块（prd #3）
@@ -426,6 +430,8 @@ async def run_serve() -> int:
     router.register("GET", "/api/permissions", make_permissions_handler(settings_loader, db, loop))
     router.register("GET", "/api/settings_json", make_settings_json_handler(settings_loader))
     router.register("GET", "/api/heartbeat", make_heartbeat_list_handler(heartbeat))
+    # 做梦历史（心跳页做梦任务展开时读）：只读 dream-log.json，最新在前
+    router.register("GET", "/api/dream/log", make_dream_log_handler(dream_log_path))
     # 成长模块读端点（PR4）：总览 + 章详情 + 章人格快照。调度/启停/手动推进复用心跳模块
     # （growth 已注册为 HeartbeatTask，自动在 /api/heartbeat 列出），这里只做"看结果"的读 API。
     # exact 必须在 prefix 之前注册（resolve 先查 exact）；chapter/persona handler 内严格校验路径形状。

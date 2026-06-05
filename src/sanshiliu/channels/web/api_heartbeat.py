@@ -12,10 +12,12 @@ import asyncio
 import json
 import urllib.parse
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.scheduler import HeartbeatScheduler
+from sanshiliu.scheduler.dream_log import load_dream_records
 
 if TYPE_CHECKING:
     from http.server import BaseHTTPRequestHandler
@@ -53,6 +55,21 @@ def make_heartbeat_list_handler(
     def handler(req: BaseHTTPRequestHandler) -> None:
         tasks = [t.to_dict() for t in heartbeat.list_tasks()]
         _write_json(req, {"tasks": tasks})
+
+    return handler
+
+
+def make_dream_log_handler(
+    dream_log_path: Path,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """GET /api/dream/log → {"records": [...]}（最新在前，最多 20 条）。
+
+    做梦不像成长有结构化状态机，这条只读 <data_dir>/dream-log.json（DreamRunner 每次 ok/
+    skipped/error 都追加一条），供心跳页回看历史。文件不存在 → records 为空数组。
+    """
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        records = load_dream_records(dream_log_path, limit=20)
+        _write_json(req, {"records": records})
 
     return handler
 
