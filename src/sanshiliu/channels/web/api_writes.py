@@ -440,7 +440,7 @@ def make_growth_chapter_delete_handler(
     """删第 n 章及其后所有章（成长是连续时间线，不能留空洞）。删 1 = 清空全部。
 
     一并清理：传记 md + 人格快照目录 data/growth/persona/chapter-N/（#2），并令人格回退即时生效。
-    清空到 0 章时按当前 config 重新 seed cadence（#1：把旧 5 年/章迁到现默认 1 年/章）。
+    清空到 0 章时按当前 config 重新 seed cadence（#1：把旧 1 年/章迁到现默认 5 年/章）。
     成长心跳任务正在跑时返回 409（#3）——它也在 load→改→save 同一状态文件，并发会丢更新。
     已装外部 skill 不卸载（二期，与 rollback 一致）。
     """
@@ -483,7 +483,7 @@ def make_growth_chapter_delete_handler(
         removed = state.delete_from(n)
         if state.current_chapter == 0:
             # #1：清空到起点 → 按当前 config 重新 seed，否则旧 years_per_chapter/end_chapter 一直粘着、
-            # 和现默认/文档（1 年/章）不一致。等价于删掉状态文件重建。
+            # 和现默认/文档（5 年/章）不一致。等价于删掉状态文件重建。
             state = seed_growth_state(
                 start_age=start_age, years_per_chapter=years_per_chapter, end_age=end_age
             )

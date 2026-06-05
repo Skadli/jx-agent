@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # 默认值——首次启动 seed；后续被 heartbeat.json / growth-state.json 覆盖
 _DEFAULT_FIRE_HOUR = 3
 _DEFAULT_START_AGE = 5
-_DEFAULT_YEARS_PER_CHAPTER = 1
+_DEFAULT_YEARS_PER_CHAPTER = 5
 _DEFAULT_END_AGE = 30
 _DEFAULT_BIRTH_YEAR = 1992  # 年龄 0 对应的公历年（1 岁≈1993）；每章据此算公历年代
 

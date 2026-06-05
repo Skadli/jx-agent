@@ -1,6 +1,6 @@
 """成长状态机；data/growth-state.json 的 load/save/advance/rollback + gate 判定。
 
-为什么单独成一个纯模块：成长推进是有限状态机（5 岁→30 岁、共 25 章），逻辑必须
+为什么单独成一个纯模块：成长推进是有限状态机（5 岁→30 岁、共 5 章），逻辑必须
 可单测、不依赖 LLM / engine / 文件系统副作用。load/save 只碰一个 JSON 文件，advance/
 rollback/can_advance 是纯函数式状态变换，便于 mypy strict + pytest 覆盖边界。
 
@@ -36,9 +36,9 @@ from sanshiliu.foundation.logging import get_logger
 
 _logger = get_logger(__name__)
 
-# 默认值——首次建状态时 seed；与 config.growth_* 默认一致（5 岁起、1 年/章、30 岁止 → 共 25 章）
+# 默认值——首次建状态时 seed；与 config.growth_* 默认一致（5 岁起、5 年/章、30 岁止 → 共 5 章）
 _DEFAULT_START_AGE = 5
-_DEFAULT_YEARS_PER_CHAPTER = 1
+_DEFAULT_YEARS_PER_CHAPTER = 5
 _DEFAULT_END_AGE = 30
 
 
@@ -62,7 +62,7 @@ class GrowthState:
     active_persona_chapter: int = 0
     start_age: int = _DEFAULT_START_AGE
     years_per_chapter: int = _DEFAULT_YEARS_PER_CHAPTER
-    # 总章数；由 (end_age - start_age) / years_per_chapter 推出（默认 (30-5)/1 = 25）
+    # 总章数；由 (end_age - start_age) / years_per_chapter 推出（默认 (30-5)/5 = 5）
     end_chapter: int = (_DEFAULT_END_AGE - _DEFAULT_START_AGE) // _DEFAULT_YEARS_PER_CHAPTER
     chapters: list[ChapterRecord] = field(default_factory=list)
 
@@ -193,7 +193,7 @@ def seed_growth_state(
     """按 config 造一个全新（0 章、起点年龄）的成长状态；end_chapter 由年龄跨度/每章年数推出。
 
     供"首次建状态"和"清空全部后按当前 config 重新播种"复用——后者是把已存在的旧 cadence
-    （如 5 年/章）迁到当前默认（1 年/章）的入口，否则文件作为真相源会一直粘着旧参数。
+    （如 1 年/章）迁到当前默认（5 年/章）的入口，否则文件作为真相源会一直粘着旧参数。
     """
     end_chapter = (end_age - start_age) // years_per_chapter if years_per_chapter else 0
     return GrowthState(

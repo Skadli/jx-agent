@@ -1160,7 +1160,7 @@ class GrowthRunner:
         )
         lines.append(
             "其中 report 是这一章面向人看的**当天成长汇报**（dashboard 会展示给主人看，"
-            "用第一人称、口语化地讲清楚你这一年长成了谁、有什么变化）。"
+            "用第一人称、口语化地讲清楚你这一章长成了谁、有什么变化）。"
         )
         lines.append(
             "其中 persona 是本章演化后的**新核心人格**（{identity, personality, beliefs, style, "
@@ -1168,7 +1168,7 @@ class GrowthRunner:
             "成为分身往后的真身（长成校长就只剩校长，不留旧身份残影）。载体协议（≤60字、<MSG>、禁 "
             "markdown 等）和安全红线另有 _protocol.md 永驻层兜底，你**不用写、也不要复写**进 persona。"
             "**本章必须演化人格，不允许把 persona 整个省略**：至少给 identity"
-            "（“我现在是谁”每长一岁都在变），再加上本章经历真正影响到的段落（这年口吻变了就给 "
+            "（“我现在是谁”每章都在变），再加上本章经历真正影响到的段落（这一章口吻变了就给 "
             "style、价值观变了就给 beliefs、性格变了就给 personality、典型样例变了就给 "
             "fewshot_short）；只有确实毫无变化的段落才省略（省略的会自动承接前章）。"
         )

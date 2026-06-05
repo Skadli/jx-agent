@@ -270,7 +270,7 @@ Dashboard 的 Skills 页支持把每个 skill 的 `structure.json` 渲染成 Dif
 
 数字分身的"逐章成长"。在调度层注册为一个心跳任务 `growth`（与现有的 `dream` 做梦任务并列），**仅 `serve` 进程生效**（REPL 不跑调度器）。**默认关闭**（`SANSHILIU_GROWTH_ENABLED=false`）。
 
-开启后每天推进一章成长：从 **5 岁起、每章跨 1 年、共 25 章长到 30 岁定格**。每章读前几章传记、逻辑自洽地往后续写本章经历（写得**具体**、可**天马行空**——修仙/穿越/奇遇都行，但要圆得回来），产出三件事：
+开启后每天推进一章成长：从 **5 岁起、每章跨 5 年、共 5 章长到 30 岁定格**。每章读前几章传记、逻辑自洽地往后续写本章经历（写得**具体**、可**天马行空**——修仙/穿越/奇遇都行，但要圆得回来），产出三件事：
 
 - **传记**：写入 memdir `reference_growth-chapter-N.md`（永久，作为下一章输入）。
 - **人格整体演化**：把核心人格**整盘改写**成"这岁数已经长成的那个人"，版本化存进 `data/growth/persona/chapter-N/`，由 `PersonaLoader` 的 active-core provider 在成长激活时**覆盖** base `persona/core/`（base 文件全程不写、可回滚；切回/回退 `active_persona_chapter` 即换人格）。世界观不隔离——长成校长就是校长人格，日常对话即以长成的人回应。
@@ -280,9 +280,9 @@ Dashboard 的 Skills 页支持把每个 skill 的 `structure.json` 渲染成 Dif
 
 1. `.env` 设 `SANSHILIU_GROWTH_ENABLED=true`（可选调 `SANSHILIU_GROWTH_HOUR` 等，见上方配置表）。
 2. 以 `python -m sanshiliu serve` 启动（REPL 不跑成长）。
-3. 调度走心跳：默认每天 `GROWTH_HOUR` 点自动推进一章，或在 dashboard **心跳模块**对 `growth` 任务点"立即运行 / 开关 / 改配置"（即 `/api/heartbeat/growth/*`）手动推进，连点可快速跑满 25 章验证。
+3. 调度走心跳：默认每天 `GROWTH_HOUR` 点自动推进一章，或在 dashboard **心跳模块**对 `growth` 任务点"立即运行 / 开关 / 改配置"（即 `/api/heartbeat/growth/*`）手动推进，连点可快速跑满 5 章验证。
 
-> **改每章年数后的迁移**：`growth-state.json` 一旦存在即真相源，会沿用它保存的 `years_per_chapter` / `end_chapter`（改 `.env` 不打乱在跑的成长线）。要把旧的 5 年/章迁到新的 1 年/章：在 dashboard 成长历史点「清空全部」（= 按当前 config 重置 cadence），或直接删掉 `data/growth-state.json` 重建。
+> **改每章年数后的迁移**：`growth-state.json` 一旦存在即真相源，会沿用它保存的 `years_per_chapter` / `end_chapter`（改 `.env` 不打乱在跑的成长线）。要把旧的 1 年/章迁到新的 5 年/章：在 dashboard 成长历史点「清空全部」（= 按当前 config 重置 cadence），或直接删掉 `data/growth-state.json` 重建。
 
 ### Dashboard 成长模块
 

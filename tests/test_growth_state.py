@@ -26,22 +26,22 @@ def test_default_state_starts_at_chapter_zero_age_five() -> None:
     state = _fresh_state()
     assert state.current_chapter == 0
     assert state.age == 5
-    assert state.end_chapter == 25  # 1 年/章：(30-5)/1
+    assert state.end_chapter == 5  # 5 年/章：(30-5)/5
     assert state.active_persona_chapter == 0
 
 
 def test_next_age_range_tracks_current_chapter() -> None:
     state = _fresh_state()
-    assert state.next_age_range() == "5-6"
-    state.advance(ChapterRecord(age_range="5-6", summary="第一章"))
-    assert state.next_age_range() == "6-7"
+    assert state.next_age_range() == "5-10"
+    state.advance(ChapterRecord(age_range="5-10", summary="第一章"))
+    assert state.next_age_range() == "10-15"
 
 
 def test_advance_pushes_chapter_and_moves_age_and_persona_pointer() -> None:
     state = _fresh_state()
-    state.advance(ChapterRecord(age_range="5-6", summary="长成小学生"))
+    state.advance(ChapterRecord(age_range="5-10", summary="长成小学生"))
     assert state.current_chapter == 1
-    assert state.age == 6
+    assert state.age == 10
     assert state.active_persona_chapter == 1  # 人格整体演化：激活指针跟到最新章
     assert len(state.chapters) == 1
     assert state.chapters[0].summary == "长成小学生"
@@ -49,19 +49,19 @@ def test_advance_pushes_chapter_and_moves_age_and_persona_pointer() -> None:
 
 def test_can_advance_true_below_end_false_when_frozen() -> None:
     state = _fresh_state()
-    # 25 章（每章 1 年）都可推进
-    for i in range(25):
+    # 5 章（每章 5 年）都可推进
+    for i in range(5):
         assert state.can_advance() is True, f"第 {i} 章前应可推进"
-        state.advance(ChapterRecord(age_range=f"{5 + i}-{6 + i}", summary=f"第{i + 1}章"))
-    # 满 25 章 → 30 岁定格 → 永久 false
-    assert state.current_chapter == 25
+        state.advance(ChapterRecord(age_range=f"{5 + i * 5}-{10 + i * 5}", summary=f"第{i + 1}章"))
+    # 满 5 章 → 30 岁定格 → 永久 false
+    assert state.current_chapter == 5
     assert state.age == 30
     assert state.can_advance() is False
 
 
 def test_advance_past_end_raises() -> None:
     state = _fresh_state()
-    for i in range(25):
+    for i in range(5):
         state.advance(ChapterRecord(age_range=f"ch{i}", summary=f"第{i + 1}章"))
     # 满章后再 advance 必须抛，防止写脏数据越过定格
     with pytest.raises(ValueError, match="定格"):
@@ -93,13 +93,13 @@ def test_delete_from_truncates_chapter_and_rewinds_age_and_pointer() -> None:
     state = _fresh_state()
     for i in range(4):
         state.advance(ChapterRecord(age_range=f"ch{i}", summary=f"第{i + 1}章"))
-    assert state.current_chapter == 4 and state.age == 9 and state.active_persona_chapter == 4
+    assert state.current_chapter == 4 and state.age == 25 and state.active_persona_chapter == 4
 
     removed = state.delete_from(3)  # 删第 3 章及其后（3、4）
 
     assert removed == [3, 4]
     assert state.current_chapter == 2
-    assert state.age == 7  # 5 + 2*1
+    assert state.age == 15  # 5 + 2*5
     assert len(state.chapters) == 2
     assert state.active_persona_chapter == 2  # 激活指针收敛到新章数
     assert state.can_advance() is True  # 删后可再往后长
@@ -139,13 +139,13 @@ def test_delete_from_out_of_range_raises() -> None:
 def test_save_then_load_round_trips_full_state(tmp_path: Path) -> None:
     path = tmp_path / "growth-state.json"
     state = _fresh_state()
-    state.advance(ChapterRecord(age_range="5-6", summary="长成小学生", report="汇报A"))
-    state.advance(ChapterRecord(age_range="6-7", summary="长成少年", installed_skills=["s1"]))
+    state.advance(ChapterRecord(age_range="5-10", summary="长成小学生", report="汇报A"))
+    state.advance(ChapterRecord(age_range="10-15", summary="长成少年", installed_skills=["s1"]))
     save_growth_state(path, state)
 
     loaded = load_growth_state(path)
     assert loaded.current_chapter == 2
-    assert loaded.age == 7
+    assert loaded.age == 15
     assert loaded.active_persona_chapter == 2
     assert len(loaded.chapters) == 2
     assert loaded.chapters[0].report == "汇报A"

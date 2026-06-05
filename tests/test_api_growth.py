@@ -67,7 +67,7 @@ def _state_with_two_chapters() -> GrowthState:
     state = GrowthState()
     state.advance(
         ChapterRecord(
-            age_range="5-6",
+            age_range="5-10",
             summary="从三十六贱笑长成爱写段子的小学生。",
             report="主人，我这一年长成了贫嘴的小学生。",
             installed_skills=["standup-comedy"],
@@ -75,7 +75,7 @@ def _state_with_two_chapters() -> GrowthState:
     )
     state.advance(
         ChapterRecord(
-            age_range="6-7",
+            age_range="10-15",
             summary="接住上一章的段子魂，成了校园博主。",
             report="主人，我现在是校园博主了。",
             installed_skills=["standup-comedy", "video-editing"],
@@ -91,7 +91,7 @@ def test_overview_returns_state(tmp_path: Path) -> None:
     state_path = tmp_path / "growth-state.json"
     save_growth_state(state_path, _state_with_two_chapters())
     handler = make_growth_overview_handler(
-        state_path, start_age=5, years_per_chapter=1, end_age=30, enabled=True
+        state_path, start_age=5, years_per_chapter=5, end_age=30, enabled=True
     )
     req = FakeReq("/api/growth")
     handler(req)
@@ -100,8 +100,8 @@ def test_overview_returns_state(tmp_path: Path) -> None:
     body = req.json()
     assert body["enabled"] is True
     assert body["current_chapter"] == 2
-    assert body["age"] == 7  # 1 年/章：5 + 2*1
-    assert body["timeline"] == {"start_age": 5, "end_age": 30, "current_age": 7}
+    assert body["age"] == 15  # 5 年/章：5 + 2*5
+    assert body["timeline"] == {"start_age": 5, "end_age": 30, "current_age": 15}
     # installed_skills 跨章去重汇总
     assert body["installed_skills"] == ["standup-comedy", "video-editing"]
     assert len(body["chapters"]) == 2
@@ -113,7 +113,7 @@ def test_overview_returns_state(tmp_path: Path) -> None:
 def test_overview_idle_state_when_no_file(tmp_path: Path) -> None:
     # 成长未激活（无 state 文件）→ 回空闲态、200、不报 500
     handler = make_growth_overview_handler(
-        tmp_path / "missing.json", start_age=5, years_per_chapter=1, end_age=30, enabled=False
+        tmp_path / "missing.json", start_age=5, years_per_chapter=5, end_age=30, enabled=False
     )
     req = FakeReq("/api/growth")
     handler(req)
@@ -146,7 +146,7 @@ def test_chapter_detail_valid(tmp_path: Path) -> None:
         body="第一章传记正文：小学生段子手。",
     )
     handler = make_growth_chapter_handler(
-        state_path, memdir, start_age=5, years_per_chapter=1, end_age=30
+        state_path, memdir, start_age=5, years_per_chapter=5, end_age=30
     )
     req = FakeReq("/api/growth/chapters/1")
     handler(req)
@@ -154,7 +154,7 @@ def test_chapter_detail_valid(tmp_path: Path) -> None:
     assert req.status == 200
     body = req.json()
     assert body["chapter_no"] == 1
-    assert body["age_range"] == "5-6"
+    assert body["age_range"] == "5-10"
     assert body["report"] == "主人，我这一年长成了贫嘴的小学生。"
     assert "小学生段子手" in body["biography"]
     assert body["installed_skills"] == ["standup-comedy"]
@@ -164,7 +164,7 @@ def test_chapter_detail_out_of_range_404(tmp_path: Path) -> None:
     state_path = tmp_path / "growth-state.json"
     save_growth_state(state_path, _state_with_two_chapters())
     handler = make_growth_chapter_handler(
-        state_path, tmp_path / "memdir", start_age=5, years_per_chapter=1, end_age=30
+        state_path, tmp_path / "memdir", start_age=5, years_per_chapter=5, end_age=30
     )
     # 只完成 2 章，第 3 章还没长到 → 404
     req = FakeReq("/api/growth/chapters/3")
@@ -176,7 +176,7 @@ def test_chapter_detail_invalid_n_400(tmp_path: Path) -> None:
     state_path = tmp_path / "growth-state.json"
     save_growth_state(state_path, _state_with_two_chapters())
     handler = make_growth_chapter_handler(
-        state_path, tmp_path / "memdir", start_age=5, years_per_chapter=1, end_age=30
+        state_path, tmp_path / "memdir", start_age=5, years_per_chapter=5, end_age=30
     )
     for bad in ("/api/growth/chapters/abc", "/api/growth/chapters/0", "/api/growth/chapters/-1"):
         req = FakeReq(bad)
@@ -193,7 +193,7 @@ def _delete_handler(
     return make_growth_chapter_delete_handler(
         state_path,
         start_age=5,
-        years_per_chapter=1,
+        years_per_chapter=5,
         end_age=30,
         data_dir=state_path.parent,  # 测试里 state 文件与 data_dir 同在 tmp_path
         memdir_loader=None,
@@ -229,7 +229,7 @@ def test_delete_latest_chapter_rewinds_one(tmp_path: Path) -> None:
     assert req.json()["removed_chapters"] == [2]
     reloaded = load_growth_state(state_path)
     assert reloaded.current_chapter == 1
-    assert reloaded.age == 6  # 1 年/章：5 + 1*1
+    assert reloaded.age == 10  # 5 年/章：5 + 1*5
     assert reloaded.active_persona_chapter == 1
 
 
@@ -258,22 +258,22 @@ def test_delete_invalid_n_400(tmp_path: Path) -> None:
 
 
 def test_delete_all_reseeds_cadence_from_config(tmp_path: Path) -> None:
-    # #1：旧状态是 5 年/章（end_chapter=5）。清空全部后须按当前 config（1 年/章）重新 seed，
-    # 否则文件作为真相源会一直粘着旧 cadence，与新默认/文档（1 年/25 章）不一致。
+    # #1：旧状态是 1 年/章（end_chapter=25）。清空全部后须按当前 config（5 年/章）重新 seed，
+    # 否则文件作为真相源会一直粘着旧 cadence，与新默认/文档（5 年/5 章）不一致。
     state_path = tmp_path / "growth-state.json"
-    old = GrowthState(years_per_chapter=5, end_chapter=5)
-    old.advance(ChapterRecord(age_range="5-10", summary="旧章1"))
-    old.advance(ChapterRecord(age_range="10-15", summary="旧章2"))
+    old = GrowthState(years_per_chapter=1, end_chapter=25)
+    old.advance(ChapterRecord(age_range="5-6", summary="旧章1"))
+    old.advance(ChapterRecord(age_range="6-7", summary="旧章2"))
     save_growth_state(state_path, old)
 
-    req = FakeReq("/api/growth/chapters/1")  # 清空全部（handler 配的是 1 年/章、30 岁）
+    req = FakeReq("/api/growth/chapters/1")  # 清空全部（handler 配的是 5 年/章、30 岁）
     _delete_handler(state_path)(req)
     assert req.status == 200
 
     reloaded = load_growth_state(state_path)
     assert reloaded.current_chapter == 0
-    assert reloaded.years_per_chapter == 1  # 已迁到新 cadence
-    assert reloaded.end_chapter == 25
+    assert reloaded.years_per_chapter == 5  # 已迁到新 cadence
+    assert reloaded.end_chapter == 5
     assert reloaded.age == 5
 
 
