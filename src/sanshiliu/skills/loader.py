@@ -66,5 +66,21 @@ class SkillLoader:
             return self.load()
         return self._cache
 
+    def discover_ids(self) -> set[str]:
+        """Parse-free 发现：扫同一批目录，返回"含 SKILL.md 的直接子目录名"集合。
+
+        与 load() 的 id 口径一致（id = 目录名），但**不解析 frontmatter**。供成长 phase-2
+        做"装前/装后目录 diff"记账用：装进来但 frontmatter 不合法、load() 会丢弃的 skill，
+        在这里仍按"目录已落地"计入（目录是真相源）。读不动某目录则跳过该目录。
+        """
+        ids: set[str] = set()
+        for root in self._dirs:
+            if not root.is_dir():
+                continue
+            for skill_dir in root.iterdir():
+                if skill_dir.is_dir() and (skill_dir / _SKILL_FILENAME).is_file():
+                    ids.add(skill_dir.name)
+        return ids
+
     def invalidate(self) -> None:
         self._cache = None

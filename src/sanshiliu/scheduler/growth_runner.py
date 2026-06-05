@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 
 from sanshiliu.engine.loop import TOOL_TURN_LIMIT_MESSAGE
 from sanshiliu.engine.session import Session
+from sanshiliu.foundation.frontmatter import parse as _parse_frontmatter
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.memory.longterm.memdir import write_memory_file
 from sanshiliu.memory.types import MemoryEntry
@@ -762,7 +763,8 @@ class GrowthRunner:
         # 命令报成功，但 loader 会扫的位置没冒出新 skill 目录——多半是 clawhub --dir/--workdir 落点
         # 不对（旧 SKILL.md 警告过的"装到系统扫不到的目录"）。把这种静默失败升级成 WARN，否则它
         # 只表现为"installed 永远是 0"、线上极难定位。目录 diff 仍按真相源记账，故不会误报成功。
-        if _skill_dir_names(dest) <= before:
+        after_names = _skill_dir_names(dest)
+        if after_names <= before:
             _logger.warning(
                 "成长 skill 安装命令报成功但目标目录未出现新 skill（落点可能不对，loader 扫不到）",
                 chapter=chapter_no,
@@ -780,6 +782,43 @@ class GrowthRunner:
             source=candidate.source,
             query=candidate.query,
         )
+        # 装后修 frontmatter：外部 clawhub/skills.sh 的 SKILL.md 常把含冒号的值（如
+        # `description: ... Trigger on: ...`）不加引号写进 frontmatter，YAML 在冒号处崩，
+        # SkillLoader 会丢弃——装了也用不了、还被记成 0。这里对本次新落地的目录各修一次。
+        for name in sorted(after_names - before):
+            self._sanitize_installed_skill(dest / name, chapter_no=chapter_no)
+
+    def _sanitize_installed_skill(self, skill_dir: Path, *, chapter_no: int) -> None:
+        """装后尽力修一次该 skill 的 SKILL.md frontmatter，让 loader 能解析（否则装了用不了）。
+
+        best-effort：修不动 / 异常都只记日志，绝不抛——本章已成立，记账走目录口径不受影响。
+        """
+        skill_md = skill_dir / _SKILL_MD_FILENAME
+        if not skill_md.is_file():
+            return
+        try:
+            ok = _sanitize_skill_frontmatter(skill_md)
+        except Exception as exc:
+            _logger.warning(
+                "成长 skill 装后 frontmatter 修复异常（跳过，不影响已落地）",
+                chapter=chapter_no,
+                skill=skill_dir.name,
+                error=str(exc),
+            )
+            return
+        if ok:
+            _logger.info(
+                "成长 skill 装后 frontmatter 就绪（loader 可加载）",
+                chapter=chapter_no,
+                skill=skill_dir.name,
+            )
+        else:
+            _logger.warning(
+                "成长 skill 装后 frontmatter 仍不可解析（loader 会丢弃，已尽力修）",
+                chapter=chapter_no,
+                skill=skill_dir.name,
+                path=str(skill_md),
+            )
 
     async def _run_checked_command(
         self,
@@ -959,37 +998,43 @@ class GrowthRunner:
                     os.environ[k] = old
 
     def _snapshot_skill_ids(self) -> set[str]:
-        """装前快照当前已加载 skill 的 id 集合；无 skill_loader（单测/未启用）则空集。
+        """装前快照当前已落地 skill 的目录名集合；无 skill_loader（单测/未启用）则空集。
 
-        用 list()（走缓存，不强制 reload）拿基线即可——本章新装的会在跑完 reload 后冒出来。
+        用 discover_ids()（parse-free 目录扫描）拿基线——本章新装的会在跑完后冒出来。
+        改用"目录口径"（不要求 frontmatter 解析成功），与 _collect_installed_skills 对齐：
+        否则装来的 SKILL.md frontmatter 不合法时，装前/装后都 list() 不到它 → diff 永远为
+        空、installed_skills 永远记 0（旧 bug）。目录是真相源。
         """
         if self._skill_loader is None:
             return set()
         try:
-            return {s.id for s in self._skill_loader.list()}
+            return self._skill_loader.discover_ids()
         except Exception as exc:
             # 记账是附加能力，读失败不能拖垮传记/状态推进
             _logger.warning("成长 skill 装前快照失败（记账降级为空）", error=str(exc))
             return set()
 
     def _collect_installed_skills(self, before: set[str], chapter_no: int) -> list[str]:
-        """invalidate+reload 后 diff skill 目录，返回本章新增的 skill id（带审计日志）。
+        """invalidate 后按目录 diff，返回本章新增的 skill id（带审计日志）。
 
-        目录是真相源：只有真把 skills/<id>/SKILL.md 装进去、且能被 loader 解析的才算数；
-        LLM 自报装了但目录没有的不计入。无 skill_loader → 直接空列表（不报错）。
+        目录是真相源：只要真把 skills/<id>/SKILL.md 装进去就算数（discover_ids 走 parse-free
+        目录扫描，不要求 frontmatter 能解析）；LLM 自报装了但目录没有的不计入。无 skill_loader
+        → 直接空列表（不报错）。invalidate 仍调，让能正常解析的新 skill 对后续对话热生效；
+        装时已 best-effort 修过 frontmatter（_sanitize_installed_skill），故多数装上的也确实可用。
 
         方案 A：本方法在 phase-2（章已推进后）被调用——故 diff 出的 skill 都是本章 best-effort
-        真装上的，记入审计 + 回填本章 installed_skills。reload 同时令后续对话立刻看到新装的 skill。
+        真装上的，记入审计 + 回填本章 installed_skills。
         """
         if self._skill_loader is None:
             return []
         try:
-            # 让 installer 这章新写进 skills/<id>/ 的目录被重新扫描到（同时令后续对话也能看到）
+            # invalidate：让 frontmatter 合法的新 skill 下次 list() 被重新解析、对后续对话生效；
+            # 记账则用 discover_ids()（目录口径，parse-free），与装前快照同口径。
             self._skill_loader.invalidate()
-            after = {s.id for s in self._skill_loader.list()}
+            after = self._skill_loader.discover_ids()
         except Exception as exc:
             _logger.warning(
-                "成长 skill 装后 reload 失败（记账降级为空）", error=str(exc), chapter=chapter_no
+                "成长 skill 装后目录扫描失败（记账降级为空）", error=str(exc), chapter=chapter_no
             )
             return []
         new_ids = sorted(after - before)
@@ -1531,6 +1576,85 @@ def _skill_dir_names(root: Path) -> set[str]:
         }
     except OSError:
         return set()
+
+
+# frontmatter 里一行顶层标量 `key: value`（key 后须紧跟空白 + 非空值）。带缩进的（嵌套/列表项）
+# 不在此列——只修顶层裸标量，避免误伤结构化字段。
+_FM_SCALAR_RE = re.compile(r"^([A-Za-z0-9_.-]+):[ \t]+(\S.*)$")
+
+
+def _sanitize_skill_frontmatter(skill_md: Path) -> bool:
+    """装来的 SKILL.md 若 frontmatter YAML 不合法，尽力修一次；返回最终是否可被 loader 解析。
+
+    外部 clawhub/skills.sh 技能常把含冒号的值不加引号写进 frontmatter（如
+    `description: ... Trigger on: 王小波 ...`），YAML 在 `: ` 处崩
+    （mapping values are not allowed here），SkillLoader 据此丢弃——装了也用不了。
+    这里只做**最小修复**：对顶层 `key: value` 里未加引号、且值中含冒号的标量整体补双引号；
+    修完能解析且仍含 name/description 才回写，否则保持原文。已能解析 → 不动、返 True。
+    """
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    # 已合法 → 不动
+    try:
+        _parse_frontmatter(text)
+        return True
+    except ValueError:
+        pass
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return False
+    end_idx = -1
+    for i, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            end_idx = i
+            break
+    if end_idx < 0:
+        return False
+
+    changed = False
+    for i in range(1, end_idx):
+        new_line = _requote_frontmatter_line(lines[i])
+        if new_line != lines[i]:
+            lines[i] = new_line
+            changed = True
+    if not changed:
+        return False
+
+    candidate = "\n".join(lines)
+    if text.endswith("\n"):
+        candidate += "\n"
+    try:
+        parsed = _parse_frontmatter(candidate)
+    except ValueError:
+        return False
+    if "name" not in parsed.frontmatter or "description" not in parsed.frontmatter:
+        return False
+    try:
+        skill_md.write_text(candidate, encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def _requote_frontmatter_line(line: str) -> str:
+    """给顶层 `key: value` 中未加引号、含冒号的标量补双引号；其余原样返回。
+
+    仅在修复路径（frontmatter 已解析失败）调用——补引号对本不需要的值也无害，故只用"值里含
+    冒号"作触发，避免误改无关行。已加引号 / 以 YAML 特殊字符起头（块标量/流式集合/锚点等）跳过。
+    """
+    m = _FM_SCALAR_RE.match(line)
+    if m is None:
+        return line
+    key, value = m.group(1), m.group(2).rstrip()
+    if not value or value[0] in "\"'[{>|&*#":
+        return line
+    if ":" not in value:
+        return line
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{key}: "{escaped}"'
 
 
 def _normalize_search_text(text: str) -> str:
