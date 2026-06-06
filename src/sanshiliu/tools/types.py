@@ -114,10 +114,12 @@ class FunctionTool:
 
 @dataclass
 class ToolLoopState:
-    """跨 tool 轮的状态；用于 dedupe 同一 (name, args) 重复调用与 max_turns 上限。"""
+    """跨 tool 轮的状态；用于 dedupe 同一 (name, args) 重复调用与预算上限。"""
 
     max_turns: int = 10
+    max_tool_calls: int = 8
     turn: int = 0
+    tool_call_count: int = 0
     seen_calls: dict[str, int] = field(default_factory=dict)
 
     def fingerprint(self, name: str, arguments: dict[str, Any]) -> str:
@@ -130,3 +132,8 @@ class ToolLoopState:
         fp = self.fingerprint(name, arguments)
         self.seen_calls[fp] = self.seen_calls.get(fp, 0) + 1
         return self.seen_calls[fp]
+
+    def consume_tool_call(self) -> bool:
+        """记录一次模型请求的 tool_call；返回本次是否仍在总调用预算内。"""
+        self.tool_call_count += 1
+        return self.tool_call_count <= self.max_tool_calls

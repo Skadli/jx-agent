@@ -42,9 +42,14 @@ _DEDUPE_THRESHOLD = 2
 # tool 循环默认轮数上限；complete_turn 不传 max_turns 时沿用此值（保持所有旧调用点字节不变）。
 _DEFAULT_MAX_TURNS = 6
 
+# 单个用户回合内最多执行/响应多少个 tool_call；超过后补错误 tool message 并停止循环。
+_DEFAULT_MAX_TOOL_CALLS = 8
+
 # 触顶（超过 max_turns）时返回的固定文案；growth_runner 需 import 它把"触顶"识别为硬失败
 # （而非误当正常 LLM 内容喂给 JSON 修复——那是没有真内容可修的）。
 TOOL_TURN_LIMIT_MESSAGE = "[已达 tool 调用上限，请缩小问题范围或重试]"
+
+_TOOL_CALL_LIMIT_RESULT = "[本轮总工具调用已达上限，本次调用未执行]"
 
 # 长期记忆索引注入 system_prompt 的说明头：告诉模型这是它的记忆目录、怎么用。
 _MEMORY_INDEX_HEADER = (
@@ -364,6 +369,7 @@ class ConversationEngine:
         dream_runner 等不传则保持原单条行为。
 
         max_turns：tool 循环轮数上限；None → 沿用默认 6（所有现有调用点不传 → 行为字节不变）。
+        单轮总 tool_call 数另有默认上限 8，避免模型连续试探路径/文件时烧完整个回合。
         成长一章需 Skill(growth)→Skill(skill-finder)→搜索→查 npx→装→再一轮输出 JSON，6 轮不够，
         故 GrowthRunner 显式传更高值。
 
@@ -382,7 +388,8 @@ class ConversationEngine:
         await self._touch_session(session)
 
         loop_state = ToolLoopState(
-            max_turns=max_turns if max_turns is not None else _DEFAULT_MAX_TURNS
+            max_turns=max_turns if max_turns is not None else _DEFAULT_MAX_TURNS,
+            max_tool_calls=_DEFAULT_MAX_TOOL_CALLS,
         )
         while True:
             loop_state.turn += 1
@@ -439,22 +446,35 @@ class ConversationEngine:
             if on_user_message is not None and result.text and result.text.strip():
                 await on_user_message(result.text)
             parsed_calls = parse_tool_calls(result.tool_calls)
+            hit_tool_call_limit = False
             for tc in parsed_calls:
                 tool_started = time.monotonic()
-                count = loop_state.remember(tc.name, tc.arguments)
-                # PR3：dedupe 路径没走 dispatcher，permission_decision 保持 None（合理）
                 permission_decision: str | None = None
-                if count > _DEDUPE_THRESHOLD:
-                    tool_result_text = (
-                        f"[同一调用 {tc.name}(...) 已重复 {count} 次，被去重；请换不同参数或退出工具循环]"
-                    )
+                if not loop_state.consume_tool_call():
+                    tool_result_text = _TOOL_CALL_LIMIT_RESULT
                     is_error = True
+                    hit_tool_call_limit = True
                 else:
-                    assert self._tool_dispatcher is not None
-                    res = await self._tool_dispatcher.execute(tc, session_id=session.session_id)
-                    tool_result_text = res.content
-                    is_error = res.is_error
-                    permission_decision = res.permission_decision
+                    count = loop_state.remember(tc.name, tc.arguments)
+                    # PR3：dedupe 路径没走 dispatcher，permission_decision 保持 None（合理）
+                    if count > _DEDUPE_THRESHOLD:
+                        tool_result_text = (
+                            f"[同一调用 {tc.name}(...) 已重复 {count} 次，被去重；请换不同参数或退出工具循环]"
+                        )
+                        is_error = True
+                    else:
+                        assert self._tool_dispatcher is not None
+                        res = await self._tool_dispatcher.execute(tc, session_id=session.session_id)
+                        tool_result_text = res.content
+                        is_error = res.is_error
+                        permission_decision = res.permission_decision
+                if hit_tool_call_limit:
+                    _logger.warning(
+                        "tool_call 总数超限",
+                        session_id=session.session_id,
+                        count=loop_state.tool_call_count,
+                        limit=loop_state.max_tool_calls,
+                    )
                 await self._record_tool_call(
                     session_id=session.session_id,
                     tool_name=tc.name,
@@ -476,6 +496,11 @@ class ConversationEngine:
                 )
                 session.messages.append(tool_msg)
                 await self._persist_message(session, tool_msg)
+
+            if hit_tool_call_limit:
+                limit_msg = session.add_assistant(TOOL_TURN_LIMIT_MESSAGE)
+                await self._persist_message(session, limit_msg)
+                return limit_msg
 
             # 下一轮 LLM 调用前再压一次：折叠超长 tool_result + 超阈值时整段 compact。
             # 与 Claude Code 在 tool 循环内做 microcompact 的策略一致；
