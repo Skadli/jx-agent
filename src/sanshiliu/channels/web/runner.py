@@ -28,11 +28,13 @@ from sanshiliu.channels.web.api import (
 )
 from sanshiliu.channels.web.api_gacha import (
     ForgeGate,
+    make_gacha_active_handler,
     make_gacha_card_delete_handler,
     make_gacha_card_get_handler,
     make_gacha_card_post_handler,
     make_gacha_cards_list_handler,
     make_gacha_draw_handler,
+    make_gacha_rebirth_reset_handler,
 )
 from sanshiliu.channels.web.api_growth import (
     make_growth_chapter_handler,
@@ -109,8 +111,9 @@ from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.foundation.config import get_settings
 from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.logging import configure_logging, get_logger
+from sanshiliu.gacha.active import make_active_card_provider
 from sanshiliu.gacha.forge_runner import ForgeRunner
-from sanshiliu.gacha.migrate import migrate_origin_card
+from sanshiliu.gacha.migrate import backfill_protocol_md, migrate_origin_card
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.identity.module_loader import PersonaModuleLoader
@@ -126,10 +129,8 @@ from sanshiliu.scheduler import (
     HeartbeatScheduler,
     apply_state_to_scheduler,
     build_dream_task,
-    build_growth_task,
     heartbeat_state_path,
     load_heartbeat_state,
-    make_active_core_provider,
     save_heartbeat_state,
 )
 from sanshiliu.security.composite_confirmer import CompositeConfirmer
@@ -165,7 +166,10 @@ async def run_serve() -> int:
     growth_state_path = settings.data_dir / "growth-state.json"
     # 做梦历史日志：DreamRunner 每次 ok/skipped/error 追加一条，心跳页 GET /api/dream/log 回看
     dream_log_path = settings.data_dir / "dream-log.json"
-    active_core_provider = make_active_core_provider(growth_state_path, settings.data_dir)
+    # 激活人格 provider（PR3 转生）：换成卡池版——active.json → 卡人格章；指针缺省回落
+    # 创始卡（迁移保证与老成长链同章，人格连续）；连创始卡都没有才回 base core。
+    gacha_root = settings.data_dir / "gacha"
+    active_core_provider = make_active_card_provider(gacha_root)
 
     # 人设 + 系统 prompts
     loader = PersonaLoader(settings.persona_dir, active_core_provider=active_core_provider)
@@ -353,34 +357,9 @@ async def run_serve() -> int:
             dream_log_path=dream_log_path,
         )
     )
-    # 成长任务：数字分身每天做一次成长梦（满 30 岁定格）；与 dream 同走心跳模块（prd #3）
-    # 状态在 <data_dir>/growth-state.json（章数/年龄真相源），env 是首次 seed
-    heartbeat.register(
-        build_growth_task(
-            engine=engine,
-            db=db,
-            growth_state_path=growth_state_path,
-            memdir_dir=settings.memdir_dir,
-            fire_hour=settings.growth_hour,
-            enabled=settings.growth_enabled,
-            start_age=settings.growth_start_age,
-            years_per_chapter=settings.growth_years_per_chapter,
-            end_age=settings.growth_end_age,
-            birth_year=settings.growth_birth_year,
-            # PR2 人格演化：传 base core 来源 + 版本化落盘根 + 同一 loader 实例（写完热生效）
-            persona_dir=settings.persona_dir,
-            data_dir=settings.data_dir,
-            persona_loader=loader,
-            # PR3 技能习得：同一个 SkillLoader 实例——成长跑完做"装前/装后目录 diff"记账，
-            # 并 invalidate+reload 让新装 skill 立刻对后续对话生效（serve 进程内共享一份）
-            skill_loader=skill_loader,
-            # 方案 A：phase-2 装 skill 的 bash 硬超时（防 npx 冷拉/无 TTY 挂死拖久 phase-2）
-            skill_install_timeout_sec=settings.skill_install_timeout_sec,
-            # phase-2 安装 prompt 据实点名 installer 落点（= loader 扫的全局目录），杜绝 prompt/落点错位
-            skills_dir_global=settings.skills_dir_global,
-            permission_manager=permission_manager,
-        )
-    )
+    # 老成长心跳已退役（抽卡平台 PR3）：每日定时成长被 API 驱动的锻造（/api/gacha/draw、
+    # /api/gacha/cards/{id}/forge）取代；老成长数据已迁成创始卡 origin（可续锻到 60 岁）。
+    # 旧 growth-state.json / data/growth/ 原地保留，/api/growth* 读端点暂存（PR4 换视图后清理）。
     _hb_state_path = heartbeat_state_path(settings.data_dir)
     apply_state_to_scheduler(heartbeat, load_heartbeat_state(_hb_state_path))
     heartbeat.set_change_hook(lambda: save_heartbeat_state(_hb_state_path, heartbeat))
@@ -475,9 +454,9 @@ async def run_serve() -> int:
 
     # ─── 抽卡平台（人生卡池；设计见 抽卡平台-设计方案.md）───
     # 启动即跑创始卡迁移（幂等、只复制不删除）——与 gacha_enabled 无关：读卡册永远可用，
-    # 写端点（draw/forge/delete）在 handler 内按 enabled 闸 403。锻造与日常对话共享同一
-    # engine/skill_loader/permission_manager/db 实例（装的 skill 即刻对后续对话可见）。
-    gacha_root = settings.data_dir / "gacha"
+    # 写端点（draw/forge/delete/rebirth）在 handler 内按 enabled 闸 403。锻造与日常对话共享
+    # 同一 engine/skill_loader/permission_manager/db 实例（装的 skill 即刻对后续对话可见）。
+    # gacha_root 已在前面（active provider 处）定义。
     try:
         migrate_origin_card(
             gacha_root=gacha_root,
@@ -489,6 +468,8 @@ async def run_serve() -> int:
             end_age=settings.gacha_end_age,
             birth_year=settings.gacha_birth_year,
         )
+        # 旧人格章补拷 _protocol.md 永驻层（迁移自老成长的章缺它；幂等，无事可做时 0 开销）
+        backfill_protocol_md(gacha_root, settings.persona_dir)
     except Exception as exc:
         _logger.error("创始卡迁移失败（gacha 路由照常注册）", error=str(exc))
     forge_runner = ForgeRunner(
@@ -524,7 +505,14 @@ async def run_serve() -> int:
         forge_runner, forge_gate, loop,
         gacha_root=gacha_root,
         enabled=settings.gacha_enabled,
+        # 转生写指针后用同一 loader invalidate 热生效（全渠道下一轮即新人格）
+        persona_loader=persona_for_api,
     ))
+    # 转生回滚（逃生通道，不受 enabled 闸）+ 当前真身（dashboard 顶栏）
+    router.register("POST", "/api/gacha/rebirth/reset", make_gacha_rebirth_reset_handler(
+        gacha_root, persona_for_api,
+    ))
+    router.register("GET", "/api/gacha/active", make_gacha_active_handler(gacha_root))
     router.register_prefix("DELETE", "/api/gacha/cards/", make_gacha_card_delete_handler(
         gacha_root, forge_gate,
         enabled=settings.gacha_enabled,

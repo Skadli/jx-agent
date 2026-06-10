@@ -28,15 +28,19 @@ from sanshiliu.gacha.card_state import (
     ChapterRecord,
     biography_dir,
     card_json_path,
+    cards_root,
     coerce_chapters,
     new_card_state,
     persona_root,
     save_card_state,
 )
+from sanshiliu.identity.types import CORE_DIRNAME
 
 _logger = get_logger(__name__)
 
 _ORIGIN_TITLE = "三十六贱笑·本源"
+
+_PROTOCOL_FILENAME = "_protocol.md"
 
 
 def migrate_origin_card(
@@ -102,6 +106,50 @@ def migrate_origin_card(
         had_old_state=raw is not None,
     )
     return True
+
+
+def backfill_protocol_md(gacha_root: Path, persona_dir: Path) -> int:
+    """给已有卡的人格章目录补拷缺失的 _protocol.md（载体协议/红线永驻层）；返回补拷份数。
+
+    背景：创始卡迁移自老成长数据，那批章目录早于 _protocol.md 引入、缺协议层——被激活
+    （转生/默认 origin）时 system prompt 会失去载体协议。幂等且克制：已有该文件的章不动、
+    空目录不造文件（只补"已有其他 md 的真实章"）、base core 本身没有 _protocol.md 则整体
+    no-op。serve / REPL 启动在迁移后调用一次；后续章从前一章整盘拷贝，自然带着它。
+    """
+    src = persona_dir / CORE_DIRNAME / _PROTOCOL_FILENAME
+    if not src.is_file():
+        return 0
+    root = cards_root(gacha_root)
+    if not root.is_dir():
+        return 0
+    count = 0
+    for card_dir_ in root.iterdir():
+        if not card_dir_.is_dir():
+            continue
+        proot = card_dir_ / "persona"
+        if not proot.is_dir():
+            continue
+        for ch_dir in proot.iterdir():
+            if not ch_dir.is_dir() or not ch_dir.name.startswith("chapter-"):
+                continue
+            dst = ch_dir / _PROTOCOL_FILENAME
+            if dst.is_file():
+                continue
+            if not any(p.is_file() for p in ch_dir.glob("*.md")):
+                continue  # 空目录不是真实章，别凭空造
+            try:
+                shutil.copy2(src, dst)
+                count += 1
+            except OSError as exc:
+                _logger.warning(
+                    "_protocol.md 补拷失败（跳过该章）",
+                    card=card_dir_.name,
+                    chapter_dir=ch_dir.name,
+                    error=str(exc),
+                )
+    if count:
+        _logger.info("已为旧人格章补拷 _protocol.md 永驻层", copied=count)
+    return count
 
 
 def _read_old_state(path: Path) -> dict[str, Any] | None:

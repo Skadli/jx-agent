@@ -17,6 +17,8 @@ from sanshiliu.foundation.config import get_settings
 from sanshiliu.foundation.errors import ConfigError, LLMError, SanshiliuError
 from sanshiliu.foundation.logging import configure_logging, get_logger
 from sanshiliu.foundation.msg_split import StreamingSplitter
+from sanshiliu.gacha.active import make_active_card_provider
+from sanshiliu.gacha.migrate import backfill_protocol_md, migrate_origin_card
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.identity.module_loader import PersonaModuleLoader
@@ -28,7 +30,6 @@ from sanshiliu.memory.longterm.consolidate import load_consolidate_instruction
 from sanshiliu.memory.longterm.extract import MemoryExtractor, load_extract_instruction
 from sanshiliu.memory.longterm.memdir import MemdirLoader
 from sanshiliu.memory.shortterm import ShortTermMemory
-from sanshiliu.scheduler import make_active_core_provider
 from sanshiliu.security.path_guard import PathGuard
 from sanshiliu.security.permission import PermissionManager
 from sanshiliu.security.prompts import ReplConfirmer
@@ -170,12 +171,26 @@ async def run_repl() -> int:
 
     configure_logging(log_level=settings.log_level, log_dir=settings.data_dir / "logs")
 
-    # 成长人格覆盖（PR2）：REPL 不跑 scheduler（不会推进成长），但要让日常对话以"已长成的人格"
-    # 回应——provider 读 growth-state.json 的 active_persona_chapter 解析到 chapter-N 覆盖目录，
-    # 无成长则回落 base core。watcher 5s 轮询激活目录 mtime，serve 进程改了人格这边也能跟上。
-    active_core_provider = make_active_core_provider(
-        settings.data_dir / "growth-state.json", settings.data_dir
-    )
+    # 激活人格（抽卡平台 PR3）：REPL 不锻造，但日常对话要以"当前真身"回应——provider 读
+    # data/gacha/active.json 解析到卡的人格章目录（指针缺省回落创始卡 origin，再缺回 base core）。
+    # 每次解析重读文件 + watcher 5s 轮询 mtime：serve 进程里转生了，REPL 下一轮也跟上。
+    # 迁移/补拷幂等且无事可做时 0 开销——REPL-only 用户不跑 serve 也能拿到创始卡的连续人格。
+    gacha_root = settings.data_dir / "gacha"
+    try:
+        migrate_origin_card(
+            gacha_root=gacha_root,
+            growth_state_path=settings.data_dir / "growth-state.json",
+            growth_persona_dir=settings.data_dir / "growth" / "persona",
+            memdir_dir=settings.memdir_dir,
+            start_age=settings.gacha_start_age,
+            years_per_chapter=settings.gacha_years_per_chapter,
+            end_age=settings.gacha_end_age,
+            birth_year=settings.gacha_birth_year,
+        )
+        backfill_protocol_md(gacha_root, settings.persona_dir)
+    except Exception as exc:
+        print(f"创始卡迁移失败（继续以现有人格启动）：{exc}", file=sys.stderr)
+    active_core_provider = make_active_card_provider(gacha_root)
 
     # 人设：缺文件直接拦在启动期，错误信息含友好提示
     loader = PersonaLoader(settings.persona_dir, active_core_provider=active_core_provider)

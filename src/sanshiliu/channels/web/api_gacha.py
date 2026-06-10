@@ -3,6 +3,9 @@
 端点（注册见 runner.py；/api/* 统一受 DashboardAuth 保护）：
 - POST   /api/gacha/draw                    抽一张新卡并同步锻满 → SSE 锻造流
 - POST   /api/gacha/cards/{id}/forge        续锻到定格（创始卡 / error 卡重试用）→ SSE
+- POST   /api/gacha/cards/{id}/rebirth      转生：该卡成为全渠道当前人格（在锻/无人格拒）
+- POST   /api/gacha/rebirth/reset           一键回本源（不受 enabled 闸——逃生通道）
+- GET    /api/gacha/active                  当前真身（激活指针解析 + 卡面摘要）
 - GET    /api/gacha/cards                   卡册列表（卡面摘要，最新在前）
 - GET    /api/gacha/cards/{id}              卡详情（全量 card.json + 汇总）
 - GET    /api/gacha/cards/{id}/chapters/{n} 章详情（含传记全文）
@@ -35,8 +38,15 @@ from typing import TYPE_CHECKING, Any
 
 from sanshiliu.channels.web.sse import format_event, format_heartbeat, safe_write
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.gacha.active import (
+    ActivePointer,
+    describe_active,
+    resolve_persona_dir_for_card,
+    save_active_pointer,
+)
 from sanshiliu.gacha.card_persona import PERSONA_SECTION_FILES
 from sanshiliu.gacha.card_state import (
+    ORIGIN_CARD_ID,
     biography_dir,
     create_card,
     is_valid_card_id,
@@ -49,6 +59,8 @@ from sanshiliu.gacha.seeds import draw_seed
 
 if TYPE_CHECKING:
     from http.server import BaseHTTPRequestHandler
+
+    from sanshiliu.identity.loader import PersonaLoader
 
 _logger = get_logger(__name__)
 
@@ -333,16 +345,28 @@ def make_gacha_card_post_handler(
     *,
     gacha_root: Path,
     enabled: bool,
+    persona_loader: PersonaLoader,
 ) -> Callable[[BaseHTTPRequestHandler], None]:
-    """续锻：/api/gacha/cards/{id}/forge → 从断点（paused/error/创始卡）锻到定格，SSE 同 draw。"""
+    """卡上的两个动作：/api/gacha/cards/{id}/forge（续锻 SSE）与 /{id}/rebirth（转生）。
+
+    转生（设计决策 #4/#8）：写 active.json 指向该卡（follow 模式，卡再长真身跟着长）+
+    PersonaLoader.invalidate() 即刻生效，**全渠道**（web/REPL/微信）下一轮就是新人格。
+    二次确认在 dashboard 层（PR4）；API 层守卫：在锻中的卡拒转（人格半生不熟）、
+    没有任何可用人格章的卡拒转。
+    """
 
     def handler(req: BaseHTTPRequestHandler) -> None:
         def _do() -> None:
             parts = _path_parts(req.path)
-            if len(parts) != 5 or parts[:3] != ["api", "gacha", "cards"] or parts[4] != "forge":
+            if (
+                len(parts) != 5
+                or parts[:3] != ["api", "gacha", "cards"]
+                or parts[4] not in ("forge", "rebirth")
+            ):
                 _write_json(req, {"error": "not found"}, status=404)
                 return
             card_id = parts[3]
+            action = parts[4]
             if not is_valid_card_id(card_id):
                 _write_json(req, {"error": "invalid card_id"}, status=400)
                 return
@@ -357,8 +381,13 @@ def make_gacha_card_post_handler(
             if state is None:
                 _write_json(req, {"error": "卡不存在", "card_id": card_id}, status=404)
                 return
-            # 消化掉可能的请求体（当前协议 forge 无参数），保持连接干净
+            # 消化掉可能的请求体（forge/rebirth 当前协议都无参数），保持连接干净
             _read_json_body(req, limit=_DRAW_BODY_LIMIT)
+
+            if action == "rebirth":
+                _do_rebirth(req, gacha_root, gate, persona_loader, card_id=card_id)
+                return
+
             if not gate.try_acquire(card_id):
                 _write_json(
                     req,
@@ -373,7 +402,80 @@ def make_gacha_card_post_handler(
                 req, runner=runner, gate=gate, loop=loop, card_id=card_id, intro_events=intro
             )
 
-        _safe(req, _do, "/api/gacha/cards/{id}/forge")
+        _safe(req, _do, "/api/gacha/cards/{id}/forge|rebirth")
+
+    return handler
+
+
+def _do_rebirth(
+    req: BaseHTTPRequestHandler,
+    gacha_root: Path,
+    gate: ForgeGate,
+    persona_loader: PersonaLoader,
+    *,
+    card_id: str,
+) -> None:
+    """执行转生：守卫 → 写指针（follow 模式）→ invalidate 热生效 → 回当前激活态。"""
+    if gate.current_card_id == card_id:
+        _write_json(req, {"error": "该卡正在锻造中，等定格后再转生"}, status=409)
+        return
+    if resolve_persona_dir_for_card(gacha_root, card_id) is None:
+        _write_json(
+            req,
+            {"error": "该卡还没有任何可用人格章（先锻造至少一章）", "card_id": card_id},
+            status=409,
+        )
+        return
+    save_active_pointer(gacha_root, ActivePointer(card_id=card_id, chapter=None))
+    persona_loader.invalidate()
+    active = describe_active(gacha_root)
+    _logger.info("转生完成（全渠道生效）", card_id=card_id, active=active)
+    _write_json(req, {"ok": True, "card_id": card_id, "active": active})
+
+
+# ────────── POST /api/gacha/rebirth/reset + GET /api/gacha/active ──────────
+
+
+def make_gacha_rebirth_reset_handler(
+    gacha_root: Path,
+    persona_loader: PersonaLoader,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """一键回本源：指针指回创始卡 origin。
+
+    **不受 gacha_enabled 闸门**——这是逃生通道：转生后把平台关了，也必须能把人格收回
+    三十六贱笑（kill-switch 不该把人困在某张卡里）。
+    """
+
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        def _do() -> None:
+            save_active_pointer(gacha_root, ActivePointer(card_id=ORIGIN_CARD_ID, chapter=None))
+            persona_loader.invalidate()
+            active = describe_active(gacha_root)
+            _logger.info("已回滚到创始卡", active=active)
+            _write_json(req, {"ok": True, "active": active})
+
+        _safe(req, _do, "/api/gacha/rebirth/reset")
+
+    return handler
+
+
+def make_gacha_active_handler(
+    gacha_root: Path,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """当前真身：激活指针解析结果 + 该卡卡面摘要（dashboard 顶栏「当前真身」用）。"""
+
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        def _do() -> None:
+            active = describe_active(gacha_root)
+            card = None
+            active_card_id = active.get("card_id")
+            if isinstance(active_card_id, str):
+                state = load_card_state(gacha_root, active_card_id)
+                if state is not None:
+                    card = card_summary(state)
+            _write_json(req, {"active": active, "card": card})
+
+        _safe(req, _do, "/api/gacha/active")
 
     return handler
 
