@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from sanshiliu.foundation.frontmatter import parse
 from sanshiliu.foundation.logging import get_logger
@@ -54,7 +54,7 @@ def _resolve_apply(raw: Any) -> MemoryApply | None:
     if not isinstance(raw, str):
         return None
     value = raw.strip().lower()
-    return cast(MemoryApply, value) if value in MEMORY_APPLIES else None
+    return value if value in MEMORY_APPLIES else None
 
 
 def _entry_from_file(path: Path) -> MemoryEntry | None:

@@ -17,7 +17,6 @@ from sanshiliu.memory.longterm.memdir import MemdirLoader, write_memory_file
 from sanshiliu.memory.types import (
     MEMORY_APPLIES,
     MEMORY_TYPES,
-    MemoryApply,
     MemoryEntry,
     MemoryType,
 )
@@ -65,7 +64,8 @@ def build_save_memory_tool(
                 is_error=True,
             )
         memory_type = cast(MemoryType, mtype)
-        memory_apply = cast(MemoryApply, apply) if apply is not None else None
+        # apply 已被上面的 `not in MEMORY_APPLIES` 守卫收窄，无需 cast（mtype 校验在 _validate 内、收窄不外传，仍需 cast）
+        memory_apply = apply if apply is not None else None
 
         confidence_raw = args.get("confidence")
         confidence: float | None = None
