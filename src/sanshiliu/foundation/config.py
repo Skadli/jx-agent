@@ -381,6 +381,59 @@ class Settings(BaseSettings):
         description="serve 启动是否预热 npx（暖 ~/.npm/_npx 缓存）；消除 3am 成长冷拉延迟/确认阻塞",
     )
 
+    # 抽卡平台「人生卡池」（gacha；改造自成长系统，设计与边界见 抽卡平台-设计方案.md）。
+    # 每次抽卡 = 锻造一张独立人生卡：随机命运种子 → 同步连跑 5→60 岁共 11 章 → 跑完评级定格。
+    # gacha_enabled 同时是卡锻造 phase-2 自动装 skill 的总 kill-switch（接替 growth_enabled 角色）。
+    gacha_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("gacha_enabled", "SANSHILIU_GACHA_ENABLED"),
+        description="是否启用抽卡平台（人生卡池）；关=锻造 API 不注册（也是卡自动装 skill 的总开关）",
+    )
+    gacha_start_age: int = Field(
+        default=5,
+        ge=0,
+        validation_alias=AliasChoices("gacha_start_age", "SANSHILIU_GACHA_START_AGE"),
+        description="卡的起点年龄；默认 5 岁（出生底版 = 原三十六贱笑底色）",
+    )
+    gacha_end_age: int = Field(
+        default=60,
+        ge=1,
+        validation_alias=AliasChoices("gacha_end_age", "SANSHILIU_GACHA_END_AGE"),
+        description="卡的定格年龄；锻满即完整人格，不再推进；默认 60 岁",
+    )
+    gacha_years_per_chapter: int = Field(
+        default=5,
+        ge=1,
+        validation_alias=AliasChoices(
+            "gacha_years_per_chapter", "SANSHILIU_GACHA_YEARS_PER_CHAPTER"
+        ),
+        description="每章锻造梦跨多少年；默认 5 年/章（5→60 岁共 11 章）",
+    )
+    gacha_daily_draw_limit: int = Field(
+        default=10,
+        ge=0,
+        validation_alias=AliasChoices(
+            "gacha_daily_draw_limit", "SANSHILIU_GACHA_DAILY_DRAW_LIMIT"
+        ),
+        description="每日抽卡上限（成本护栏，一张卡 ≈ 11 次长生成 + 1 次评级）；0=不限",
+    )
+    gacha_skills_per_card_cap: int = Field(
+        default=10,
+        ge=0,
+        le=50,
+        validation_alias=AliasChoices(
+            "gacha_skills_per_card_cap", "SANSHILIU_GACHA_SKILLS_PER_CARD_CAP"
+        ),
+        description="每张卡整个锻造周期最多自动装多少个 skill（每章另有 ≤3 上限）",
+    )
+    gacha_birth_year: int = Field(
+        default=1992,
+        ge=1900,
+        le=2100,
+        validation_alias=AliasChoices("gacha_birth_year", "SANSHILIU_GACHA_BIRTH_YEAR"),
+        description="卡的出生年锚（年龄 0 = 该公历年）；写实剧情据此对应年代，非写实仅作参考",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
