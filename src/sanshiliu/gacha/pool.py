@@ -19,8 +19,20 @@ from sanshiliu.gacha.card_state import (
     is_valid_card_id,
     load_card_state,
 )
+from sanshiliu.gacha.seeds import find_genre
 
 _logger = get_logger(__name__)
+
+# 卡面图标兜底：创始卡 legacy 线给 🎬，其余未知类型给通用卡背
+_LEGACY_GENRE_ICON = "🎬"
+_FALLBACK_GENRE_ICON = "🎴"
+
+
+def _genre_icon(genre: str) -> str:
+    spec = find_genre(genre)
+    if spec is not None:
+        return spec.icon
+    return _LEGACY_GENRE_ICON if genre == "legacy" else _FALLBACK_GENRE_ICON
 
 
 def card_summary(state: CardState) -> dict[str, Any]:
@@ -31,6 +43,7 @@ def card_summary(state: CardState) -> dict[str, Any]:
         "status": state.status,
         "genre": state.seed.genre,
         "genre_label": state.seed.genre_label,
+        "genre_icon": _genre_icon(state.seed.genre),
         "origin": state.seed.origin,
         "trigger": state.seed.trigger,
         "talents": list(state.seed.talents),

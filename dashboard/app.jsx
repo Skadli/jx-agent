@@ -59,7 +59,7 @@ function App() {
   React.useEffect(() => {
     const fromHash = () => {
       const h = window.location.hash.replace("#", "");
-      if (["overview","chat","persona","memory","skills","tools","channels","permissions","heartbeat","growth","settings"].includes(h)) setView(h);
+      if (["overview","chat","persona","memory","skills","tools","channels","permissions","heartbeat","gacha","settings"].includes(h)) setView(h);
     };
     fromHash();
     window.addEventListener("hashchange", fromHash);
@@ -95,7 +95,7 @@ function App() {
     case "channels":    body = <Channels     onJump={jump} />; break;
     case "permissions": body = <Permissions  onJump={jump} />; break;
     case "heartbeat":   body = <Heartbeat    onJump={jump} />; break;
-    case "growth":      body = <Growth       onJump={jump} />; break;
+    case "gacha":       body = <Gacha        onJump={jump} />; break;
     case "settings":    body = <Settings     onJump={jump} />; break;
     default:            body = <Overview     onJump={jump} />;
   }

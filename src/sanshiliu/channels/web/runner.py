@@ -34,6 +34,7 @@ from sanshiliu.channels.web.api_gacha import (
     make_gacha_card_post_handler,
     make_gacha_cards_list_handler,
     make_gacha_draw_handler,
+    make_gacha_genres_handler,
     make_gacha_rebirth_reset_handler,
 )
 from sanshiliu.channels.web.api_growth import (
@@ -513,6 +514,7 @@ async def run_serve() -> int:
         gacha_root, persona_for_api,
     ))
     router.register("GET", "/api/gacha/active", make_gacha_active_handler(gacha_root))
+    router.register("GET", "/api/gacha/genres", make_gacha_genres_handler())
     router.register_prefix("DELETE", "/api/gacha/cards/", make_gacha_card_delete_handler(
         gacha_root, forge_gate,
         enabled=settings.gacha_enabled,

@@ -55,7 +55,7 @@ from sanshiliu.gacha.card_state import (
 )
 from sanshiliu.gacha.forge_runner import ForgeChapterError, ForgeRunner
 from sanshiliu.gacha.pool import card_summary, delete_card, draws_today, list_cards
-from sanshiliu.gacha.seeds import draw_seed
+from sanshiliu.gacha.seeds import GENRES, draw_seed
 
 if TYPE_CHECKING:
     from http.server import BaseHTTPRequestHandler
@@ -455,6 +455,21 @@ def make_gacha_rebirth_reset_handler(
             _write_json(req, {"ok": True, "active": active})
 
         _safe(req, _do, "/api/gacha/rebirth/reset")
+
+    return handler
+
+
+def make_gacha_genres_handler() -> Callable[[BaseHTTPRequestHandler], None]:
+    """卡池世界类型表（锻造台选型用）；纯静态，免得前端复刻 seeds.py。"""
+    payload = {
+        "genres": [
+            {"id": g.id, "label": g.label, "icon": g.icon, "triggers": list(g.triggers)}
+            for g in GENRES
+        ]
+    }
+
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        _safe(req, lambda: _write_json(req, payload), "/api/gacha/genres")
 
     return handler
 

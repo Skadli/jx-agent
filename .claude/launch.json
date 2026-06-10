@@ -6,6 +6,16 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "sanshiliu", "serve"],
       "port": 9527
+    },
+    {
+      "name": "sanshiliu-serve-gacha",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:PYTHONIOENCODING='utf-8'; $env:SANSHILIU_WEB_ENABLED='true'; $env:SANSHILIU_WEB_PORT='9530'; $env:SANSHILIU_DASHBOARD_PASSWORD=''; $env:SANSHILIU_GACHA_ENABLED='true'; python -m sanshiliu serve"
+      ],
+      "port": 9530
     }
   ]
 }
