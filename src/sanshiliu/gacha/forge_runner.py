@@ -507,8 +507,10 @@ class ForgeRunner:
         bio_dir.mkdir(parents=True, exist_ok=True)
         learned = parsed.get("learned")
         personality = parsed.get("personality")
+        # LLM 偶尔回带"岁"或年代注的 age_range（如"5-10岁（约1997-2002年）"），别再拼出"岁 岁"
+        age_label = age_range if "岁" in age_range else f"{age_range} 岁"
         body_parts = [
-            f"# 第 {chapter_no} 章 · {age_range} 岁",
+            f"# 第 {chapter_no} 章 · {age_label}",
             narrative.strip() or "（本章叙述为空）",
         ]
         if isinstance(learned, list) and learned:

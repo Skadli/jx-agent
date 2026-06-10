@@ -26,6 +26,14 @@ from sanshiliu.channels.web.api import (
     make_tool_calls_handler,
     make_tools_handler,
 )
+from sanshiliu.channels.web.api_gacha import (
+    ForgeGate,
+    make_gacha_card_delete_handler,
+    make_gacha_card_get_handler,
+    make_gacha_card_post_handler,
+    make_gacha_cards_list_handler,
+    make_gacha_draw_handler,
+)
 from sanshiliu.channels.web.api_growth import (
     make_growth_chapter_handler,
     make_growth_overview_handler,
@@ -101,6 +109,8 @@ from sanshiliu.engine.loop import ConversationEngine
 from sanshiliu.foundation.config import get_settings
 from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.logging import configure_logging, get_logger
+from sanshiliu.gacha.forge_runner import ForgeRunner
+from sanshiliu.gacha.migrate import migrate_origin_card
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.identity.module_loader import PersonaModuleLoader
@@ -462,6 +472,69 @@ async def run_serve() -> int:
         # #3：成长心跳正在跑时拒删（避免与 GrowthRunner 抢同一 growth-state.json）
         growth_running=lambda: heartbeat.is_running("growth"),
     ))
+
+    # ─── 抽卡平台（人生卡池；设计见 抽卡平台-设计方案.md）───
+    # 启动即跑创始卡迁移（幂等、只复制不删除）——与 gacha_enabled 无关：读卡册永远可用，
+    # 写端点（draw/forge/delete）在 handler 内按 enabled 闸 403。锻造与日常对话共享同一
+    # engine/skill_loader/permission_manager/db 实例（装的 skill 即刻对后续对话可见）。
+    gacha_root = settings.data_dir / "gacha"
+    try:
+        migrate_origin_card(
+            gacha_root=gacha_root,
+            growth_state_path=growth_state_path,
+            growth_persona_dir=settings.data_dir / "growth" / "persona",
+            memdir_dir=settings.memdir_dir,
+            start_age=settings.gacha_start_age,
+            years_per_chapter=settings.gacha_years_per_chapter,
+            end_age=settings.gacha_end_age,
+            birth_year=settings.gacha_birth_year,
+        )
+    except Exception as exc:
+        _logger.error("创始卡迁移失败（gacha 路由照常注册）", error=str(exc))
+    forge_runner = ForgeRunner(
+        engine=engine,
+        gacha_root=gacha_root,
+        persona_dir=settings.persona_dir,
+        skill_loader=skill_loader,
+        skills_dir_global=settings.skills_dir_global,
+        permission_manager=permission_manager,
+        db=db,
+        skill_install_timeout_sec=settings.skill_install_timeout_sec,
+        skills_per_card_cap=settings.gacha_skills_per_card_cap,
+    )
+    forge_gate = ForgeGate()
+    router.register("POST", "/api/gacha/draw", make_gacha_draw_handler(
+        forge_runner, forge_gate, loop,
+        gacha_root=gacha_root,
+        enabled=settings.gacha_enabled,
+        start_age=settings.gacha_start_age,
+        years_per_chapter=settings.gacha_years_per_chapter,
+        end_age=settings.gacha_end_age,
+        birth_year=settings.gacha_birth_year,
+        daily_draw_limit=settings.gacha_daily_draw_limit,
+    ))
+    # exact（/api/gacha/cards）在 prefix（/api/gacha/cards/）之前注册；resolve 先查 exact
+    router.register("GET", "/api/gacha/cards", make_gacha_cards_list_handler(
+        gacha_root,
+        enabled=settings.gacha_enabled,
+        daily_draw_limit=settings.gacha_daily_draw_limit,
+    ))
+    router.register_prefix("GET", "/api/gacha/cards/", make_gacha_card_get_handler(gacha_root))
+    router.register_prefix("POST", "/api/gacha/cards/", make_gacha_card_post_handler(
+        forge_runner, forge_gate, loop,
+        gacha_root=gacha_root,
+        enabled=settings.gacha_enabled,
+    ))
+    router.register_prefix("DELETE", "/api/gacha/cards/", make_gacha_card_delete_handler(
+        gacha_root, forge_gate,
+        enabled=settings.gacha_enabled,
+    ))
+    _logger.info(
+        "抽卡平台路由已注册",
+        enabled=settings.gacha_enabled,
+        gacha_root=str(gacha_root),
+        daily_draw_limit=settings.gacha_daily_draw_limit,
+    )
 
     # ─── 写 endpoints ───
     router.register("POST", "/api/sessions/new", make_session_new_handler(session_store))
