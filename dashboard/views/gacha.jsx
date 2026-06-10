@@ -103,7 +103,7 @@ function Gacha({ onJump }) {
   const startStream = React.useCallback((path, body) => {
     setForge({
       cardId: "", title: "", genreLabel: "", endChapter: 0, chapter: 0, ageRange: "",
-      log: [], skills: [], rarity: null, error: "", done: false, status: "", closed: false,
+      log: [], skills: [], rarity: null, error: "", done: false, closed: false,
     });
     streamRef.current = forgeStream(path, body, (ev) => {
       setForge(f => {
@@ -132,7 +132,6 @@ function Gacha({ onJump }) {
           next.error = ev.message || "锻造失败";
         } else if (ev.type === "done") {
           next.done = true;
-          next.status = ev.status || "";
           if (ev.title) next.title = ev.title;
         }
         return next;
@@ -398,7 +397,10 @@ function ForgeLive({ forge, onDismiss }) {
   return (
     <div className="card" style={{ marginBottom: 16, borderColor: running ? "var(--primary)" : undefined }}>
       <CardHeader
-        title={running ? `🔥 锻造中 ${forge.cardId}` : forge.error ? "锻造中断" : `锻造完成 ${forge.title ? `《${forge.title}》` : forge.cardId}`}
+        title={running ? `🔥 锻造中 ${forge.cardId}`
+          : forge.error ? "锻造中断"
+          : forge.done ? `锻造完成 ${forge.title ? `《${forge.title}》` : forge.cardId}`
+          : "连接已断开（锻造在服务端继续，稍后刷新卡册）"}
         sub={forge.seed ? `${forge.seed.genre_icon || ""} ${forge.genreLabel} · 出身：${forge.seed.origin || "—"} · 触发：${forge.seed.trigger || "—"} · 创意度 ${forge.seed.creativity}` : ""}
         right={!running ? <button className="btn btn-ghost btn-sm" onClick={onDismiss}>收起</button> : <span className="chip chip-info">第 {forge.chapter}/{forge.endChapter} 章</span>}
       />

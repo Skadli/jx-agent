@@ -41,20 +41,27 @@ from sanshiliu.foundation.logging import get_logger
 from sanshiliu.gacha.active import (
     ActivePointer,
     describe_active,
+    resolve_active,
     resolve_persona_dir_for_card,
     save_active_pointer,
 )
-from sanshiliu.gacha.card_persona import PERSONA_SECTION_FILES
+from sanshiliu.gacha.card_persona import PERSONA_SECTION_FILES, chapter_persona_dir
 from sanshiliu.gacha.card_state import (
     ORIGIN_CARD_ID,
-    biography_dir,
+    biography_path,
     create_card,
     is_valid_card_id,
     load_card_state,
     persona_root,
 )
 from sanshiliu.gacha.forge_runner import ForgeChapterError, ForgeRunner
-from sanshiliu.gacha.pool import card_summary, delete_card, draws_today, list_cards
+from sanshiliu.gacha.pool import (
+    card_summary,
+    delete_card,
+    draws_today,
+    draws_today_from_summaries,
+    list_cards,
+)
 from sanshiliu.gacha.seeds import GENRES, draw_seed
 
 if TYPE_CHECKING:
@@ -120,8 +127,11 @@ def _safe(req: BaseHTTPRequestHandler, fn: Callable[[], None], where: str) -> No
 
 
 def _read_json_body(req: BaseHTTPRequestHandler, *, limit: int) -> dict[str, Any] | None:
-    """读 JSON 请求体；无体 → {}；超限/坏 JSON/非对象 → None（调用方回 400）。"""
-    length = int(req.headers.get("Content-Length", "0") or "0")
+    """读 JSON 请求体；无体 → {}；坏 Content-Length/超限/坏 JSON/非对象 → None（调用方回 400）。"""
+    try:
+        length = int(req.headers.get("Content-Length", "0") or "0")
+    except ValueError:
+        return None  # 畸形 Content-Length 是客户端错误，回 400 而不是炸成 500
     if length == 0:
         return {}
     if length < 0 or length > limit:
@@ -159,22 +169,11 @@ def _stream_forge(
 ) -> None:
     """把一次锻造（已持有 gate）以 SSE 推给客户端；本函数保证 gate 最终被释放。
 
-    调用前提：gate 已被本请求 try_acquire。协程一旦排上事件循环，释放责任就移交给
-    协程的 finally（客户端断开锻造继续，锁不提前放）；排程失败则由本函数收回释放。
+    调用前提：gate 已被本请求 try_acquire。**排上协程之前的任何异常**（写响应头时对端
+    已断 → ConnectionAborted、loop 已关等）都由本函数收回释放——否则闸被一个夭折的请求
+    永久占住，后续 draw/forge 全部 409 直到重启。协程一旦排上，释放责任移交给协程的
+    finally（客户端断开锻造继续，锁不提前放）。
     """
-    req.send_response(200)
-    req.send_header("Content-Type", "text/event-stream; charset=utf-8")
-    req.send_header("Cache-Control", "no-cache, no-transform")
-    req.send_header("Connection", "close")
-    req.send_header("X-Accel-Buffering", "no")
-    req.end_headers()
-
-    for ev_name, payload in intro_events:
-        safe_write(
-            req.wfile,
-            format_event(json.dumps(payload, ensure_ascii=False, default=str), event=ev_name),
-        )
-
     sse_q: q_mod.Queue[Any] = q_mod.Queue()
     sentinel = object()
 
@@ -185,7 +184,7 @@ def _stream_forge(
         try:
             await runner.forge_card(card_id, on_event=_on_event)
         except ForgeChapterError:
-            # error 事件已由 runner emit、卡已标 error；这里只负责收尾
+            # error 事件已由 runner emit（含卡不存在路径）、卡已标 error；这里只负责收尾
             pass
         except Exception as exc:
             _logger.exception("锻造协程异常", card_id=card_id, error=str(exc))
@@ -200,12 +199,27 @@ def _stream_forge(
             gate.release()
             sse_q.put(sentinel)
 
+    scheduled = False
     try:
+        req.send_response(200)
+        req.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        req.send_header("Cache-Control", "no-cache, no-transform")
+        req.send_header("Connection", "close")
+        req.send_header("X-Accel-Buffering", "no")
+        req.end_headers()
+
+        for ev_name, payload in intro_events:
+            safe_write(
+                req.wfile,
+                format_event(json.dumps(payload, ensure_ascii=False, default=str), event=ev_name),
+            )
+
         asyncio.run_coroutine_threadsafe(_produce(), loop)
-    except Exception:
-        # 协程没排上（loop 已关等）：释放责任收回本线程，再让外层 _safe 回 500
-        gate.release()
-        raise
+        scheduled = True
+    finally:
+        if not scheduled:
+            # 协程没排上（响应头写挂/loop 已关）：释放责任收回本线程，异常继续上抛给 _safe
+            gate.release()
 
     deadline = time.monotonic() + _FORGE_DEADLINE_SEC
     last_beat = time.monotonic()
@@ -481,13 +495,17 @@ def make_gacha_active_handler(
 
     def handler(req: BaseHTTPRequestHandler) -> None:
         def _do() -> None:
-            active = describe_active(gacha_root)
-            card = None
-            active_card_id = active.get("card_id")
-            if isinstance(active_card_id, str):
-                state = load_card_state(gacha_root, active_card_id)
-                if state is not None:
-                    card = card_summary(state)
+            # 用 resolve_active 一次拿到 state，别 describe 完又 load 一遍同一本 card.json
+            source, pointer, state, resolved = resolve_active(gacha_root)
+            active = {
+                "source": source,
+                "card_id": state.card_id if state is not None else None,
+                "pinned_chapter": pointer.chapter
+                if (source == "pointer" and pointer is not None)
+                else None,
+                "resolved_chapter": resolved[1] if resolved is not None else None,
+            }
+            card = card_summary(state) if state is not None else None
             _write_json(req, {"active": active, "card": card})
 
         _safe(req, _do, "/api/gacha/active")
@@ -509,7 +527,8 @@ def make_gacha_cards_list_handler(
     def handler(req: BaseHTTPRequestHandler) -> None:
         def _do() -> None:
             cards = list_cards(gacha_root)
-            today = draws_today(gacha_root)
+            # 摘要已在手，别再整目录重扫一遍算额度
+            today = draws_today_from_summaries(cards)
             _write_json(
                 req,
                 {
@@ -597,7 +616,7 @@ def _write_chapter_detail(
         return
     ch = chapters[n - 1]
     biography = ""
-    bio_path = biography_dir(gacha_root, state_chapters.card_id) / f"chapter-{n}.md"
+    bio_path = biography_path(gacha_root, state_chapters.card_id, n)
     if bio_path.is_file():
         try:
             biography = bio_path.read_text(encoding="utf-8")
@@ -630,7 +649,7 @@ def _write_persona_snapshot(
         return
     n = int(token)
     root = persona_root(gacha_root, card_id).resolve()
-    ch_dir = persona_root(gacha_root, card_id) / f"chapter-{n}"
+    ch_dir = chapter_persona_dir(persona_root(gacha_root, card_id), n)
     try:
         resolved = ch_dir.resolve()
         resolved.relative_to(root)
@@ -665,7 +684,11 @@ def make_gacha_card_delete_handler(
     *,
     enabled: bool,
 ) -> Callable[[BaseHTTPRequestHandler], None]:
-    """删卡：创始卡拒删（403）、在锻中的卡拒删（409）、不存在 404。"""
+    """删卡：创始卡拒删（403）、有锻造在跑拒删（409）、不存在 404。
+
+    删除**持闸执行**而不是只看 current_card_id：check-then-act 之间挤进来一个 forge
+    会边删边写、把删掉的卡复活。删卡是毫秒级操作，独占闸的代价可忽略。
+    """
 
     def handler(req: BaseHTTPRequestHandler) -> None:
         def _do() -> None:
@@ -681,10 +704,17 @@ def make_gacha_card_delete_handler(
                     status=403,
                 )
                 return
-            if gate.current_card_id == card_id:
-                _write_json(req, {"error": "该卡正在锻造中，不能删除"}, status=409)
+            if not gate.try_acquire(f"(deleting:{card_id})"):
+                _write_json(
+                    req,
+                    {"error": "有卡正在锻造中，稍后再删", "forging": gate.current_card_id},
+                    status=409,
+                )
                 return
-            ok, reason = delete_card(gacha_root, card_id)
+            try:
+                ok, reason = delete_card(gacha_root, card_id)
+            finally:
+                gate.release()
             if ok:
                 _write_json(req, {"ok": True, "card_id": card_id})
                 return

@@ -41,6 +41,19 @@ def chapter_persona_dir(persona_root: Path, chapter_no: int) -> Path:
     return persona_root / f"chapter-{chapter_no}"
 
 
+PROTOCOL_FILENAME = "_protocol.md"
+
+
+def chapter_dir_has_md(ch_dir: Path) -> bool:
+    """「这是一个真实人格章目录」的唯一判据：目录存在且含至少一份 md 文件。
+
+    供快照幂等（本模块）、激活解析（active.py）、补拷守卫（migrate.py）共用——三处必须
+    同口径，否则写方认为章存在、读方认为不可用，激活会静默回落 base core。
+    与 identity/loader.py 的目录守卫（is_dir + 含 *.md）保持一致。
+    """
+    return ch_dir.is_dir() and any(p.is_file() for p in ch_dir.glob("*.md"))
+
+
 def _copy_core_md(src_dir: Path, dst_dir: Path) -> int:
     """把 src_dir 下所有 *.md 拷到 dst_dir（覆盖同名），返回拷贝份数；src 不存在则 0。"""
     if not src_dir.is_dir():
@@ -60,7 +73,7 @@ def snapshot_base_core_to_chapter0(persona_dir: Path, persona_root: Path) -> Pat
     幂等：chapter-0 已存在（含至少一份 md）则跳过。base core 只读不写。
     """
     ch0 = chapter_persona_dir(persona_root, 0)
-    if ch0.is_dir() and any(p.is_file() for p in ch0.glob("*.md")):
+    if chapter_dir_has_md(ch0):
         return ch0
     base_core = persona_dir / CORE_DIRNAME
     n = _copy_core_md(base_core, ch0)
@@ -74,17 +87,29 @@ def write_chapter_persona(
     chapter_no: int,
     prev_chapter_no: int,
     persona_sections: dict[str, str],
+    protocol_src: Path | None = None,
 ) -> Path:
     """写第 N 章演化人格目录：先整盘拷上一章（连续 + 非空兜底），再整段覆盖本章演化段落。
 
     连续性 + 非空保证：从 prev_chapter_no 的目录拷贝起步，本章**没演化的段落自动承接前章**；
     persona_sections 里给了的段落才整段覆写。即使 LLM 这章一个段落都没给，本章目录也等于
-    上一章（仍非空）。协议/红线在 _protocol.md（不在五段之内）随拷贝原样带走、永不被覆盖。
+    上一章（仍非空）。
+
+    protocol_src（base core 的 _protocol.md）非 None 时**每章从 base 重拷一份**——协议/红线是
+    "无论长成谁都不变"的永驻层，主人改了红线，新锻的章要立刻跟上，而不是沿着章链一直
+    复制最初那份冻结拷贝。失败只记日志（章本身照常成立）。
     """
     dst = chapter_persona_dir(persona_root, chapter_no)
     prev = chapter_persona_dir(persona_root, prev_chapter_no)
     copied = _copy_core_md(prev, dst)
     dst.mkdir(parents=True, exist_ok=True)
+    if protocol_src is not None and protocol_src.is_file():
+        try:
+            shutil.copy2(protocol_src, dst / PROTOCOL_FILENAME)
+        except OSError as exc:
+            _logger.warning(
+                "协议层刷新失败（沿用承接的旧拷贝）", chapter=chapter_no, error=str(exc)
+            )
     overwritten: list[str] = []
     for key, text in persona_sections.items():
         filename = PERSONA_SECTION_FILES.get(key)

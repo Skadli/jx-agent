@@ -37,11 +37,6 @@ from sanshiliu.channels.web.api_gacha import (
     make_gacha_genres_handler,
     make_gacha_rebirth_reset_handler,
 )
-from sanshiliu.channels.web.api_growth import (
-    make_growth_chapter_handler,
-    make_growth_overview_handler,
-    make_growth_persona_handler,
-)
 from sanshiliu.channels.web.api_heartbeat import (
     make_dream_log_handler,
     make_heartbeat_dispatch_handler,
@@ -58,7 +53,6 @@ from sanshiliu.channels.web.api_wechat import (
     make_wechat_qr_status_handler,
 )
 from sanshiliu.channels.web.api_writes import (
-    make_growth_chapter_delete_handler,
     make_instance_reload_handler,
     make_memory_create_handler,
     make_memory_modify_handler,
@@ -114,7 +108,8 @@ from sanshiliu.foundation.errors import ConfigError
 from sanshiliu.foundation.logging import configure_logging, get_logger
 from sanshiliu.gacha.active import make_active_card_provider
 from sanshiliu.gacha.forge_runner import ForgeRunner
-from sanshiliu.gacha.migrate import backfill_protocol_md, migrate_origin_card
+from sanshiliu.gacha.migrate import ensure_origin_card
+from sanshiliu.gacha.pool import reset_stale_forging
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.identity.module_loader import PersonaModuleLoader
@@ -161,15 +156,17 @@ async def run_serve() -> int:
 
     configure_logging(log_level=settings.log_level, log_dir=settings.data_dir / "logs")
 
-    # 成长人格覆盖（PR2）：provider 读 growth-state.json 的 active_persona_chapter，让 loader
-    # 在成长激活时解析到 data/growth/persona/chapter-N/、否则回落 base core。serve 进程跑
-    # scheduler，成长写完 invalidate 即热生效，日常对话以"长成的人"回应（满足 prd #7）。
-    growth_state_path = settings.data_dir / "growth-state.json"
     # 做梦历史日志：DreamRunner 每次 ok/skipped/error 追加一条，心跳页 GET /api/dream/log 回看
     dream_log_path = settings.data_dir / "dream-log.json"
-    # 激活人格 provider（PR3 转生）：换成卡池版——active.json → 卡人格章；指针缺省回落
-    # 创始卡（迁移保证与老成长链同章，人格连续）；连创始卡都没有才回 base core。
-    gacha_root = settings.data_dir / "gacha"
+    # 抽卡平台启动序：迁移/协议层同步要在 PersonaLoader 之前——首启时 provider 第一次解析
+    # 就能拿到创始卡人格，而不是先回落 base core 等 watcher 兜回来。
+    gacha_root = ensure_origin_card(settings)
+    # 启动清扫：上次进程中断遗留的 status=forging 归位 paused（锻造协程随进程死，僵尸状态
+    # 会让 dashboard 永远"锻造中"并锁死操作按钮）。只在 serve 清——REPL 不锻造，且可能误伤
+    # 另一进程里正在真锻的 serve。
+    reset_stale_forging(gacha_root)
+    # 激活人格 provider（转生）：active.json → 卡人格章；指针缺省回落创始卡
+    # （迁移保证与老成长链同章，人格连续）；连创始卡都没有才回 base core。
     active_core_provider = make_active_card_provider(gacha_root)
 
     # 人设 + 系统 prompts
@@ -422,57 +419,14 @@ async def run_serve() -> int:
     router.register("GET", "/api/heartbeat", make_heartbeat_list_handler(heartbeat))
     # 做梦历史（心跳页做梦任务展开时读）：只读 dream-log.json，最新在前
     router.register("GET", "/api/dream/log", make_dream_log_handler(dream_log_path))
-    # 成长模块读端点（PR4）：总览 + 章详情 + 章人格快照。调度/启停/手动推进复用心跳模块
-    # （growth 已注册为 HeartbeatTask，自动在 /api/heartbeat 列出），这里只做"看结果"的读 API。
-    # exact 必须在 prefix 之前注册（resolve 先查 exact）；chapter/persona handler 内严格校验路径形状。
-    router.register("GET", "/api/growth", make_growth_overview_handler(
-        growth_state_path,
-        start_age=settings.growth_start_age,
-        years_per_chapter=settings.growth_years_per_chapter,
-        end_age=settings.growth_end_age,
-        enabled=settings.growth_enabled,
-    ))
-    router.register_prefix("GET", "/api/growth/chapters/", make_growth_chapter_handler(
-        growth_state_path,
-        settings.memdir_dir,
-        start_age=settings.growth_start_age,
-        years_per_chapter=settings.growth_years_per_chapter,
-        end_age=settings.growth_end_age,
-    ))
-    router.register_prefix("GET", "/api/growth/persona/", make_growth_persona_handler(settings.data_dir))
-    # 删某章及其后所有章（成长是连续时间线）：回退状态机 + 清传记 + 人格回退即时生效；删 1 = 清空
-    router.register_prefix("DELETE", "/api/growth/chapters/", make_growth_chapter_delete_handler(
-        growth_state_path,
-        start_age=settings.growth_start_age,
-        years_per_chapter=settings.growth_years_per_chapter,
-        end_age=settings.growth_end_age,
-        data_dir=settings.data_dir,
-        memdir_loader=memdir_loader,
-        persona_loader=persona_for_api,
-        # #3：成长心跳正在跑时拒删（避免与 GrowthRunner 抢同一 growth-state.json）
-        growth_running=lambda: heartbeat.is_running("growth"),
-    ))
+    # 老 /api/growth* 读写端点已随成长视图退场（数据已迁创始卡，再留着会和 /api/gacha 各说
+    # 各话；其中章删除端点还会真删 memdir 传记、却再也影响不了实际人格——主动下线防误伤）。
+    # 旧 growth-state.json / data/growth/ 文件仍原地保留可追溯。
 
     # ─── 抽卡平台（人生卡池；设计见 抽卡平台-设计方案.md）───
-    # 启动即跑创始卡迁移（幂等、只复制不删除）——与 gacha_enabled 无关：读卡册永远可用，
-    # 写端点（draw/forge/delete/rebirth）在 handler 内按 enabled 闸 403。锻造与日常对话共享
+    # 迁移/清扫已在启动序最前完成（PersonaLoader 之前）。读端点常开；写端点
+    # （draw/forge/delete/rebirth）在 handler 内按 enabled 闸 403。锻造与日常对话共享
     # 同一 engine/skill_loader/permission_manager/db 实例（装的 skill 即刻对后续对话可见）。
-    # gacha_root 已在前面（active provider 处）定义。
-    try:
-        migrate_origin_card(
-            gacha_root=gacha_root,
-            growth_state_path=growth_state_path,
-            growth_persona_dir=settings.data_dir / "growth" / "persona",
-            memdir_dir=settings.memdir_dir,
-            start_age=settings.gacha_start_age,
-            years_per_chapter=settings.gacha_years_per_chapter,
-            end_age=settings.gacha_end_age,
-            birth_year=settings.gacha_birth_year,
-        )
-        # 旧人格章补拷 _protocol.md 永驻层（迁移自老成长的章缺它；幂等，无事可做时 0 开销）
-        backfill_protocol_md(gacha_root, settings.persona_dir)
-    except Exception as exc:
-        _logger.error("创始卡迁移失败（gacha 路由照常注册）", error=str(exc))
     forge_runner = ForgeRunner(
         engine=engine,
         gacha_root=gacha_root,
@@ -661,10 +615,11 @@ async def run_serve() -> int:
             loop.add_signal_handler(sig, _request_stop)
 
     await persona_watcher.start()
-    # 方案 A·D：成长开启时 best-effort 预热 npx 缓存（暖 ~/.npm/_npx），消除 3am phase-2 首次冷拉/
-    # 无 TTY 确认阻塞（实跑挂 84s 的那条 bash）。非阻塞：超时/失败/缺 npx 都只 warn，不拖慢启动。
+    # 抽卡开启时 best-effort 预热 npx 缓存（暖 ~/.npm/_npx），消除锻造 phase-2 首次冷拉/
+    # 无 TTY 确认阻塞（实跑挂 84s 的那条 bash）。npx 的消费者已从老成长心跳换成卡锻造，
+    # 闸门跟着换 gacha_enabled——挂在退役 flag 上等于永不预热。非阻塞：失败只 warn。
     _prewarm = await prewarm_npx_for_growth(
-        enabled=settings.growth_enabled, prewarm=settings.skill_install_prewarm,
+        enabled=settings.gacha_enabled, prewarm=settings.skill_install_prewarm,
     )
     if _prewarm.status != "ok":
         _logger.warning("npx 预热未就绪（不阻塞）", detail=_prewarm.detail, hint=_prewarm.hint)

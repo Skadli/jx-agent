@@ -58,7 +58,8 @@ function App() {
 
   React.useEffect(() => {
     const fromHash = () => {
-      const h = window.location.hash.replace("#", "");
+      let h = window.location.hash.replace("#", "");
+      if (h === "growth") h = "gacha"; // 旧书签/深链兼容：成长视图已并入抽卡
       if (["overview","chat","persona","memory","skills","tools","channels","permissions","heartbeat","gacha","settings"].includes(h)) setView(h);
     };
     fromHash();

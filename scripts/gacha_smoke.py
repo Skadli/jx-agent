@@ -26,7 +26,7 @@ from sanshiliu.gacha.card_state import (
     persona_root,
 )
 from sanshiliu.gacha.forge_runner import ForgeRunner
-from sanshiliu.gacha.migrate import migrate_origin_card
+from sanshiliu.gacha.migrate import ensure_origin_card
 from sanshiliu.gacha.seeds import draw_seed
 
 
@@ -49,25 +49,14 @@ async def main() -> int:
     except Exception as exc:
         print(f"[FAIL] 配置加载失败：{exc}", file=sys.stderr)
         return 78
-    gacha_root = settings.data_dir / "gacha"
-
-    # ── 1) 创始卡迁移（幂等） ──
-    migrated = migrate_origin_card(
-        gacha_root=gacha_root,
-        growth_state_path=settings.data_dir / "growth-state.json",
-        growth_persona_dir=settings.data_dir / "growth" / "persona",
-        memdir_dir=settings.memdir_dir,
-        start_age=settings.gacha_start_age,
-        years_per_chapter=settings.gacha_years_per_chapter,
-        end_age=settings.gacha_end_age,
-        birth_year=settings.gacha_birth_year,
-    )
+    # ── 1) 创始卡迁移 + 协议层同步（幂等，统一入口与 serve/REPL 同口径） ──
+    gacha_root = ensure_origin_card(settings)
     origin = load_card_state(gacha_root, ORIGIN_CARD_ID)
     if origin is None:
         print("[FAIL] 迁移后创始卡仍不可读", file=sys.stderr)
         return 1
     print(
-        f"[OK] 创始卡（{'本次迁移' if migrated else '已存在'}）：{origin.title} "
+        f"[OK] 创始卡：{origin.title} "
         f"{origin.age} 岁 / 第 {origin.current_chapter}/{origin.end_chapter} 章 / {origin.status}"
     )
     if args.migrate_only:

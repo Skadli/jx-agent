@@ -164,6 +164,11 @@ def biography_dir(gacha_root: Path, card_id: str) -> Path:
     return card_dir(gacha_root, card_id) / BIOGRAPHY_DIRNAME
 
 
+def biography_path(gacha_root: Path, card_id: str, chapter_no: int) -> Path:
+    """第 N 章传记文件——命名唯一权威（写：forge/migrate；读：API），别再裸拼 f-string。"""
+    return biography_dir(gacha_root, card_id) / f"chapter-{chapter_no}.md"
+
+
 def persona_root(gacha_root: Path, card_id: str) -> Path:
     return card_dir(gacha_root, card_id) / PERSONA_DIRNAME
 
@@ -363,17 +368,22 @@ def _coerce_card_state(raw: dict[str, Any], *, fallback_card_id: str) -> CardSta
     card_id = _str(raw, "card_id") or fallback_card_id
     chapters = coerce_chapters(raw.get("chapters"))
     created = raw.get("created_at")
+    # age 是 start_age + 章数 × 步长的派生量；缺失/坏值时按派生兜底，
+    # 不能落回常量起点（否则"5 岁"挂在"第 7 章"旁边自相矛盾）
+    start_age = _int(raw, "start_age", _DEFAULT_START_AGE)
+    years_per_chapter = _int(raw, "years_per_chapter", _DEFAULT_YEARS_PER_CHAPTER)
+    current_chapter = _int(raw, "current_chapter", len(chapters))
     return CardState(
         card_id=card_id,
         title=_str(raw, "title"),
         status=_coerce_status(raw.get("status")),
         seed=_coerce_seed(raw.get("seed")),
         rarity=_coerce_rarity(raw.get("rarity")),
-        current_chapter=_int(raw, "current_chapter", len(chapters)),
-        age=_int(raw, "age", _DEFAULT_START_AGE),
+        current_chapter=current_chapter,
+        age=_int(raw, "age", start_age + current_chapter * years_per_chapter),
         active_persona_chapter=_int(raw, "active_persona_chapter", 0),
-        start_age=_int(raw, "start_age", _DEFAULT_START_AGE),
-        years_per_chapter=_int(raw, "years_per_chapter", _DEFAULT_YEARS_PER_CHAPTER),
+        start_age=start_age,
+        years_per_chapter=years_per_chapter,
         end_chapter=_int(
             raw,
             "end_chapter",

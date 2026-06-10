@@ -1,16 +1,21 @@
-"""老成长线 → 创始卡 origin 的幂等迁移（设计 §12）。
+"""老成长线 → 创始卡 origin 的幂等迁移（设计 §12）+ 协议层同步 + 统一启动入口。
 
 把 data/growth-state.json（已锻 N 章）、data/growth/persona/chapter-*、memdir 里的
 reference_growth-chapter-N_*.md 传记，**只复制不删除**地迁成 cards/origin/——本体
 三十六贱笑从此以创始卡身份住进卡池（设计决策 #4「本体即卡」），可续锻到 60 岁。
-旧文件全部原地保留（可追溯；老 growth 链路 PR3 退出 serve 主链路前仍在读它们）。
+旧文件全部原地保留（可追溯）。
 
-幂等：cards/origin/card.json 已存在 → 整体跳过（绝不覆盖已迁移/已续锻的创始卡）。
+幂等：cards/origin/card.json 已存在 → 整体跳过。**card.json 最后落盘**——它是幂等判据，
+若人格/传记复制中途被打断（Ctrl+C / OSError），下次启动判据不存在、整体重来；反过来
+先写判据再复制，一次中断就会留下永远跳过迁移、人格章却缺失的死局（激活静默回落
+base core 且无法自愈）。
+
 无旧数据（从未开过 growth）→ 建一张空白创始卡（0 章、起点年龄），保证 origin 恒存在
-（它是转生回滚的锚点，PR3 消费）。
+（它是转生回滚的锚点）。cadence 以旧状态文件为真相源（有人跑过 1 年/章的老节奏）；
+本次升级项只有 end_age（30 → 60）。
 
-cadence 以旧状态文件为真相源（有人跑过 1 年/章的老节奏，不能按新默认重排年龄段）；
-本次升级项只有 end_age（30 → 60）：end_chapter 按旧 start_age / years_per_chapter 重推。
+调用方（serve / REPL / 冒烟脚本）一律走 ensure_origin_card(settings)——三处各拼 8 个
+参数曾经漂移过（冒烟漏了协议层同步），单一入口杜绝再叉。
 """
 
 from __future__ import annotations
@@ -18,15 +23,20 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sanshiliu.foundation.frontmatter import parse as _parse_markup
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.gacha.card_persona import (
+    PROTOCOL_FILENAME,
+    chapter_dir_has_md,
+)
 from sanshiliu.gacha.card_state import (
     ORIGIN_CARD_ID,
     CardSeed,
     ChapterRecord,
     biography_dir,
+    biography_path,
     card_json_path,
     cards_root,
     coerce_chapters,
@@ -36,11 +46,32 @@ from sanshiliu.gacha.card_state import (
 )
 from sanshiliu.identity.types import CORE_DIRNAME
 
+if TYPE_CHECKING:
+    from sanshiliu.foundation.config import Settings
+
 _logger = get_logger(__name__)
 
 _ORIGIN_TITLE = "三十六贱笑·本源"
 
-_PROTOCOL_FILENAME = "_protocol.md"
+
+def ensure_origin_card(settings: Settings) -> Path:
+    """启动统一入口：创始卡迁移（幂等）+ 协议层同步；失败只记日志不阻启动。返回 gacha_root。"""
+    gacha_root = settings.data_dir / "gacha"
+    try:
+        migrate_origin_card(
+            gacha_root=gacha_root,
+            growth_state_path=settings.data_dir / "growth-state.json",
+            growth_persona_dir=settings.data_dir / "growth" / "persona",
+            memdir_dir=settings.memdir_dir,
+            start_age=settings.gacha_start_age,
+            years_per_chapter=settings.gacha_years_per_chapter,
+            end_age=settings.gacha_end_age,
+            birth_year=settings.gacha_birth_year,
+        )
+        sync_protocol_layer(gacha_root, settings.persona_dir)
+    except Exception as exc:
+        _logger.error("创始卡迁移/协议层同步失败（继续启动）", error=str(exc))
+    return gacha_root
 
 
 def migrate_origin_card(
@@ -89,12 +120,14 @@ def migrate_origin_card(
     old_active = _int_or(raw, "active_persona_chapter", state.current_chapter)
     state.active_persona_chapter = min(max(old_active, 0), state.current_chapter)
     state.status = "paused" if state.can_advance() else "complete"
-    save_card_state(gacha_root, state)
 
+    # 先复制产物，card.json（幂等判据）最后写——中断后下次启动整体重来，绝不留"判据在、
+    # 人格缺"的死局。copytree(dirs_exist_ok) / 传记覆盖写都可安全重放。
     persona_dirs = _copy_persona_chapters(
         growth_persona_dir, persona_root(gacha_root, ORIGIN_CARD_ID)
     )
-    biographies = _copy_biographies(memdir_dir, biography_dir(gacha_root, ORIGIN_CARD_ID), chapters)
+    biographies = _copy_biographies(memdir_dir, gacha_root, chapters)
+    save_card_state(gacha_root, state)
     _logger.info(
         "创始卡迁移完成（旧文件原地保留）",
         card_id=ORIGIN_CARD_ID,
@@ -108,16 +141,20 @@ def migrate_origin_card(
     return True
 
 
-def backfill_protocol_md(gacha_root: Path, persona_dir: Path) -> int:
-    """给已有卡的人格章目录补拷缺失的 _protocol.md（载体协议/红线永驻层）；返回补拷份数。
+def sync_protocol_layer(gacha_root: Path, persona_dir: Path) -> int:
+    """让全部卡的人格章目录与 base core 的 _protocol.md（载体协议/红线永驻层）保持同步；返回写入份数。
 
-    背景：创始卡迁移自老成长数据，那批章目录早于 _protocol.md 引入、缺协议层——被激活
-    （转生/默认 origin）时 system prompt 会失去载体协议。幂等且克制：已有该文件的章不动、
-    空目录不造文件（只补"已有其他 md 的真实章"）、base core 本身没有 _protocol.md 则整体
-    no-op。serve / REPL 启动在迁移后调用一次；后续章从前一章整盘拷贝，自然带着它。
+    两种情形都覆盖：①迁移自老成长的章缺该文件（补拷）；②主人改了 base 红线而旧章还
+    带着冻结拷贝（内容漂移 → 刷新）。协议层是"无论长成谁都不变"的底座，必须全卡跟随
+    base，而不是各章沿袭锻造当时的版本。幂等：内容一致不写；空目录不是真实章不造文件；
+    base 没有该文件则整体 no-op。serve / REPL 启动各跑一次（经 ensure_origin_card）。
     """
-    src = persona_dir / CORE_DIRNAME / _PROTOCOL_FILENAME
+    src = persona_dir / CORE_DIRNAME / PROTOCOL_FILENAME
     if not src.is_file():
+        return 0
+    try:
+        src_bytes = src.read_bytes()
+    except OSError:
         return 0
     root = cards_root(gacha_root)
     if not root.is_dir():
@@ -132,23 +169,23 @@ def backfill_protocol_md(gacha_root: Path, persona_dir: Path) -> int:
         for ch_dir in proot.iterdir():
             if not ch_dir.is_dir() or not ch_dir.name.startswith("chapter-"):
                 continue
-            dst = ch_dir / _PROTOCOL_FILENAME
-            if dst.is_file():
-                continue
-            if not any(p.is_file() for p in ch_dir.glob("*.md")):
+            if not chapter_dir_has_md(ch_dir):
                 continue  # 空目录不是真实章，别凭空造
+            dst = ch_dir / PROTOCOL_FILENAME
             try:
+                if dst.is_file() and dst.read_bytes() == src_bytes:
+                    continue
                 shutil.copy2(src, dst)
                 count += 1
             except OSError as exc:
                 _logger.warning(
-                    "_protocol.md 补拷失败（跳过该章）",
+                    "_protocol.md 同步失败（跳过该章）",
                     card=card_dir_.name,
                     chapter_dir=ch_dir.name,
                     error=str(exc),
                 )
     if count:
-        _logger.info("已为旧人格章补拷 _protocol.md 永驻层", copied=count)
+        _logger.info("协议层已同步到卡人格章", written=count)
     return count
 
 
@@ -189,14 +226,14 @@ def _copy_persona_chapters(src_dir: Path, dst_root: Path) -> int:
     return count
 
 
-def _copy_biographies(memdir_dir: Path, bio_dir: Path, chapters: list[ChapterRecord]) -> int:
+def _copy_biographies(memdir_dir: Path, gacha_root: Path, chapters: list[ChapterRecord]) -> int:
     """把 memdir 里各章传记（最新一份）剥掉 frontmatter 复制成卡目录 chapter-N.md；返回份数。
 
     memdir 原文件保留——它们已是本体记忆史的一部分，不抹；新链路只读卡目录这份。
     """
     if not memdir_dir.is_dir() or not chapters:
         return 0
-    bio_dir.mkdir(parents=True, exist_ok=True)
+    biography_dir(gacha_root, ORIGIN_CARD_ID).mkdir(parents=True, exist_ok=True)
     count = 0
     for n in range(1, len(chapters) + 1):
         # 前缀严格到 chapter-N_，避免 chapter-1 误匹配 chapter-10（下划线分隔时间戳）
@@ -209,9 +246,11 @@ def _copy_biographies(memdir_dir: Path, bio_dir: Path, chapters: list[ChapterRec
             continue
         body = _strip_frontmatter(text)
         age_range = chapters[n - 1].age_range
-        content = f"# 第 {n} 章 · {age_range} 岁\n\n{body.strip()}\n"
+        # 老成长存的是 LLM 原话，可能已带"岁"（如"10-15岁（2002-2007）"）——别拼出"岁 岁"
+        age_label = age_range if "岁" in age_range else f"{age_range} 岁"
+        content = f"# 第 {n} 章 · {age_label}\n\n{body.strip()}\n"
         try:
-            (bio_dir / f"chapter-{n}.md").write_text(content, encoding="utf-8")
+            biography_path(gacha_root, ORIGIN_CARD_ID, n).write_text(content, encoding="utf-8")
             count += 1
         except OSError as exc:
             _logger.warning("创始卡传记复制失败（跳过该章）", chapter=n, error=str(exc))

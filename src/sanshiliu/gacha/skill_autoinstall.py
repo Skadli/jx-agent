@@ -29,7 +29,6 @@ import shlex
 import shutil
 import sys
 import time
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -205,12 +204,14 @@ class SkillAutoInstaller:
         # 自动放行窗口 + 非交互 npm 环境：只圈本段；直连安装仍先走 PermissionManager.check，
         # 所以 defaultMode=ask 时由自动放行 confirmer 放行，settings.deny/critical 仍能拦住。
         # （窗口复用 security/growth_approvals——它是通用的"无人值守安装放行"机制，不只属于老成长。）
+        # 非交互 npm 环境不动 os.environ：_run_command 已对每个子进程显式合并 _NPM_ENV——
+        # 全局 set 是老链路"LLM 工具循环 fallback"（本模块已砍掉）的遗留，留着只会在
+        # 锻造的几分钟窗口里把 CI=true 漏给并发日常对话的 bash_exec 子进程。
         token = enter_growth_autoallow()
         try:
-            with self._scoped_npm_env():
-                await self._install_intents_directly(
-                    chapter_no=chapter_no, intents=capped, session_id=session_id
-                )
+            await self._install_intents_directly(
+                chapter_no=chapter_no, intents=capped, session_id=session_id
+            )
         except Exception as exc:
             # phase-2 失败绝不影响已成立的章——只记日志，照样去 diff 看装上了没（可能装了一半）。
             _logger.warning(
@@ -640,20 +641,6 @@ class SkillAutoInstaller:
             _decode_process_output(stdout_b),
             _decode_process_output(stderr_b),
         )
-
-    @contextlib.contextmanager
-    def _scoped_npm_env(self) -> Iterator[None]:
-        """窗口内把非交互 + fail-fast npm 环境 set 到 os.environ，退出时逐键复原（不全局污染）。"""
-        saved: dict[str, str | None] = {k: os.environ.get(k) for k in _NPM_ENV}
-        os.environ.update(_NPM_ENV)
-        try:
-            yield
-        finally:
-            for k, old in saved.items():
-                if old is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = old
 
     def _snapshot_skill_ids(self) -> set[str]:
         """装前快照已落地 skill 的目录名集合（discover_ids 是 parse-free 目录口径——真相源）。"""

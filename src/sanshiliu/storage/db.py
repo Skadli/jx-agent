@@ -15,10 +15,11 @@ _logger = get_logger(__name__)
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
-# growth（成长）/ scheduler（做梦）是内部合成会话，各有专属看板（成长视图 / 做梦记录），
-# 不该混进人看的会话列表。channel 字面量见 scheduler/growth_runner.py 与 scheduler/dream_runner.py；
-# 这里 L0 存储层不反向依赖 L10 scheduler，故就地写死（channel 是落库的稳定协议值）。
-_INTERNAL_SESSION_CHANNELS: tuple[str, ...] = ("growth", "scheduler")
+# growth（老成长）/ scheduler（做梦）/ gacha（卡锻造，一次抽卡产生十几条合成会话）是内部
+# 合成会话，各有专属看板（抽卡视图 / 做梦记录），不该混进人看的会话列表。channel 字面量见
+# gacha/forge_runner.py 与 scheduler/dream_runner.py；这里 L0 存储层不反向依赖上层，
+# 故就地写死（channel 是落库的稳定协议值）。
+_INTERNAL_SESSION_CHANNELS: tuple[str, ...] = ("growth", "scheduler", "gacha")
 
 
 class Database:
