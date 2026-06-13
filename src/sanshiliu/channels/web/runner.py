@@ -62,6 +62,7 @@ from sanshiliu.channels.web.api_writes import (
     make_session_delete_handler,
     make_session_new_handler,
     make_settings_json_write_handler,
+    make_skill_structure_generate_handler,
     make_skills_reload_handler,
 )
 from sanshiliu.channels.web.approvals import (
@@ -492,6 +493,11 @@ async def run_serve() -> int:
         router.register_prefix("PUT",    "/api/memory/", mem_mod)
         router.register_prefix("DELETE", "/api/memory/", mem_mod)
     router.register("POST", "/api/skills/reload", make_skills_reload_handler(skill_loader))
+    # 生成缺失画布结构（用大模型读 SKILL.md）。exact /api/skills/reload 先于 prefix 命中；
+    # handler 内严格校验 /api/skills/{id}/structure/generate 形状，不会误吃别的 POST。
+    router.register_prefix("POST", "/api/skills/", make_skill_structure_generate_handler(
+        skill_loader, engine, loop,
+    ))
     router.register("PUT",  "/api/settings_json", make_settings_json_write_handler(settings_loader))
     router.register("PUT",  "/api/permissions/default_mode", make_permissions_default_mode_handler(settings_loader))
     perm_rule = make_permissions_rule_handler(settings_loader)

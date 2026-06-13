@@ -439,19 +439,26 @@ function CustomNode({ data, selected }) {
 const nodeTypes = { custom: CustomNode };
 
 
+// 后端 /api/skills/{id}/structure 在 structure.json 缺失时返回的错误串（api.py，稳定契约）
+const NO_STRUCTURE_ERR = "skill structure not found";
+
 function SkillCanvas({ skillId }) {
   const [graph, setGraph] = React.useState(null);
   const [err, setErr] = React.useState(null);
   const [activeNode, setActiveNode] = React.useState(null);
+  // 缺结构时用大模型生成：reloadKey 自增触发重新拉取；generating/genErr 驱动空态按钮
+  const [reloadKey, setReloadKey] = React.useState(0);
+  const [generating, setGenerating] = React.useState(false);
+  const [genErr, setGenErr] = React.useState(null);
 
   React.useEffect(() => {
     if (!skillId) return;
-    setGraph(null); setErr(null); setActiveNode(null);
+    setGraph(null); setErr(null); setActiveNode(null); setGenErr(null);
     API.get(`/api/skills/${encodeURIComponent(skillId)}/structure`).then(r => {
       if (r.error) setErr(r.error);
       else setGraph(r);
     });
-  }, [skillId]);
+  }, [skillId, reloadKey]);
 
   // 计算布局：补尺寸 → 泳道再分配（消除遮挡）。仅算几何，受控 state 在下方。
   const layoutedNodes = React.useMemo(() => graph ? relayoutByLanes(withNodeDimensions(graph.nodes)) : [], [graph]);
@@ -486,12 +493,26 @@ function SkillCanvas({ skillId }) {
   const onNodesChange = React.useCallback((ch) => setNodes((ns) => applyNodeChanges ? applyNodeChanges(ch, ns) : ns), []);
   const onEdgesChange = React.useCallback((ch) => setEdges((es) => applyEdgeChanges ? applyEdgeChanges(ch, es) : es), []);
 
+  // 缺结构 → 用大模型读 SKILL.md 生成 structure.json；成功后 reloadKey++ 触发重拉，画布即刻显示
+  const handleGenerate = React.useCallback(() => {
+    if (!skillId || generating) return;
+    setGenerating(true); setGenErr(null);
+    API.post(`/api/skills/${encodeURIComponent(skillId)}/structure/generate`).then((r) => {
+      setGenerating(false);
+      if (r.error) { setGenErr(r.error); return; }
+      setReloadKey((k) => k + 1);
+    });
+  }, [skillId, generating]);
+
   if (!ReactFlow) {
     return (
       <div style={{ padding: 40, textAlign: "center", color: "var(--ink-60)" }}>
         画布库未加载（window.ReactFlow 不存在）；请检查 vendor/xyflow-react.umd.js
       </div>
     );
+  }
+  if (err === NO_STRUCTURE_ERR) {
+    return <StructureEmptyState generating={generating} genErr={genErr} onGenerate={handleGenerate} />;
   }
   if (err) {
     return <div style={{ padding: 40, textAlign: "center", color: "var(--danger)" }}>加载失败：{err}</div>;
@@ -548,6 +569,41 @@ function SkillCanvas({ skillId }) {
 
       {/* 节点详情卡片：点节点 → 右下角浮出原文段落 */}
       {activeNode && <NodeInspector node={activeNode} onClose={() => setActiveNode(null)} />}
+    </div>
+  );
+}
+
+
+// 缺画布结构的空态：解释 + 一键"用大模型生成"。仅在后端返回 NO_STRUCTURE_ERR 时出现。
+function StructureEmptyState({ generating, genErr, onGenerate }) {
+  return (
+    <div style={{
+      width: "100%", height: "100%", minHeight: 360,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      gap: 14, padding: 40, textAlign: "center", background: "var(--parchment)",
+    }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: 16,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "var(--primary-soft)", border: "1px solid var(--hairline)",
+      }}>
+        <Icon name="spark" size={26} color="var(--primary)" />
+      </div>
+      <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-0.374px", color: "var(--ink)" }}>
+        该技能还没有画布结构
+      </div>
+      <div className="t-meta" style={{ maxWidth: 320, lineHeight: 1.5 }}>
+        structure.json 缺失。用大模型读 SKILL.md 自动生成一份可视化结构（约 10–30s）。
+      </div>
+      {genErr && (
+        <div style={{ color: "var(--danger)", fontSize: 13, maxWidth: 360, wordBreak: "break-word" }}>
+          生成失败：{genErr}
+        </div>
+      )}
+      <button className="btn btn-primary" disabled={generating} onClick={onGenerate} style={{ marginTop: 4 }}>
+        <Icon name="spark" size={13} color="#fff" />
+        {generating ? "生成中…" : "用大模型生成结构"}
+      </button>
     </div>
   );
 }

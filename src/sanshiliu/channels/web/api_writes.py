@@ -11,12 +11,14 @@ import json
 import shutil
 import urllib.parse
 from collections.abc import Callable
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sanshiliu.channels.web.api import resolve_persona_file
 from sanshiliu.channels.web.handlers import SessionStore
 from sanshiliu.foundation.logging import get_logger
+from sanshiliu.gacha.structured import parse_structured_output
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.memdir import MemdirLoader, write_memory_file
@@ -33,11 +35,17 @@ from sanshiliu.scheduler.growth_state import (
 )
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.loader import SkillLoader
-from sanshiliu.skills.structure import skill_structure_path
+from sanshiliu.skills.structure import (
+    build_structure_prompt,
+    coerce_structure,
+    skill_structure_path,
+    write_skill_structure,
+)
 
 if TYPE_CHECKING:
     from http.server import BaseHTTPRequestHandler
 
+    from sanshiliu.engine.loop import ConversationEngine
     from sanshiliu.storage.db import Database
 
 _logger = get_logger(__name__)
@@ -304,6 +312,134 @@ def make_skills_reload_handler(
             "count": len(skills),
             "ids": [s.id for s in skills],
             "structure_files": {s.id: str(skill_structure_path(s)) for s in skills},
+        })
+
+    return handler
+
+
+# ────────── POST /api/skills/{id}/structure/generate ──────────
+
+def _structure_repair_prompt(raw: str) -> str:
+    """纯提取失败后的一次修复指令：把畸形输出重发成纯 {nodes, edges} JSON 对象。"""
+    return (
+        '下面这段本应只含一个 JSON 对象（形如 {"nodes": [...], "edges": [...]}），'
+        "但被写坏了（可能有未闭合括号、尾逗号、或 JSON 前后夹了多余文字）。"
+        "请**只**重新输出那个 JSON 对象本身，不要任何解释、不要 markdown 代码围栏，"
+        "保留原有 nodes / edges 内容，缺的字段不要编造。\n\n"
+        f"坏输出：\n{raw}"
+    )
+
+
+def make_skill_structure_generate_handler(
+    skill_loader: SkillLoader | None,
+    engine: ConversationEngine,
+    loop: asyncio.AbstractEventLoop,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """POST /api/skills/{id}/structure/generate —— 用大模型读 SKILL.md 生成缺失的画布结构。
+
+    永不覆盖：structure.json 已存在则 409（手工 curated 结构受保护）。同步等 LLM（admin 动作）：
+    chat → parse_structured_output → 一次修复 → coerce_structure 校验 → 落盘；任一步失败回 JSON 错误。
+    meta 由后端确定性填，LLM 只产 nodes/edges。
+    """
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        if skill_loader is None:
+            _write_json(req, {"error": "skills disabled"}, status=400)
+            return
+        raw = req.path.split("?", 1)[0]
+        parts = raw.strip("/").split("/")
+        # 严格校验形状：/api/skills/{id}/structure/generate（POST prefix 会兜住 /api/skills/ 下其它路径）
+        if (
+            len(parts) != 5
+            or parts[0] != "api" or parts[1] != "skills"
+            or parts[3] != "structure" or parts[4] != "generate"
+        ):
+            _write_json(req, {"error": "not found"}, status=404)
+            return
+        skill_id = urllib.parse.unquote(parts[2])
+        skill = next((s for s in skill_loader.list() if s.id == skill_id), None)
+        if skill is None:
+            _write_json(req, {"error": "skill not found", "id": skill_id}, status=404)
+            return
+        path = skill_structure_path(skill)
+        if path.exists():
+            # Q2：仅生成缺失的，永不覆盖手工调过的结构
+            _write_json(req, {
+                "error": "structure already exists",
+                "id": skill_id,
+                "path": str(path),
+            }, status=409)
+            return
+
+        prompt = build_structure_prompt(skill)
+        session_id = f"dashboard-skillgen-{skill_id}"
+
+        async def _generate() -> dict[str, Any]:
+            result = await engine.llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+                session_id=session_id, channel="dashboard", user_id="dashboard",
+                temperature=0.3, max_tokens=4096,
+            )
+            obj = parse_structured_output(result.text)
+            if obj is None:  # 纯提取失败 → 调一次 LLM 修复后再解析
+                repaired = await engine.llm.chat(
+                    messages=[{"role": "user", "content": _structure_repair_prompt(result.text)}],
+                    session_id=session_id, channel="dashboard", user_id="dashboard",
+                    temperature=0.0, max_tokens=4096,
+                )
+                obj = parse_structured_output(repaired.text)
+            if obj is None:
+                raise ValueError("大模型输出无法解析为 JSON（已尝试一次修复）")
+            return coerce_structure(obj, skill)  # 无有效节点会 raise ValueError
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_generate(), loop)
+            data = fut.result(timeout=180.0)
+        except FutureTimeout:
+            _logger.error("skill 结构生成超时", skill_id=skill_id)
+            _write_json(req, {"error": "生成超时（>180s）", "id": skill_id}, status=504)
+            return
+        except ValueError as exc:
+            # LLM 产出无法解析 / 校验不过：上游内容问题，归 502（非服务器内部 bug）
+            _logger.warning("skill 结构生成内容不合法", skill_id=skill_id, error=str(exc))
+            _write_json(req, {"error": str(exc), "id": skill_id}, status=502)
+            return
+        except Exception as exc:
+            _logger.error("skill 结构生成失败", skill_id=skill_id, error=str(exc))
+            _write_json(req, {"error": str(exc), "id": skill_id}, status=502)
+            return
+
+        try:
+            write_skill_structure(skill, data)
+        except FileExistsError:
+            # 并发竞争：path.exists() 预检通过后、写入前另一请求已落盘 → 维持"永不覆盖"契约（409）。
+            # FileExistsError 是 OSError 子类，必须排在下面的 OSError 之前捕获。
+            _logger.warning("skill 结构生成竞争：写入时文件已存在，按 409 处理", skill_id=skill_id)
+            _write_json(req, {
+                "error": "structure already exists",
+                "id": skill_id,
+                "path": str(path),
+            }, status=409)
+            return
+        except OSError as exc:
+            _logger.error("skill 结构落盘失败", skill_id=skill_id, error=str(exc))
+            _write_json(req, {"error": str(exc), "id": skill_id}, status=500)
+            return
+
+        meta = data["meta"]
+        _logger.info(
+            "skill 画布结构已生成",
+            skill_id=skill_id,
+            nodes=len(data["nodes"]),
+            edges=len(data["edges"]),
+            warnings=meta.get("warnings"),
+        )
+        _write_json(req, {
+            "ok": True,
+            "id": skill_id,
+            "path": str(path),
+            "node_count": len(data["nodes"]),
+            "edge_count": len(data["edges"]),
+            "warnings": meta.get("warnings", []),
         })
 
     return handler
