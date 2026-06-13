@@ -89,8 +89,10 @@ def build_structure_prompt(skill: SkillDef) -> str:
         "step→step 用 sequence；step→resource/subagent/tool 分别用 resource/subagent/tool。\n"
         "  每条边的 source/target 都**必须**指向上面真实存在的节点 id，不许悬空。\n\n"
         "规模与语言：总节点数控制在 6–14 个，抓主干、别把每句话都拆成节点；"
-        "title/desc/raw 用与 SKILL.md 一致的语言（中文 skill 写中文，英文 skill 写英文），"
+        "title/desc/raw **一律写中文**——即使 SKILL.md 正文是英文，也要把它转述/翻译成中文，"
+        "只有专有名词、工具名、文件名（如 references/foo.md）可保留英文原文；"
         "title 尽量短（≤16 字），desc 是几个关键词，raw 是一两句话。"
+        "（节点 id 仍用小写英文短横线，不影响展示。）"
     )
 
 
