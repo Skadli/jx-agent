@@ -597,6 +597,66 @@ def make_skill_structure_handler(
     return handler
 
 
+# ────────── /api/skills/{id}/source ──────────
+
+def make_skill_source_handler(
+    skill_loader: SkillLoader | None,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """GET /api/skills/{id}/source —— 直接回 SKILL.md 正文，不依赖 structure.json 是否已生成。
+
+    源码与画布解耦：画布(structure.json)要 LLM 现生成、可能还没有；但 SKILL.md 正文 loader
+    启动即常驻，随时可读——画布缺失不该把"看源码"也一起挡死（修复 bug：未生成画布时源码读不了）。
+    """
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        def _do() -> None:
+            if skill_loader is None:
+                _write_json(req, {"error": "skills disabled"}, status=404)
+                return
+            raw = req.path.split("?", 1)[0]
+            # /api/skills/{id}/source —— 严格校验形状（前缀路由会兜住 /api/skills/ 下其它路径）
+            parts = raw.strip("/").split("/")
+            if len(parts) != 4 or parts[0] != "api" or parts[1] != "skills" or parts[3] != "source":
+                _write_json(req, {"error": "not found"}, status=404)
+                return
+            skill_id = urllib.parse.unquote(parts[2])
+            skill = next((s for s in skill_loader.list() if s.id == skill_id), None)
+            if skill is None:
+                _write_json(req, {"error": "skill not found", "id": skill_id}, status=404)
+                return
+            _write_json(req, {
+                "id":     skill.id,
+                "name":   skill.name,
+                "body":   skill.body,
+                "chars":  len(skill.body),
+                "source": str(skill.source),
+            })
+        _safe(req, _do, "/api/skills/source")
+    return handler
+
+
+def make_skill_detail_handler(
+    skill_loader: SkillLoader | None,
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """GET /api/skills/{id}/{structure|source} 的统一前缀分发。
+
+    register_prefix 对同一前缀只会命中一个 handler（首个匹配者赢），故 structure / source
+    在此按末段分流：结构(画布)走 structure handler、源码走 source handler。其余形状交给
+    structure handler 自己兜 404（它已严格校验）。
+    """
+    structure_handler = make_skill_structure_handler(skill_loader)
+    source_handler = make_skill_source_handler(skill_loader)
+
+    def handler(req: BaseHTTPRequestHandler) -> None:
+        clean = req.path.split("?", 1)[0]
+        parts = clean.strip("/").split("/")
+        if len(parts) == 4 and parts[3] == "source":
+            source_handler(req)
+        else:
+            structure_handler(req)
+
+    return handler
+
+
 # ────────── /api/channels ──────────
 
 def make_channels_handler(

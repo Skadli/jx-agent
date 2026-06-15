@@ -12,10 +12,15 @@ _logger = get_logger(__name__)
 # 注入 system prompt 的章节标题；让 LLM 知道这块是 skills 列表
 _SECTION_HEADER = "# 可用技能（available skills）"
 
-# 说明 LLM 如何用列表里的 skill
+# 说明 LLM 如何用列表里的 skill。措辞刻意"主动 + 高优先级"：默认反射是"信息型问题→直接答/去搜索"，
+# 会盖过 skill；这里要求每轮先比对 skill 场景、命中即主动调，并明确 skill 命中时优先于联网搜索等通用工具，
+# 否则模型只在用户明说"调 skill"时才用（实测痛点）。
 _SECTION_HINT = (
-    "若用户请求与下列某 skill 的 description 描述场景相符，调 `Skill` 工具，"
-    "参数 `skill` 填该项的 name；一轮对话不要重复调用同一个 skill。"
+    "每轮开始先扫一遍下面这张表：用户这次的请求是否落进某个 skill 的 description 场景里"
+    "（含它写明的「不要用于…」边界）。命中就**主动**调 `Skill` 工具（参数 `skill` 填该项 name）"
+    "拿正文、再按正文步骤做——不需要用户明说「用 skill / 调技能」你才调。"
+    "本地 skill 命中时优先于 web_search / bash 等通用工具（它更对口、更准）；"
+    "确实没有任何 skill 覆盖该场景，才退回用其它工具或直接答。一轮对话同一个 skill 只调一次。"
 )
 
 

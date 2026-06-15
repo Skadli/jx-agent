@@ -202,7 +202,8 @@ function SkillSource({ skillId }) {
   React.useEffect(() => {
     if (!skillId) return;
     setData(null); setErr(null);
-    API.get(`/api/skills/${encodeURIComponent(skillId)}/structure`).then(r => {
+    // 源码读 SKILL.md 正文（/source），与画布(/structure)解耦——画布没生成也能看源码
+    API.get(`/api/skills/${encodeURIComponent(skillId)}/source`).then(r => {
       if (r.error) setErr(r.error);
       else setData(r);
     });
@@ -216,7 +217,7 @@ function SkillSource({ skillId }) {
       color: "var(--ink-80)", whiteSpace: "pre-wrap",
       background: "var(--canvas)",
       minHeight: "100%",
-    }}>{data.meta.raw_body || "(空)"}</pre>
+    }}>{data.body || "(空)"}</pre>
   );
 }
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hmac
 import json
 import secrets
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -23,11 +25,21 @@ def _secret_value(value: SecretStr | str | None) -> str:
 
 
 class DashboardAuth:
-    """Process-local token auth backed by a password from env."""
+    """Process-local token auth backed by a password from env.
+
+    多会话并存：每次登录签发一枚独立 token 存进集合，互不挤占——多个用户 / 多个浏览器标签页
+    可同时在线（修复"新登录把旧会话挤掉"）。token 是 256-bit 随机串；登出只注销本会话那一枚。
+    """
+
+    # 防无界增长：在线会话 token 上限，超出按签发顺序（FIFO）淘汰最早的一枚
+    _MAX_TOKENS = 64
 
     def __init__(self, password: SecretStr | str | None) -> None:
         self._password = _secret_value(password)
-        self._token = secrets.token_urlsafe(32)
+        # token → None；OrderedDict 仅借其插入序做 FIFO 淘汰
+        self._tokens: OrderedDict[str, None] = OrderedDict()
+        # ThreadingHTTPServer 每请求一线程：登录(写) 与 鉴权(读) 会并发，加锁防迭代时改动
+        self._lock = threading.Lock()
 
     @property
     def configured(self) -> bool:
@@ -37,17 +49,32 @@ class DashboardAuth:
         return self.configured and hmac.compare_digest(password, self._password)
 
     def issue_token(self) -> str:
-        self._token = secrets.token_urlsafe(32)
-        return self._token
+        """签发并登记一枚新 token；不动已签发的其它 token（旧会话继续有效）。"""
+        tok = secrets.token_urlsafe(32)
+        with self._lock:
+            self._tokens[tok] = None
+            while len(self._tokens) > self._MAX_TOKENS:
+                self._tokens.popitem(last=False)  # FIFO：淘汰最早签发的
+        return tok
 
-    def invalidate(self) -> None:
-        self._token = secrets.token_urlsafe(32)
+    def revoke(self, token: str) -> None:
+        """注销单枚 token（登出当前会话）；其它在线会话不受影响。"""
+        if not token:
+            return
+        with self._lock:
+            self._tokens.pop(token, None)
 
     def authorized(self, headers: Any) -> bool:
         if not self.configured:
             return True
         token = headers.get("X-Dashboard-Token") or headers.get("x-dashboard-token") or ""
-        return bool(token) and hmac.compare_digest(str(token), self._token)
+        if not token:
+            return False
+        token = str(token)
+        with self._lock:
+            candidates = tuple(self._tokens.keys())
+        # token 为高熵随机串；逐枚常量时间比对，命中任意一枚即放行
+        return any(hmac.compare_digest(token, t) for t in candidates)
 
 
 def write_auth_error(req: BaseHTTPRequestHandler) -> None:
@@ -88,7 +115,9 @@ def make_auth_login_handler(auth: DashboardAuth) -> Callable[[BaseHTTPRequestHan
 
 def make_auth_logout_handler(auth: DashboardAuth) -> Callable[[BaseHTTPRequestHandler], None]:
     def handler(req: BaseHTTPRequestHandler) -> None:
-        auth.invalidate()
+        # 只注销当前会话那枚 token，不波及其它在线用户 / 标签页
+        token = req.headers.get("X-Dashboard-Token") or req.headers.get("x-dashboard-token") or ""
+        auth.revoke(str(token))
         _write_json(req, {"ok": True})
 
     return handler

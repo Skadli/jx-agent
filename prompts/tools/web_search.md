@@ -10,7 +10,8 @@ description: |
     - 用户给了完整上下文的问题
     - 不需要联网就能答的常识、定义、解释类
     - 用户明确说"别搜索"
-  优先级：当问题既可能涉及实时信息又可能不涉及时，先搜索更稳。
+    - system prompt「可用技能」里已有某 skill 的 description 覆盖了这个场景：先调 Skill 拿正文，别拿搜索凑
+  优先级：当问题既可能涉及实时信息又可能不涉及时，先搜索更稳；但本地 skill 能覆盖的场景，Skill 优先于搜索。
 parameters:
   type: object
   properties:
