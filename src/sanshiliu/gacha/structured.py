@@ -15,8 +15,12 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def try_json(text: str) -> dict[str, Any] | None:
+    # strict=False：允许字符串值里出现未转义的控制字符（\n \t \r）。LLM 把整段 markdown 传记
+    # 塞进 narrative 这个 JSON 字符串时几乎总带真实换行/制表符，strict=True（默认）会以
+    # "Invalid control character" 直接拒掉——这正是"锻造 JSON 无法解析→整章失败→抽卡经常失败"
+    # 的主因（连修复重发也产同样的多行字符串，二次失败）。放宽控制字符即可吃下模型的自然产物。
     try:
-        obj = json.loads(text)
+        obj = json.loads(text, strict=False)
     except (json.JSONDecodeError, ValueError):
         return None
     return obj if isinstance(obj, dict) else None
