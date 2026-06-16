@@ -32,9 +32,18 @@ class SkillActivator:
         return self._loader.list()
 
     def lookup(self, skill_id: str) -> SkillDef | None:
-        """按 id 找单个 skill；id 来自目录名 / frontmatter.name（loader 用目录名作 id）。"""
-        for s in self._loader.list():
-            if s.id == skill_id or s.name == skill_id:
+        """找单个 skill：先按 id 精确命中，再回退按 name 匹配。
+
+        两轮分开是因为：缺 name 的 skill 现在会用目录名兜底 name(=id)，若另一 skill 的
+        frontmatter name 恰好等于本 skill 的目录名，单轮 `id==x or name==x` 会按遍历序静默命中
+        错的那个。id 优先保证"按 id 调"永远先中自己；name 匹配仍保留（listing 给模型看的是 name）。
+        """
+        skills = self._loader.list()
+        for s in skills:
+            if s.id == skill_id:
+                return s
+        for s in skills:
+            if s.name == skill_id:
                 return s
         return None
 
@@ -45,7 +54,9 @@ class SkillActivator:
             return ""
         lines: list[str] = [_SECTION_HEADER, "", _SECTION_HINT, ""]
         for s in skills:
-            # 单行 description 优先；多行的截到第一段，避免一份 skill 占满 prompt
+            # 与 Claude Code 一致：listing 只放 name + description 首行（CC 的 listing 也不含
+            # keywords，且明确避免往发现列表堆冗余文本——浪费 turn-1 cache_creation token、不提升
+            # 命中率）。keywords 不进这里，仅供 dashboard / structure / 成长安装搜索消费。
             desc_first = s.description.strip().splitlines()[0] if s.description.strip() else ""
             lines.append(f"- **{s.name}** — {desc_first}")
         _logger.debug("skills listing 已构造", count=len(skills))

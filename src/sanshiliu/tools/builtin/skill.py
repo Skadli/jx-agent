@@ -19,6 +19,11 @@ _logger = get_logger(__name__)
 class SkillTool:
     """Tool 协议实现；持有 activator + db 闭包。"""
 
+    # skill 正文是完整协议文档（可达数十 KB），不是闲聊式工具输出——给它和 Claude Code SkillTool
+    # 同款的大上限（maxResultSizeChars=100_000），让 dispatcher 别用 8000 的通用阈值把正文腰斩、
+    # 导致模型只拿到半截 skill（仍保留 100K 上限兜 runaway）。
+    max_result_chars = 100_000
+
     def __init__(
         self,
         definition: ToolDef,

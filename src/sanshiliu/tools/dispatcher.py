@@ -95,10 +95,14 @@ class ToolDispatcher:
                 permission_decision=permission_kind,
             )
 
-        # 长输出截断
-        if len(result.content) > _MAX_RESULT_CHARS:
+        # 长输出截断；工具可声明 max_result_chars 覆盖通用阈值（如 Skill 正文给 100K，别腰斩协议）。
+        # 显式判 None（不用 `or`）——避免将来某工具用 0 表达特殊语义时被静默回落到 8000。
+        cap = getattr(tool, "max_result_chars", None)
+        if cap is None:
+            cap = _MAX_RESULT_CHARS
+        if len(result.content) > cap:
             truncated_content = (
-                result.content[:_MAX_RESULT_CHARS]
+                result.content[:cap]
                 + f"\n\n[... 输出被截断，原长 {len(result.content)} 字符 ...]"
             )
             return ToolResult(
