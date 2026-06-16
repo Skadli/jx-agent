@@ -1,9 +1,10 @@
-"""命运种子卡池：世界类型 × 触发事件库 × 出身表 × 天赋表 + 随机抽取。
+"""命运种子卡池：只规范"方向"（世界类型）+ 创意度尺度，出身/天赋/触发由第1章大模型现写。
 
-内容物来源：10 类世界与触发事件借鉴参考站「世界锻造台」的模板（修仙/科幻/异世界/盗墓/
-克苏鲁/无限流/武侠/游戏/悬疑/末世），另加 2 条贱笑特色线（写实博主线/喜剧人生线）。
-draw_seed 是唯一抽取入口：API（PR2）与冒烟脚本都经它抽种子，保证字段形状一致；
-rng 可注入便于单测复现。
+12 类世界（修仙/科幻/异世界/盗墓/克苏鲁/无限流/武侠/游戏/悬疑/末世 + 写实博主线/喜剧人生线）
+是这张卡唯一的硬方向约束；GenreSpec.triggers 现在**仅供前端选择器展示该类型的氛围示例**，
+不再抽进卡里——开头的出身、家庭、命运触发一律由 forge_runner 第1章的大模型原创。
+draw_seed 只随机定方向 + 撒一颗发散种子（divergence）逼每张卡的开头不收敛成套路；
+它是唯一抽取入口：API 与冒烟脚本都经它抽种子，保证字段形状一致，rng 可注入便于单测复现。
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ _CREATIVITY_RANGE = (0.6, 1.6)
 
 @dataclass(frozen=True)
 class GenreSpec:
-    """一类世界：id 供 API/卡面用，label 供展示，triggers 是该类型的命运触发事件库。"""
+    """一类世界：id 供 API/卡面用，label 供展示；triggers 仅作选择器里的氛围示例
+    （展示这类世界"可能长什么样"），**不再被抽进卡**——卡的命运触发由第1章大模型现写。"""
 
     id: str
     label: str
@@ -179,38 +181,6 @@ GENRES: tuple[GenreSpec, ...] = (
     ),
 )
 
-# 出身表：决定这一世的起点环境（与本体设定冲突时以种子为准——卡是平行世界分身）
-ORIGINS: tuple[str, ...] = (
-    "汕头老城区双职工家庭独生子",
-    "粤东渔村疍家船民之后",
-    "北方军工大院子弟",
-    "山城梯坎边棒棒世家长子",
-    "江南书香门第幺孙",
-    "城中村握手楼里长大的孩子",
-    "东北国营厂矿家属区子弟",
-    "边陲小镇赤脚医生之子",
-    "草原牧区兽医家的小儿子",
-    "南洋归侨家庭后代",
-    "县城菜市场猪肉摊主之子",
-    "省城大学家属院教师子弟",
-)
-
-# 天赋表：1-2 个随机；写法保持"可叙事"（每条都能直接长成剧情）
-TALENTS: tuple[str, ...] = (
-    "天生嘴贱（损人不带脏字）",
-    "过目不忘",
-    "绝对音感",
-    "共情雷达（一眼看穿人情绪）",
-    "身体协调天才",
-    "对数字有直觉",
-    "语言模仿天赋",
-    "胆子奇大",
-    "手巧如匠",
-    "清醒梦体质",
-    "气运异于常人",
-    "讲故事的天生节奏感",
-)
-
 
 def find_genre(genre_id: str) -> GenreSpec | None:
     for spec in GENRES:
@@ -227,22 +197,24 @@ def draw_seed(
     birth_year: int = 1992,
     rng: random.Random | None = None,
 ) -> CardSeed:
-    """抽一颗命运种子。genre 缺省 / "random" / 不认识 → 随机类型；creativity 缺省随机抽。"""
+    """抽一颗命运种子：只定方向（genre）+ 尺度（creativity）+ 一颗发散种子（divergence）。
+
+    genre 缺省 / "random" / 不认识 → 随机类型；creativity 缺省随机抽。出身 / 天赋 / 命运触发
+    **不再在这里抽**——它们由 forge_runner 第1章的大模型现写后回填进 seed（卡面据此展示、
+    后续各章常驻延续）。divergence 是撒给第1章的随机发散种子，逼每张卡的开头不收敛成套路。
+    """
     r = rng if rng is not None else random.Random()
     spec = find_genre(genre) if genre and genre != "random" else None
     if genre and genre != "random" and spec is None:
         _logger.info("未知世界类型，按随机处理", genre=genre)
     if spec is None:
         spec = r.choice(GENRES)
-    talents = r.sample(TALENTS, k=r.choice((1, 2)))
     cre = creativity if creativity is not None else round(r.uniform(*_CREATIVITY_RANGE), 1)
     return CardSeed(
         genre=spec.id,
         genre_label=spec.label,
-        origin=r.choice(ORIGINS),
-        talents=list(talents),
-        trigger=r.choice(spec.triggers),
         creativity=min(max(cre, 0.0), 2.0),
         custom_prompt=custom_prompt.strip(),
         birth_year=birth_year,
+        divergence=r.randrange(1000, 1_000_000),
     )

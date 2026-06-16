@@ -67,7 +67,9 @@ class ChapterRecord:
 
 @dataclass
 class CardSeed:
-    """命运种子：抽卡瞬间随机定下、之后每章 prompt 常驻注入的不变量。"""
+    """命运种子。抽卡瞬间定下的只有"方向"：genre / creativity / divergence / custom_prompt；
+    origin / talents / trigger **留空**，由第1章大模型现写后回填
+    （forge_runner._capture_seed_background），之后每章 prompt 常驻注入、保证背景全程延续。"""
 
     genre: str = "random"
     genre_label: str = "随机"
@@ -78,6 +80,8 @@ class CardSeed:
     custom_prompt: str = ""
     # 写实锚：年龄 0 = 该公历年；非写实剧情以故事内在时间线为准、公历仅作参考（同老协议）
     birth_year: int = 1992
+    # 发散种子：抽卡时随机撒下，喂给第1章 prompt 逼开头不收敛成套路（非题库、不约束内容，只给熵）
+    divergence: int = 0
 
 
 @dataclass
@@ -234,13 +238,13 @@ def create_card(
         title=title,
     )
     save_card_state(gacha_root, state)
+    # 出身/触发此刻还空（由第1章大模型现写），抽卡这步只定了方向 + 发散种子
     _logger.info(
         "新卡已建",
         card_id=cid,
         genre=seed.genre,
-        origin=seed.origin,
-        trigger=seed.trigger,
         creativity=seed.creativity,
+        divergence=seed.divergence,
     )
     return state
 
@@ -350,6 +354,7 @@ def _coerce_seed(raw: object) -> CardSeed:
         creativity=min(max(creativity, 0.0), 2.0),
         custom_prompt=_str(raw, "custom_prompt"),
         birth_year=_int(raw, "birth_year", 1992),
+        divergence=_int(raw, "divergence", 0),
     )
 
 

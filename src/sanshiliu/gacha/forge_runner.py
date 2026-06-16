@@ -36,6 +36,7 @@ from sanshiliu.gacha.card_persona import (
     write_chapter_persona,
 )
 from sanshiliu.gacha.card_state import (
+    CardSeed,
     CardState,
     ChapterRecord,
     biography_dir,
@@ -281,6 +282,9 @@ class ForgeRunner:
             # 本章人格目录没写成：激活指针留在上一个真实存在的章——否则指针指向空目录，
             # 转生被拒、下一章又从空目录拷贝起步，把 _protocol.md 和未演化段落全弄丢。
             state.active_persona_chapter = prev_active_chapter
+        if next_no == 1:
+            # 第1章把大模型现写的出身/触发/天赋回填进 seed：卡面据此展示、后续各章 prompt 常驻延续
+            _capture_seed_background(state.seed, coerced)
         save_card_state(self._gacha_root, state)
         _logger.info(
             "锻造 phase-1 完成，状态已推进（安装前已落地，绝不被 phase-2 回退）",
@@ -404,8 +408,8 @@ class ForgeRunner:
             "**这张卡的命运种子（每章常驻，不可违背）：**",
             f"- 世界类型：{seed.genre_label}。这是整张卡人生的主基调——写实类型就全程贴现实；"
             "幻想类型则在合适时点转入该类型的世界观，转入前的童年照常写实。",
-            f"- 出身：{seed.origin or '由你按世界类型自定（定了就全程延续）'}",
-            f"- 天赋：{'、'.join(seed.talents) if seed.talents else '无特别天赋（全靠后天）'}",
+            f"- 出身：{seed.origin or '第一章由你原创（定了就全程延续）'}",
+            f"- 天赋：{'、'.join(seed.talents) if seed.talents else '第一章由你自定（1-2 个，定了就全程延续）'}",
         ]
         if seed.trigger:
             lines.append(
@@ -444,11 +448,18 @@ class ForgeRunner:
                 lines.append("")
         else:
             lines.append(
-                f"这是这张卡的第一章（{state.start_age} 岁起点）。**开场严格按上面命运种子的「出身」那一条来**——"
-                "把它具体化成有名有姓的家庭与地方：省/市/镇、父母职业与姓名、家境阶层都要落地，"
-                "再让「爱搞笑的小孩」这个底色在这个具体环境里长出来。"
-                "**两条硬约束**：①别套用泛化的「县城菜市场 / 小摊贩 / 杀猪卖肉」这类默认童年模板——"
-                "种子写的是哪个阶层 / 地域 / 家境，就老老实实写哪个，让每张卡的起点彼此明显不同；"
+                f"这是这张卡的第一章（{state.start_age} 岁起点）。**这一世的出身、家庭、早年环境、"
+                "以及那件改变命运的触发事件，全部由你现在原创**——唯一的方向约束是上面的「世界类型」"
+                "和创意度，其余细节（省/市/镇、家境阶层、父母职业与姓名、家庭结构、童年际遇）都你自己定，"
+                "且都要具体到名字；再让「爱搞笑」这个底色在你定下的这个具体环境里自然长出来。"
+            )
+            lines.append(
+                f"**发散种子 {seed.divergence}**：把它当一颗骰子——刻意避开你最容易想到的那套默认童年，"
+                "这张卡要往一个跟常见套路明显不同的方向走（同一个世界类型也有无数种活法，别每张都雷同）。"
+            )
+            lines.append(
+                "**两条硬约束**：①绝不套用泛化的「县城菜市场 / 小摊贩 / 杀猪卖肉 / 小镇调皮鬼」这类"
+                "默认童年模板，阶层 / 地域 / 家境 / 家庭结构都要跳出这套俗套；"
                 "②别照搬三十六贱笑本体的汕头出身（那是本体的、不是这张卡的）。"
             )
             lines.append("")
@@ -460,6 +471,13 @@ class ForgeRunner:
             "最后，只输出一个结构化 JSON 对象（含 narrative / age_range / learned / "
             "personality / report / skill_intents / persona），不要在 JSON 之外写任何多余文字。"
         )
+        if not state.chapters:
+            lines.append(
+                "**因为这是第一章**，请在同一个 JSON 里**额外**给三个卡面字段（只第一章需要、"
+                "用来生成卡面，必须和你正文里写的一致）：origin（一句话出身，浓缩成像"
+                "“××市××区××家庭独生子”这样的一行）、trigger（一句话命运触发事件；本章若还没引爆，"
+                "就写你为这一世设定的那件事是什么）、talents（1-2 个天赋短词的字符串数组）。"
+            )
         lines.append(
             "字段形状必须严格遵守：learned 是字符串数组；skill_intents 是对象数组，"
             '每项只用 {"domain": "短领域词", "why": "原因"}，不要写成 skill/reason、'
@@ -665,3 +683,25 @@ def _coerce_report(raw: object, *, fallback: str) -> str:
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
     return fallback.strip()
+
+
+def _capture_seed_background(seed: CardSeed, coerced: dict[str, Any]) -> None:
+    """把第1章大模型现写的出身/触发/天赋回填进 seed（仅在对应字段还空时填，续锻不覆盖）。
+
+    A2 设计：抽卡只定方向，开头的出身/家庭/命运触发由第1章正文现写；这里把模型在 JSON 里
+    额外给的 origin / trigger / talents 三个卡面字段收口进 seed，让卡面有内容、后续各章
+    prompt 能常驻同一套背景（背景全程延续，不是每章重开）。字段缺/类型错一律静默跳过
+    （卡面留空即可，不让它把本就 best-effort 的回填变成硬失败）。
+    """
+    origin = coerced.get("origin")
+    if not seed.origin and isinstance(origin, str) and origin.strip():
+        seed.origin = origin.strip()
+    trigger = coerced.get("trigger")
+    if not seed.trigger and isinstance(trigger, str) and trigger.strip():
+        seed.trigger = trigger.strip()
+    if not seed.talents:
+        talents = coerced.get("talents")
+        if isinstance(talents, list):
+            cleaned = [t.strip() for t in talents if isinstance(t, str) and t.strip()]
+            if cleaned:
+                seed.talents = cleaned[:2]

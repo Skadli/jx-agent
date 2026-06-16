@@ -101,8 +101,8 @@ async def main() -> int:
                 end_age=settings.gacha_end_age,
             )
             print(
-                f"[OK] 抽到种子：{seed.genre_label} | 出身={seed.origin} | "
-                f"天赋={'、'.join(seed.talents)} | 触发={seed.trigger} | 创意度={seed.creativity}"
+                f"[OK] 抽到种子：{seed.genre_label} | 创意度={seed.creativity} | "
+                f"发散种子={seed.divergence}（出身/天赋/触发由第1章大模型现写）"
             )
         print(f"[..] 开始锻造 {card.card_id}（max_chapters={args.chapters or '锻满'}）")
 
