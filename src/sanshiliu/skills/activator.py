@@ -12,15 +12,12 @@ _logger = get_logger(__name__)
 # 注入 system prompt 的章节标题；让 LLM 知道这块是 skills 列表
 _SECTION_HEADER = "# 可用技能（available skills）"
 
-# 说明 LLM 如何用列表里的 skill。措辞刻意"主动 + 高优先级"：默认反射是"信息型问题→直接答/去搜索"，
-# 会盖过 skill；这里要求每轮先比对 skill 场景、命中即主动调，并明确 skill 命中时优先于联网搜索等通用工具，
-# 否则模型只在用户明说"调 skill"时才用（实测痛点）。
+# 与 Claude Code 一致：这张表只作"发现"用（discovery），真正的触发规则放在 `Skill` 工具的
+# description 里（强制要求：匹配即在回答前先调）。这里只点一句核心规则 + 指向工具说明，避免把重
+# 指令堆在 system prompt（模型决定调不调工具主要看工具自身 description，不是这段泛化文字）。
 _SECTION_HINT = (
-    "每轮开始先扫一遍下面这张表：用户这次的请求是否落进某个 skill 的 description 场景里"
-    "（含它写明的「不要用于…」边界）。命中就**主动**调 `Skill` 工具（参数 `skill` 填该项 name）"
-    "拿正文、再按正文步骤做——不需要用户明说「用 skill / 调技能」你才调。"
-    "本地 skill 命中时优先于 web_search / bash 等通用工具（它更对口、更准）；"
-    "确实没有任何 skill 覆盖该场景，才退回用其它工具或直接答。一轮对话同一个 skill 只调一次。"
+    "下面是当前可用的 skill（name — 用途），供你判断该调哪个。核心规则：用户的请求一旦匹配某个 skill，"
+    "就**先调 `Skill` 工具拿正文、再就该任务作答**（强制要求，别先凭记忆答完才补调）；细则见 Skill 工具说明。"
 )
 
 
