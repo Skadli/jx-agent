@@ -7,7 +7,9 @@ handler 工厂模式：runner 传入 db / 各 loader，闭包持有。所有处�
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
 import json
 import time
 import urllib.parse
@@ -230,6 +232,71 @@ def _read_last_message(sessions_dir: Path, session_id: str) -> str:
     return ""
 
 
+# ────────── 历史会话内联图片懒加载 ──────────
+# 历史 user 消息可能内联 base64 大图（实测单图 3.4MB）。messages 端点把 data: 图换成按内容
+# sha256 定址的引用 URL，响应体从 MB 级降到 KB；真正的图字节由 /api/sessions/{id}/images/{hash}
+# 按需返回，immutable 缓存（hash 定址，内容变 URL 才变，可被浏览器永久缓存）。
+
+def _image_hash(data_uri: str) -> str:
+    return hashlib.sha256(data_uri.encode("utf-8")).hexdigest()[:16]
+
+
+def _image_ref(session_id: str, data_uri: str) -> str:
+    return f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/images/{_image_hash(data_uri)}"
+
+
+def _is_data_image_part(part: Any) -> bool:
+    """是否为内联 base64 图 part：{"type":"image_url","image_url":{"url":"data:..."}}。"""
+    if not (isinstance(part, dict) and part.get("type") == "image_url"):
+        return False
+    iu = part.get("image_url")
+    url = iu.get("url") if isinstance(iu, dict) else None
+    return isinstance(url, str) and url.startswith("data:")
+
+
+def _elide_images(content: Any, session_id: str) -> Any:
+    """多模态 content 里的内联 base64 图(data:) → 懒加载引用；其余 part 原样返回。"""
+    if not isinstance(content, list):
+        return content
+    out: list[Any] = []
+    for part in content:
+        if _is_data_image_part(part):
+            ref = _image_ref(session_id, part["image_url"]["url"])
+            out.append({**part, "image_url": {**part["image_url"], "url": ref}})
+        else:
+            out.append(part)
+    return out
+
+
+def _find_image_data_uri(reloaded: list[Any], img_hash: str) -> str | None:
+    """在重建出的消息里按 hash 找回原始 data: 图；找不到回 None。"""
+    for m in reloaded:
+        content = m.content
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if _is_data_image_part(part) and _image_hash(part["image_url"]["url"]) == img_hash:
+                return str(part["image_url"]["url"])
+    return None
+
+
+def _write_image(req: BaseHTTPRequestHandler, data_uri: str) -> None:
+    """data:image/png;base64,XXXX → 解码后以原 MIME 裸字节伺服（不 gzip：图片已是压缩格式）。"""
+    try:
+        header, b64 = data_uri.split(",", 1)
+        mime = header[len("data:"):].split(";", 1)[0] or "application/octet-stream"
+        raw = base64.b64decode(b64)
+    except ValueError:  # 含 binascii.Error（ValueError 子类）：坏 data URI / 坏 base64
+        _write_json(req, {"error": "bad image data"}, status=400)
+        return
+    req.send_response(200)
+    req.send_header("Content-Type", mime)
+    req.send_header("Content-Length", str(len(raw)))
+    req.send_header("Cache-Control", "public, max-age=31536000, immutable")
+    req.end_headers()
+    req.wfile.write(raw)
+
+
 # ────────── /api/sessions/{id}/messages ──────────
 
 def make_session_messages_handler(
@@ -247,9 +314,9 @@ def make_session_messages_handler(
     def handler(req: BaseHTTPRequestHandler) -> None:
         def _do() -> None:
             raw = req.path.split("?", 1)[0]
-            # /api/sessions/{id}/messages
+            # /api/sessions/{id}/messages 或 /api/sessions/{id}/images/{hash}（图片懒加载）
             parts = raw.strip("/").split("/")
-            if len(parts) < 4 or parts[3] != "messages":
+            if len(parts) < 4 or parts[3] not in ("messages", "images"):
                 _write_json(req, {"error": "bad path"}, status=400)
                 return
             # wechat session_id 形如 "wechat:user:o9...@im.wechat"，前端 encodeURIComponent
@@ -260,11 +327,20 @@ def make_session_messages_handler(
             except Exception as exc:
                 _logger.warning("reload session 失败（返回空）", session_id=session_id, error=str(exc))
                 reloaded = []
-            # reload 已过滤 system、保留 user/assistant/tool；转成前端期望的 dict 形状
+            # 图片懒加载：/api/sessions/{id}/images/{hash} 按内容 hash 取回原图字节
+            if parts[3] == "images":
+                data_uri = _find_image_data_uri(reloaded, parts[4]) if len(parts) >= 5 else None
+                if data_uri is None:
+                    _write_json(req, {"error": "image not found"}, status=404)
+                else:
+                    _write_image(req, data_uri)
+                return
+            # reload 已过滤 system、保留 user/assistant/tool；转成前端期望的 dict 形状。
+            # content 里的内联 base64 图换成懒加载引用，避免历史响应被 MB 级图片撑爆。
             messages: list[dict[str, Any]] = [
                 {
                     "role": m.role,
-                    "content": m.content if m.content is not None else "",
+                    "content": _elide_images(m.content, session_id) if m.content is not None else "",
                     "tool_calls": m.tool_calls,
                     "tool_call_id": m.tool_call_id,
                     "name": m.name,
@@ -272,7 +348,7 @@ def make_session_messages_handler(
                 for m in reloaded
             ]
             _write_json(req, {"session_id": session_id, "messages": messages})
-        _safe(req, _do, "/api/sessions/messages")
+        _safe(req, _do, "/api/sessions")
     return handler
 
 

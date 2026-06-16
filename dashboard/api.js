@@ -44,6 +44,22 @@
     }
   }
 
+  // 带鉴权拉二进制 → object URL（历史图片懒加载用；裸 <img> 不带 token 会 401）。
+  // 失败回 ""；调用方负责在不用时 URL.revokeObjectURL 释放。
+  async function blobUrl(path) {
+    try {
+      const headers = {};
+      const t = token();
+      if (t) headers["X-Dashboard-Token"] = t;
+      const resp = await fetch(base + path, { headers });
+      if (!resp.ok) return "";
+      const blob = await resp.blob();
+      return URL.createObjectURL(blob);
+    } catch (e) {
+      return "";
+    }
+  }
+
   // 用 fetch + ReadableStream 解 SSE；data: ... 行触发 onDelta；event: done/error/approval/msg_break 触发对应 cb
   // 返回 {abort: ()=>void}
   function chatStream({ q, sessionId, images, onSession, onApproval, onDelta, onMsgBreak, onDone, onError }) {
@@ -201,6 +217,7 @@
     token,
     setToken,
     chatStream,
+    blobUrl,
     relTime,
     fmtNumber,
     fmtCost,

@@ -684,12 +684,57 @@ function ApprovalCard({ approval, onResolve, resolved }) {
   );
 }
 
+/* 历史图片懒加载：data: URI 直接渲染；/api 引用走鉴权 fetch → blob（裸 <img> 不带 token 会 401），
+ * 并用 IntersectionObserver 滚到视口附近(200px)才拉。卸载时 revoke object URL 防泄漏。 */
+function AuthImage({ src, alt, title, style, onClick }) {
+  const isRef = typeof src === "string" && src.startsWith("/api/");
+  const [resolved, setResolved] = React.useState(isRef ? "" : src);
+  const [visible, setVisible] = React.useState(!isRef);
+  const holderRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (visible || !holderRef.current) return undefined;
+    const el = holderRef.current;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { setVisible(true); io.disconnect(); }
+    }, { rootMargin: "200px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [visible]);
+
+  React.useEffect(() => {
+    if (!isRef || !visible) return undefined;
+    let alive = true;
+    let objUrl = "";
+    API.blobUrl(src).then((u) => {
+      if (alive) { objUrl = u; setResolved(u); }
+      else if (u) URL.revokeObjectURL(u);
+    });
+    return () => { alive = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [src, visible, isRef]);
+
+  if (!resolved) {
+    return (
+      <div ref={holderRef} title={title} style={{
+        ...style, display: "inline-flex", alignItems: "center",
+        justifyContent: "center", background: "var(--canvas)",
+        color: "var(--ink-60)", fontSize: 10,
+      }}>图…</div>
+    );
+  }
+  // 把已解析好的 url（blob/data）回传给 onClick，省得看大图时再 fetch 一遍
+  return <img src={resolved} alt={alt} title={title} style={style}
+    onClick={onClick ? () => onClick(resolved) : undefined} />;
+}
+
 function Bubble({ role, text, images, streaming, t }) {
   const isAgent = role === "assistant" || role === "agent";
   const imgs = Array.isArray(images) ? images.slice(0, 4) : [];
-  const openImg = (url) => {
+  // AuthImage 传入的是已解析好的 url（data: 或缩略图复用的 blob），无需再 fetch
+  const openImg = (viewUrl) => {
+    if (!viewUrl) return;
     const w = window.open();
-    if (w) w.document.write(`<img src="${url}" style="max-width:100%;height:auto"/>`);
+    if (w) w.document.write(`<img src="${viewUrl}" style="max-width:100%;height:auto"/>`);
   };
   return (
     <div>
@@ -714,10 +759,10 @@ function Bubble({ role, text, images, streaming, t }) {
         {imgs.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: text ? 8 : 0 }}>
             {imgs.map((url, i) => (
-              <img
+              <AuthImage
                 key={i}
                 src={url}
-                onClick={() => openImg(url)}
+                onClick={openImg}
                 style={{
                   width: 64, height: 64, objectFit: "cover",
                   borderRadius: 6, border: "1px solid var(--hairline)",
