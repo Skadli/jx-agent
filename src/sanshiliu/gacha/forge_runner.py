@@ -52,7 +52,7 @@ from sanshiliu.gacha.skill_autoinstall import (
     coerce_skill_intents,
     derive_skill_install_intents,
 )
-from sanshiliu.gacha.structured import parse_structured_output
+from sanshiliu.gacha.structured import parse_sectioned_output, parse_structured_output
 from sanshiliu.identity.types import CORE_DIRNAME
 
 if TYPE_CHECKING:
@@ -76,7 +76,7 @@ OnForgeEvent = Callable[[dict[str, Any]], Awaitable[None]]
 class ForgeChapterError(RuntimeError):
     """某章锻造不可恢复失败（区别于"已定格"这种正常 no-op）。
 
-    由 _run_one_chapter 在以下致命场景 raise：complete_turn 失败、tool 触顶、JSON 修复后
+    由 _run_one_chapter 在以下致命场景 raise：complete_turn 失败、tool 触顶、结构化输出修复后
     仍不合法、narrative 为空、传记落盘失败。forge_card 据此把卡标 error 并上抛——
     已成立的章全部保留，续锻（再次 forge_card）从断点重试。
     """
@@ -229,12 +229,13 @@ class ForgeRunner:
                 f"第 {next_no} 章 tool 调用触顶（上限 {_PHASE1_MAX_TURNS} 轮），未产出结果"
             )
 
-        parsed = parse_structured_output(raw_text)
+        # 首选分段格式（大段正文裸文本、不进 JSON，免转义崩坏）；模型若仍回老式整段 JSON 则回退兼容
+        parsed = parse_sectioned_output(raw_text) or parse_structured_output(raw_text)
         if parsed is None:
             parsed = await self._repair_structured_output(raw_text, session.session_id)
         if parsed is None:
             _logger.error(
-                "锻造输出 JSON 修复后仍不合法（不推进状态）",
+                "锻造结构化输出修复后仍不合法（不推进状态）",
                 card_id=state.card_id,
                 chapter=next_no,
                 raw_preview=raw_text[:200],
@@ -468,65 +469,87 @@ class ForgeRunner:
             "传记落盘也由系统代码确定性完成，你只负责产出本章内容。"
         )
         lines.append(
-            "最后，只输出一个结构化 JSON 对象（含 narrative / age_range / learned / "
-            "personality / report / skill_intents / persona），不要在 JSON 之外写任何多余文字。"
+            "**输出格式（严格遵守，直接决定本章能否被解析）**：用下面的分隔符把各部分隔开，"
+            "**每个 `===标记===` 独占一行**；大段正文（传记 / 汇报 / 人格各段）直接写在标记下面，"
+            "**保持纯 markdown 原样，不要转义、不要再包成 JSON 字符串**——这是为了根除长文本塞进 "
+            "JSON 时因引号 / 反斜杠没转义而整章解析失败。只有 META 段是一小段 JSON。正文里不要出现"
+            "整行的 `===大写词===`，以免和分隔符混淆。严格按下面的顺序与标记输出："
         )
+        proto = [
+            "===NARRATIVE===",
+            "本章传记正文（纯 markdown，可含换行 / 引号 / 反斜杠，无需任何转义；具体到名字、承接前章）",
+            "===REPORT===",
+            "面向主人的本章锻造汇报（第一人称、口语化，讲清你这一章长成了谁、有什么变化）",
+            "===PERSONA:IDENTITY===",
+            "我现在是谁（每章都在变，**本段必给、不许省略**）",
+            "===PERSONA:PERSONALITY===",
+            "整段性格 markdown（性格没变可整段省略此段）",
+            "===PERSONA:BELIEFS===",
+            "价值观 / 信念 markdown（没变可省略）",
+            "===PERSONA:STYLE===",
+            "说话口吻 / 行为风格 markdown（口吻没变可省略）",
+            "===PERSONA:FEWSHOT===",
+            "几条体现当下口吻的短样例 markdown（样例没变可省略）",
+            "===META===",
+            '{"age_range": "lo-hi", "personality": "一句话性格摘要", '
+            '"learned": ["本事1", "本事2"], '
+            '"skill_intents": [{"domain": "comedy writing", "why": "原因"}]}',
+            "===END===",
+        ]
+        lines.append("\n".join(proto))
         if not state.chapters:
             lines.append(
-                "**因为这是第一章**，请在同一个 JSON 里**额外**给三个卡面字段（只第一章需要、"
-                "用来生成卡面，必须和你正文里写的一致）：origin（一句话出身，浓缩成像"
-                "“××市××区××家庭独生子”这样的一行）、trigger（一句话命运触发事件；本章若还没引爆，"
-                "就写你为这一世设定的那件事是什么）、talents（1-2 个天赋短词的字符串数组）。"
+                "**因为这是第一章**，请在 META 里**额外**给三个卡面字段（只第一章需要、用来生成卡面，"
+                "必须和 NARRATIVE 正文一致）：origin（一句话出身，浓缩成像“××市××区××家庭独生子”"
+                "这样的一行）、trigger（一句话命运触发事件；本章若还没引爆，就写你为这一世设定的那件事"
+                "是什么）、talents（1-2 个天赋短词的字符串数组）。"
             )
         lines.append(
-            "字段形状必须严格遵守：learned 是字符串数组；skill_intents 是对象数组，"
+            "META 里字段形状必须严格遵守：learned 是字符串数组；skill_intents 是对象数组，"
             '每项只用 {"domain": "短领域词", "why": "原因"}，不要写成 skill/reason、'
             "intent_name/reason、编号字符串或对象字典。**domain 要写成公开 skill 库搜得到的通用大类词、"
             "优先英文**（如 “comedy writing”、“public speaking”、“storytelling”、“martial arts”、"
             "“investing”），别用自造的窄中文短语（“双人喜剧配合”“预设陷阱式编剧”那种几乎搜不到、装不上）；"
-            "宁可宽一点、可检索，也别精确但没人收录。"
+            "宁可宽一点、可检索，也别精确但没人收录。META 必须是合法 JSON（只有这一小段才需要正确转义）。"
         )
         lines.append(
-            "其中 report 是这一章面向主人看的**锻造汇报**（卡册会展示给主人，"
-            "用第一人称、口语化地讲清楚你这一章长成了谁、有什么变化）。"
+            "PERSONA 各段是本章演化后的**新核心人格**——给了哪段就**整段**成为这张卡往后的真身"
+            "（长成剑修就只剩剑修，不留旧身份残影）。载体协议（≤60字、<MSG>、禁 markdown 等）和安全红线"
+            "另有 _protocol.md 永驻层兜底，你**不用写、也不要复写**进 PERSONA。**本章必须演化人格，"
+            "PERSONA:IDENTITY 段不允许省略**；再加上本章经历真正影响到的段落（口吻变了给 STYLE、"
+            "价值观变了给 BELIEFS、性格变了给 PERSONALITY、典型样例变了给 FEWSHOT）；"
+            "只有确实毫无变化的段落才整段省略（省略的会自动承接前章）。"
         )
         lines.append(
-            "其中 persona 是本章演化后的**新核心人格**（{identity, personality, beliefs, style, "
-            "fewshot_short} 各为一整段 markdown，写你这岁数已经长成的那个人）——给了哪段就**整段**"
-            "成为这张卡往后的真身（长成剑修就只剩剑修，不留旧身份残影）。载体协议（≤60字、<MSG>、禁 "
-            "markdown 等）和安全红线另有 _protocol.md 永驻层兜底，你**不用写、也不要复写**进 persona。"
-            "**本章必须演化人格，不允许把 persona 整个省略**：至少给 identity"
-            "（“我现在是谁”每章都在变），再加上本章经历真正影响到的段落（口吻变了就给 style、"
-            "价值观变了就给 beliefs、性格变了就给 personality、典型样例变了就给 fewshot_short）；"
-            "只有确实毫无变化的段落才省略（省略的会自动承接前章）。"
-        )
-        lines.append(
-            "**persona 每段都要写成规整的 markdown 文档**，不是一坨大白话：以 `#` 标题起头（如 "
+            "**PERSONA 每段都要写成规整的 markdown 文档**，不是一坨大白话：以 `#` 标题起头（如 "
             "`# 核心身份 · 我是谁`），再按内容用 `##` 分小节、合适处用列表/引用——像基础人格文件那样有层次。"
             "各段会按 `---` 拼进 system prompt，没标题没结构就糊成一团、分不清哪段是身份哪段是口吻。"
         )
         lines.append(
-            "注意区分两个同名字段：顶层 personality 是**一句话摘要**（写进传记回看），"
-            "persona.personality 是**整段性格 markdown**（整段覆盖性格人格文件）——两者都要给，"
-            "别只填顶层那个就把 persona 整段漏掉。"
+            "注意区分两个 personality：META 里的 personality 是**一句话摘要**（写进传记回看），"
+            "PERSONA:PERSONALITY 段是**整段性格 markdown**（整段覆盖性格人格文件）——两者都要给，"
+            "别只填一句话摘要就把 PERSONA:PERSONALITY 段漏掉。"
         )
         return "\n".join(lines)
 
     # ────────── phase-1 辅助 ──────────
 
     async def _repair_structured_output(self, raw: str, session_id: str) -> dict[str, Any] | None:
-        """纯提取失败后调**一次** LLM 修复：把畸形输出重发成纯 JSON 对象，再解析。
+        """纯提取失败后调**一次** LLM 修复：把畸形输出重发成分段格式，再解析。
 
         走 llm 简单 chat（无工具、不再走 complete_turn，避免又一个 tool 循环烧预算）。
         修复也失败 / 仍非 dict → 返 None，调用方据此硬失败（不静默降级）。
         """
         instruction = (
-            "下面是一段本应只含单个 JSON 对象、但被写坏了的锻造输出"
-            "（可能有未闭合括号、尾逗号、或 JSON 前后夹了多余文字）。"
-            "请**只**重新输出那个 JSON 对象本身，不要任何解释、不要 markdown 代码围栏，"
-            "保留原有字段（narrative / age_range / learned / personality / report / "
-            "skill_intents / persona），缺的字段不要编造。\n\n"
-            f"坏输出：\n{raw}"
+            "下面这段锻造输出没按要求的分段格式写（或分隔符被写坏了），导致无法解析。"
+            "请把它**重新整理成下面的分段格式**：每个 `===标记===` 独占一行，大段正文写在标记下面、"
+            "保持纯文本不要转义、不要包成 JSON；只有 META 段是一小段 JSON。顺序固定为："
+            "===NARRATIVE=== / ===REPORT=== / ===PERSONA:IDENTITY=== / ===PERSONA:PERSONALITY=== / "
+            "===PERSONA:BELIEFS=== / ===PERSONA:STYLE=== / ===PERSONA:FEWSHOT=== / ===META=== / "
+            "===END===（没内容的 PERSONA 段可整段省略；META 形如 "
+            '{"age_range":"lo-hi","personality":"一句话","learned":[...],"skill_intents":[...]}）。'
+            "保留原有内容、不要编造新内容。\n\n"
+            f"原输出：\n{raw}"
         )
         try:
             result = await self._engine.llm.chat(
@@ -536,12 +559,12 @@ class ForgeRunner:
                 user_id=_GACHA_USER_ID,
             )
         except Exception as exc:
-            _logger.error("锻造 JSON 修复调用失败", error=str(exc), session_id=session_id)
+            _logger.error("锻造结构化输出修复调用失败", error=str(exc), session_id=session_id)
             return None
-        repaired = parse_structured_output(result.text)
+        repaired = parse_sectioned_output(result.text) or parse_structured_output(result.text)
         if repaired is None:
             _logger.warning(
-                "锻造 JSON 修复后仍无法解析",
+                "锻造分段输出修复后仍无法解析",
                 session_id=session_id,
                 repaired_preview=result.text[:200],
             )
