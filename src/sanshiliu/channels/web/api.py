@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sanshiliu.channels.web.handlers import HealthState
+from sanshiliu.channels.web.responses import write_json as _write_json
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.types import MODULES_DIRNAME
@@ -44,15 +45,6 @@ _RANGE_MAP = {
 
 
 # ────────── 工具 ──────────
-
-def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
-    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    req.send_response(status)
-    req.send_header("Content-Type", "application/json; charset=utf-8")
-    req.send_header("Content-Length", str(len(body)))
-    req.send_header("Cache-Control", "no-store")
-    req.end_headers()
-    req.wfile.write(body)
 
 
 def _parse_query(path: str) -> dict[str, str]:

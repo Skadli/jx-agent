@@ -36,6 +36,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sanshiliu.channels.web.responses import write_json as _write_json
 from sanshiliu.channels.web.sse import format_event, format_heartbeat, safe_write
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.gacha.active import (
@@ -104,17 +105,7 @@ class ForgeGate:
             self._lock.release()
 
 
-# ────────── 工具（与 api_growth 同款，独立一份避免跨模块耦合） ──────────
-
-
-def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
-    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    req.send_response(status)
-    req.send_header("Content-Type", "application/json; charset=utf-8")
-    req.send_header("Content-Length", str(len(body)))
-    req.send_header("Cache-Control", "no-store")
-    req.end_headers()
-    req.wfile.write(body)
+# ────────── 工具 ──────────
 
 
 def _safe(req: BaseHTTPRequestHandler, fn: Callable[[], None], where: str) -> None:

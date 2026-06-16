@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sanshiliu.channels.web.responses import maybe_gzip
 from sanshiliu.foundation.logging import get_logger
 
 if TYPE_CHECKING:
@@ -31,6 +32,9 @@ _ALLOWED_SUFFIXES: dict[str, str] = {
     ".woff2": "font/woff2",
     ".map":  "application/json; charset=utf-8",
 }
+
+# 仅这些文本类后缀压缩；图片/字体/ico 已是压缩格式，gzip 无益反耗 CPU
+_COMPRESSIBLE_SUFFIXES = frozenset({".html", ".js", ".jsx", ".css", ".svg", ".json", ".map"})
 
 
 def make_root_redirect_handler() -> Callable[[BaseHTTPRequestHandler], None]:
@@ -100,11 +104,15 @@ def make_dashboard_handler(
             req.send_error(500, "read error")
             return
 
+        body, gzipped = maybe_gzip(req, data, compressible=suffix in _COMPRESSIBLE_SUFFIXES)
         req.send_response(200)
         req.send_header("Content-Type", mime)
-        req.send_header("Content-Length", str(len(data)))
+        if gzipped:
+            req.send_header("Content-Encoding", "gzip")
+            req.send_header("Vary", "Accept-Encoding")
+        req.send_header("Content-Length", str(len(body)))
         req.send_header("Cache-Control", "no-cache")
         req.end_headers()
-        req.wfile.write(data)
+        req.wfile.write(body)
 
     return handler

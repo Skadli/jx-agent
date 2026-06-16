@@ -36,6 +36,7 @@ from sanshiliu.bootstrap.wechat_setup import (
     save_wechat_credentials,
 )
 from sanshiliu.channels.web.api_settings import _write_env_file
+from sanshiliu.channels.web.responses import write_json as _write_json
 from sanshiliu.foundation.logging import get_logger
 
 if TYPE_CHECKING:
@@ -312,15 +313,6 @@ def _read_json(req: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
-
-
-def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
-    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    req.send_response(status)
-    req.send_header("Content-Type", "application/json; charset=utf-8")
-    req.send_header("Content-Length", str(len(body)))
-    req.end_headers()
-    req.wfile.write(body)
 
 
 def make_wechat_qr_start_handler(

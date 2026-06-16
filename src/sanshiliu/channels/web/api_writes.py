@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from sanshiliu.channels.web.api import resolve_persona_file
 from sanshiliu.channels.web.handlers import SessionStore
+from sanshiliu.channels.web.responses import write_json as _write_json
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.gacha.structured import parse_structured_output
 from sanshiliu.identity.loader import PersonaLoader
@@ -62,15 +63,6 @@ def _read_json(req: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
-
-
-def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
-    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    req.send_response(status)
-    req.send_header("Content-Type", "application/json; charset=utf-8")
-    req.send_header("Content-Length", str(len(body)))
-    req.end_headers()
-    req.wfile.write(body)
 
 
 def _safe_filename(name: str) -> bool:

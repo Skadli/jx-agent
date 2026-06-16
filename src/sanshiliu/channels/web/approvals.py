@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from sanshiliu.channels.web.responses import write_json as _write_json
 from sanshiliu.foundation.logging import get_logger
 from sanshiliu.security.types import ConfirmRequest, ConfirmResponse
 
@@ -152,12 +153,3 @@ def _read_json(req: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     return data if isinstance(data, dict) else None
-
-
-def _write_json(req: BaseHTTPRequestHandler, payload: dict[str, Any], status: int = 200) -> None:
-    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    req.send_response(status)
-    req.send_header("Content-Type", "application/json; charset=utf-8")
-    req.send_header("Content-Length", str(len(body)))
-    req.end_headers()
-    req.wfile.write(body)
