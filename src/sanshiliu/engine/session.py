@@ -25,6 +25,17 @@ _REPLY_LENGTH_ANCHOR = (
 )
 
 
+def _tool_call_ids(msg: ChatMessage) -> set[str]:
+    """assistant 消息里所有带 id 的 tool_call id；无 tool_calls / 无 id 返空集。"""
+    if not msg.tool_calls:
+        return set()
+    return {
+        cid
+        for c in msg.tool_calls
+        if isinstance(c, dict) and isinstance(cid := c.get("id"), str)
+    }
+
+
 @dataclass
 class Session:
     """由 channel 创建并维护的独立会话；system 消息位置在 [0]。"""
@@ -103,12 +114,40 @@ class Session:
         return _SUMMARY_JOINER.join(parts)
 
     def to_openai_messages(self) -> list[dict[str, Any]]:
-        """OpenAI 入参；空 system 被过滤，compact_summary 拼到 system 末尾。"""
+        """OpenAI 入参；空 system 被过滤，compact_summary 拼到 system 末尾。
+
+        安全网：修掉「tool_call 未全部回应」的半截工具轮。web /chat 触达 deadline 或客户端
+        断开会 cancel 掉 tool 循环，可能停在「assistant 已挂 tool_calls 但 tool 结果没补齐」
+        的状态（in-memory 与 jsonl 都半截）；原样回传会让下一轮 LLM 400（每个 tool_call 必须
+        有对应 tool 响应）。这里在出参前把残缺 assistant 降级为纯文本、并丢掉其孤儿 tool 响应。
+        """
+        src = (
+            self.messages[1:]
+            if self.messages and self.messages[0].role == "system"
+            else self.messages
+        )
+        answered = {m.tool_call_id for m in src if m.role == "tool" and m.tool_call_id}
+        # 收集「tool_call 未全部被回应」的 assistant 的 call id —— 这些 id 关联的 tool 响应要丢
+        dropped_ids: set[str] = set()
+        for m in src:
+            ids = _tool_call_ids(m)
+            if ids and not ids <= answered:
+                dropped_ids |= ids
+
         out: list[dict[str, Any]] = []
         sys_text = self._effective_system()
         if sys_text:
             out.append({"role": "system", "content": sys_text})
-        for m in self.messages[1:] if self.messages and self.messages[0].role == "system" else self.messages:
+        for m in src:
+            ids = _tool_call_ids(m)
+            if ids and not ids <= answered:
+                # 半截工具轮：有正文就降级为纯文本 assistant，没正文就整条丢掉
+                text = m.text_only()
+                if text:
+                    out.append({"role": "assistant", "content": text})
+                continue
+            if m.role == "tool" and m.tool_call_id in dropped_ids:
+                continue  # 父 assistant 已降级 → 这条 tool 成了孤儿，丢掉
             out.append(m.to_openai())
         return out
 

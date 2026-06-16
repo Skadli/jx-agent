@@ -404,7 +404,7 @@ async def run_serve() -> int:
     ))
     router.register("GET", "/api/health", make_health_api_handler(health, loop, db))
     router.register("GET", "/api/sessions", make_sessions_handler(db, loop, settings.data_dir))
-    router.register_prefix("GET", "/api/sessions/", make_session_messages_handler(settings.data_dir))
+    router.register_prefix("GET", "/api/sessions/", make_session_messages_handler(short_term, loop))
     router.register("GET", "/api/tools", make_tools_handler(tool_registry))
     router.register("GET", "/api/tool_calls", make_tool_calls_handler(db, loop))
     router.register("GET", "/api/persona", make_persona_handler(persona_for_api))

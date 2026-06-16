@@ -62,14 +62,18 @@ class ShortTermMemory:
             _logger.warning("append_message 失败（不阻塞）", session_id=session_id, error=str(exc))
 
     async def reload(self, session_id: str) -> list[ChatMessage]:
-        """读回 session 的 messages；兼容两种 jsonl 行格式：
+        """读回 session 的 messages；兼容三种 jsonl 行格式：
 
         - per-message：{ts, role, content, tool_calls, ...}（PR1 之后默认写入）
-        - session-level snapshot：{ts, type:"snapshot", messages:[...]}
-          （cmd_new 的封档格式 / d8a6ffb 之前 web 通道唯一写出的格式）
+        - 带 type 的 snapshot：{ts, type:"snapshot", messages:[...]}（cmd_new 的封档格式）
+        - 不带 type 的旧 snapshot：{ts, session_id, channel, messages:[...], compact_summary}
+          （d8a6ffb 之前 web 通道唯一写出的格式——没有 type 标记）
 
-        两种格式可在同一 jsonl 混合。snapshot 是“截至当时的完整帧”，所以读到
-        snapshot 时会替换此前累计的 per-message，随后再继续追加 snapshot 之后的新行。
+        判定 snapshot 只看「有没有 messages 数组」，不再要求 type=="snapshot"：旧版整帧
+        dump 没写 type，之前被漏判成 per-message（既无 role 又无 messages 命中）→ 整段丢弃，
+        进程重启后这些会话恢复为空、dashboard 也读不出历史（实测 10 个老会话受影响）。
+        三种格式可在同一 jsonl 混合。snapshot 是“截至当时的完整帧”，所以读到 snapshot 时会
+        替换此前累计的 per-message，随后再继续追加 snapshot 之后的新行。
         system 消息不从磁盘恢复；调用方会补当前版本的 system 占位并刷新 persona。
         """
         try:
@@ -79,8 +83,8 @@ class ShortTermMemory:
             return []
         out: list[ChatMessage] = []
         for r in rows:
-            # 分支 1：旧 snapshot 行——展开 messages 数组
-            if r.get("type") == "snapshot" and isinstance(r.get("messages"), list):
+            # 分支 1：snapshot 行（带不带 type 都算）——展开 messages 数组整帧替换累计
+            if isinstance(r.get("messages"), list):
                 snapshot_messages: list[ChatMessage] = []
                 for m in r["messages"]:
                     if not isinstance(m, dict):

@@ -36,8 +36,10 @@ _logger = get_logger(__name__)
 
 # 后台心跳间隔；过短会刷屏，过长易被代理切断
 _HEARTBEAT_INTERVAL_SEC = 15.0
-# 单次 /chat 最大时长；超过强制断开
-_CHAT_DEADLINE_SEC = 120.0
+# 单次 /chat 最大时长；超过强制断开并取消后台协程。
+# 带工具的一轮会跑完整段 tool_call 循环（多次 LLM 往返 + 工具执行 + 最长 90s 审批等待），
+# 120s 远不够、动不动触顶报错；放宽到 300s。真触顶时下方 finally 会 cancel 掉后台协程。
+_CHAT_DEADLINE_SEC = 300.0
 
 # Phase 10 多模态：data: URI 白名单 + 解析正则
 # 形如 "data:image/jpeg;base64,/9j/4AAQ..."
@@ -402,8 +404,12 @@ def make_chat_handler(
         future = asyncio.run_coroutine_threadsafe(_produce(), loop)
 
         # 读 queue → 写 SSE，过期或断管退出
+        # completed_normally：_produce 已自然收尾（done/error 都意味着它跑完了），
+        # 此时只需等它落地；否则（deadline / 客户端断开）必须 cancel，否则后台 LLM/工具循环
+        # 会在没人接收的情况下继续烧 token（用户报的「超时报错但后台还在跑」）。
         deadline = time.monotonic() + _CHAT_DEADLINE_SEC
         last_beat = time.monotonic()
+        completed_normally = False
         try:
             while True:
                 if time.monotonic() > deadline:
@@ -420,6 +426,7 @@ def make_chat_handler(
                     continue
                 if item is SENTINEL:
                     safe_write(req.wfile, format_event("", event="done"))
+                    completed_normally = True
                     break
                 if item is MSG_BREAK:
                     # 多消息拆分边界；前端按此事件开新气泡
@@ -429,6 +436,8 @@ def make_chat_handler(
                     continue
                 if isinstance(item, tuple) and item[0] is ERROR:
                     safe_write(req.wfile, format_event(str(item[1]), event="error"))
+                    # _produce 抛异常后已 put(ERROR) 再 put(SENTINEL) 并返回，协程视为已收尾
+                    completed_normally = True
                     break
                 if isinstance(item, tuple) and item[0] is APPROVAL:
                     payload = json.dumps(item[1], ensure_ascii=False, default=str)
@@ -439,9 +448,15 @@ def make_chat_handler(
                     break
                 last_beat = time.monotonic()
         finally:
-            # 确保 coroutine 在客户端断开后仍能跑完（已 yield 的 sse_q 数据让它消化掉）
-            with contextlib.suppress(Exception):
-                future.result(timeout=5.0)
+            if completed_normally:
+                # 协程已跑完（含落 jsonl snapshot）；给它极短时间收尾，吞掉任何异常
+                with contextlib.suppress(Exception):
+                    future.result(timeout=5.0)
+            elif not future.done():
+                # deadline 触顶或客户端断开：取消后台协程，停掉仍在跑的 LLM/工具循环。
+                # 已生成的 message 已逐条落 jsonl（_persist_message），dashboard 历史仍可重建；
+                # CancelledError 是 BaseException，不会被 _produce 的 except Exception 误吞。
+                future.cancel()
             req.close_connection = True
 
         health.set("llm", "up")

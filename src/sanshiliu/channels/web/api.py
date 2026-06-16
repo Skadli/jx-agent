@@ -21,6 +21,7 @@ from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.types import MODULES_DIRNAME
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.memdir import MemdirLoader
+from sanshiliu.memory.shortterm import ShortTermMemory
 from sanshiliu.security.settings_loader import SettingsLoader
 from sanshiliu.skills.loader import SkillLoader
 from sanshiliu.skills.structure import read_skill_structure, skill_structure_path
@@ -240,8 +241,17 @@ def _read_last_message(sessions_dir: Path, session_id: str) -> str:
 # ────────── /api/sessions/{id}/messages ──────────
 
 def make_session_messages_handler(
-    data_dir: Path,
+    short_term: ShortTermMemory,
+    loop: asyncio.AbstractEventLoop,
 ) -> Callable[[BaseHTTPRequestHandler], None]:
+    """复用 ShortTermMemory.reload() 折叠全部 jsonl 行重建完整对话。
+
+    旧实现只读**最后一条** jsonl 记录的 ``messages`` 数组——这只对 PR1 之前的
+    session-level snapshot 格式有效。PR1 之后是 per-message append（最后一行多半是一条
+    单独的 assistant，没有 ``messages`` 字段），于是 ``last_record.get("messages")`` 恒为空，
+    dashboard 读历史会话永远拿到空数组、看似「加载不出来」（实测 72 个会话里 44 个返回空）。
+    reload() 已同时兼容 per-message 行与 snapshot 行（snapshot 整帧替换累计），是唯一正确的重建路径。
+    """
     def handler(req: BaseHTTPRequestHandler) -> None:
         def _do() -> None:
             raw = req.path.split("?", 1)[0]
@@ -251,35 +261,24 @@ def make_session_messages_handler(
                 _write_json(req, {"error": "bad path"}, status=400)
                 return
             # wechat session_id 形如 "wechat:user:o9...@im.wechat"，前端 encodeURIComponent
-            # 后变成 %3A / %40 等；必须先 unquote，否则 sanitize 出的文件名与写入端不一致 → 永远空数组
+            # 后变成 %3A / %40 等；先 unquote，reload() 内部按同一规则 sanitize 出文件名
             session_id = urllib.parse.unquote(parts[2])
-            safe = "".join(c for c in session_id if c.isalnum() or c in "-_")[:120]
-            path = data_dir / "sessions" / f"{safe}.jsonl"
-            messages: list[dict[str, Any]] = []
-            if path.is_file():
-                with path.open("r", encoding="utf-8") as f:
-                    last_record: dict[str, Any] | None = None
-                    for ln in f:
-                        ln = ln.strip()
-                        if not ln:
-                            continue
-                        try:
-                            last_record = json.loads(ln)
-                        except json.JSONDecodeError:
-                            continue
-                    if last_record is not None:
-                        for m in (last_record.get("messages") or []):
-                            # 跳过 system；其它都保留，前端会按 role + tool_calls 渲染
-                            role = m.get("role")
-                            if role not in ("user", "assistant", "tool"):
-                                continue
-                            messages.append({
-                                "role": role,
-                                "content": m.get("content") or "",
-                                "tool_calls": m.get("tool_calls"),
-                                "tool_call_id": m.get("tool_call_id"),
-                                "name": m.get("name"),
-                            })
+            try:
+                reloaded = _run(loop, short_term.reload(session_id))
+            except Exception as exc:
+                _logger.warning("reload session 失败（返回空）", session_id=session_id, error=str(exc))
+                reloaded = []
+            # reload 已过滤 system、保留 user/assistant/tool；转成前端期望的 dict 形状
+            messages: list[dict[str, Any]] = [
+                {
+                    "role": m.role,
+                    "content": m.content if m.content is not None else "",
+                    "tool_calls": m.tool_calls,
+                    "tool_call_id": m.tool_call_id,
+                    "name": m.name,
+                }
+                for m in reloaded
+            ]
             _write_json(req, {"session_id": session_id, "messages": messages})
         _safe(req, _do, "/api/sessions/messages")
     return handler

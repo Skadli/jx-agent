@@ -96,6 +96,9 @@ function Chat() {
     const sessionForSend = activeId && (!active || active.channel === "web") ? activeId : null;
     setTimeline(t => [...t, { kind: "user", content: text, images: imgs }]);
     setComposer("");
+    // 图已捕进 imgs 并随消息发出、也已落进 user 气泡——立刻清空输入框附件区，
+    // 否则整段流式期间图一直挂在输入框（bug）。流式中无法再加图（按钮禁用 + canAcceptMore 拦截）。
+    setPendingImages([]);
     setStreaming(true);
     setStreamText("");
     let buf = "";
@@ -122,7 +125,6 @@ function Chat() {
         if (buf) setTimeline(t => [...t, { kind: "assistant", content: buf }]);
         setStreamText("");
         setStreaming(false);
-        setPendingImages([]);
         streamCtrl.current = null;
         // 触发会话列表刷新 + 重拉本会话历史消息（取回工具调用记录）
         API.get("/api/sessions?limit=50").then(r => { if (!r.error) setSessions(r.sessions || []); });
@@ -137,7 +139,6 @@ function Chat() {
         setTimeline(t => [...t, { kind: "assistant", content: `[错误] ${msg}` }]);
         setStreamText("");
         setStreaming(false);
-        setPendingImages([]);
         streamCtrl.current = null;
       },
     });
