@@ -243,15 +243,23 @@ class ConversationEngine:
             _logger.error("persona module 激活失败（保留旧 listing/module）", error=str(exc))
 
     def _refresh_skills(self, session: Session, user_text: str) -> None:
-        """注入 skills listing 到 system prompt；和 Claude Code 一致——
-        listing 只给 name+description，正文由 LLM 主动调 Skill 工具拿。
-        user_text 仅作签名兼容，listing 不再做关键字预匹配。"""
-        del user_text  # 显式标记不用，避免静态检查警告
+        """注入 skills listing 到 system prompt：listing 只给 name+description，正文由 LLM 调
+        Skill 工具拿（对齐 Claude Code）。此外按 user_text 关键词预判命中 0-1 个 skill，命中则在
+        listing 顶部追加一条本轮强制指令——与 persona module 的引擎侧自动注入对称，给弱遵从模型补
+        一条不靠"自觉读工具 description"的兜底通路（预判只产提示、不注入正文，保持轻 system prompt）。"""
         if self._skill_activator is None:
             session.active_skills_text = ""
             return
         try:
-            session.active_skills_text = self._skill_activator.list_for_prompt()
+            listing = self._skill_activator.list_for_prompt()
+            picked = self._skill_activator.pick(user_text)
+            if picked is not None:
+                directive = self._skill_activator.hit_directive(picked)
+                session.active_skills_text = (
+                    f"{directive}\n\n{listing}" if listing else directive
+                )
+            else:
+                session.active_skills_text = listing
         except Exception as exc:
             _logger.error("skill listing 构造失败（保留旧 listing）", error=str(exc))
 
