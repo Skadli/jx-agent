@@ -843,14 +843,16 @@ function buildTimelineFromMessages(msgs) {
         items.push({ kind: "user", content: m.content || "" });
       }
     } else if (role === "assistant") {
-      // content 是工具前的口语状态(preamble)，先于工具卡片显示，符合"状态→调用→结果"时序。
-      // 存储原文含字面 <MSG>，按段拆成多条气泡（与后端发送一致）。
-      if (m.content) {
+      const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      // 带 tool_calls 的 assistant.content 是 preamble/状态，**不**作为答案气泡展示——与 live 流式
+      // 一致（引擎已不再把它推给用户），否则回放时会出现"调用工具前后双答"。只有不带 tool_calls 的
+      // assistant（最终答案）才把 content 渲染成气泡；tool 调用卡片照常展示。content 原文含字面 <MSG>，
+      // 按段拆成多条气泡（与后端发送一致）。
+      if (m.content && calls.length === 0) {
         for (const seg of splitOnMsg(m.content)) {
           items.push({ kind: "assistant", content: seg });
         }
       }
-      const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
       for (const tc of calls) {
         const fn = tc.function || {};
         const item = {
