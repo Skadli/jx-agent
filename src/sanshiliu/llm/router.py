@@ -133,6 +133,34 @@ class LLMRouter:
         ):
             yield delta
 
+    async def stream_chat_collect(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str,
+        channel: str,
+        user_id: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        max_retries_on_disconnect: int = 2,
+        result_sink: list[StreamResult],
+    ) -> AsyncIterator[StreamDelta]:
+        spec = self.select_for(messages)
+        client = self._registry.client(spec.name)
+        async for delta in client.stream_chat_collect(
+            messages,
+            session_id=session_id,
+            channel=channel,
+            user_id=user_id,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_retries_on_disconnect=max_retries_on_disconnect,
+            result_sink=result_sink,
+        ):
+            yield delta
+
     async def chat(
         self,
         messages: list[dict[str, Any]],

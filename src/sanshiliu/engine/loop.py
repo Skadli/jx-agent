@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -17,7 +19,7 @@ from sanshiliu.identity.loader import PersonaLoader
 from sanshiliu.identity.module_activator import PersonaModuleActivator
 from sanshiliu.llm.client import LLMClient
 from sanshiliu.llm.router import LLMRouter
-from sanshiliu.llm.stream import StreamDelta
+from sanshiliu.llm.stream import StreamDelta, StreamResult
 from sanshiliu.memory.longterm.claudemd import ClaudeMdLoader
 from sanshiliu.memory.longterm.consolidate import MemoryConsolidator
 from sanshiliu.memory.longterm.extract import MemoryExtractor
@@ -310,20 +312,36 @@ class ConversationEngine:
         Phase 10：user_text 可为 str（旧）或 list[dict]（OpenAI 多模态格式）。
         """
         if self.tools_enabled:
-            # 工具前的口语 preamble 作为独立气泡/消息浮出（"状态→结果"两段流）。
-            # 段间插 DEFAULT_SENTINEL，复用各通道已有的 <MSG> 拆分逻辑切气泡。
-            preambles: list[str] = []
+            # 工具路径：complete_turn 跑成后台任务，它每产生一段文本就 push 进队列，本生成器
+            # 实时排空并 yield——多轮 preamble 与最终答案都逐 token 流式，轮间由 complete_turn
+            # 注入 DEFAULT_SENTINEL(<MSG>) 切气泡。取代旧的"先 buffer 全部 preamble、循环跑完
+            # 才一次性吐"（那种写法下整段工具循环期间前端只有心跳、看不到任何中间内容）。
+            queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-            async def _collect_preamble(text: str) -> None:
-                preambles.append(text)
+            async def _on_delta(text: str) -> None:
+                await queue.put(text)
 
-            msg = await self.complete_turn(
-                session, user_text, on_user_message=_collect_preamble,
-            )
-            for pre in preambles:
-                yield StreamDelta(text=pre)
-                yield StreamDelta(text=DEFAULT_SENTINEL)
-            yield StreamDelta(text=msg.text_only())
+            async def _run() -> None:
+                try:
+                    await self.complete_turn(session, user_text, on_text_delta=_on_delta)
+                finally:
+                    await queue.put(None)  # 收尾哨兵：让消费侧退出循环
+
+            task = asyncio.create_task(_run())
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    yield StreamDelta(text=item)
+                # 正常收尾：await 任务以传播 complete_turn 内的异常（_produce 捕获后发 error 事件）
+                await task
+            finally:
+                # 提前关闭（客户端断开 / deadline 触发 cancel）时，别让后台 task 无人接收地空跑烧 token
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
             return
 
         flat_text = _flatten_user_text(user_text)
@@ -364,6 +382,7 @@ class ConversationEngine:
     async def complete_turn(
         self, session: Session, user_text: MessageContent,
         *, on_user_message: Callable[[str], Awaitable[None]] | None = None,
+        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
         max_turns: int | None = None,
         use_tools: bool = True,
     ) -> ChatMessage:
@@ -375,6 +394,11 @@ class ConversationEngine:
         （content 非空 + tool_calls），在执行工具**前**用该 preamble 调用一次，
         让通道把它作为独立的"状态"消息先发出（拟人化"状态→结果"）。最终回复仍走返回值。
         dream_runner 等不传则保持原单条行为。
+
+        on_text_delta：可选回调（流式通道用，如 web/repl）。非空时每轮 LLM 调用走
+        stream_chat_collect 逐 token 推出（含 preamble 与最终答案），轮间自动注入 <MSG>
+        让前端切气泡；此时 on_user_message **不再触发**（preamble 已逐 token 流出，避免重复）。
+        为空时（wechat / dream / growth / gacha）维持原非流式 chat() 行为，字节不变。
 
         max_turns：tool 循环轮数上限；None → 沿用默认 6（所有现有调用点不传 → 行为字节不变）。
         单轮总 tool_call 数另有默认上限 8，避免模型连续试探路径/文件时烧完整个回合。
@@ -399,6 +423,20 @@ class ConversationEngine:
             max_turns=max_turns if max_turns is not None else _DEFAULT_MAX_TURNS,
             max_tool_calls=_DEFAULT_MAX_TOOL_CALLS,
         )
+
+        # 逐轮流式：on_text_delta 非空时把每轮文本 token 实时推出；轮间懒插一个 <MSG> 让前端
+        # 切新气泡——只在"上一轮出过正文且本轮又要出正文"时才插，避免空气泡。
+        need_round_break = False
+
+        async def _emit(text: str) -> None:
+            nonlocal need_round_break
+            if on_text_delta is None:
+                return
+            if need_round_break:
+                await on_text_delta(DEFAULT_SENTINEL)
+                need_round_break = False
+            await on_text_delta(text)
+
         while True:
             loop_state.turn += 1
             if loop_state.turn > loop_state.max_turns:
@@ -415,13 +453,31 @@ class ConversationEngine:
                 tools: list[dict[str, Any]] | None = self._tool_registry.to_openai_tools()
             else:
                 tools = None
-            result = await self._llm.chat(
-                messages=session.to_openai_messages(),
-                session_id=session.session_id,
-                channel=session.channel,
-                user_id=session.user_id,
-                tools=tools,
-            )
+            if on_text_delta is not None:
+                # 流式：逐 token 推前端，同时累积完整 tool_calls/usage 供本轮执行
+                sink: list[StreamResult] = []
+                async for sdelta in self._llm.stream_chat_collect(
+                    messages=session.to_openai_messages(),
+                    session_id=session.session_id,
+                    channel=session.channel,
+                    user_id=session.user_id,
+                    tools=tools,
+                    result_sink=sink,
+                ):
+                    if sdelta.text:
+                        await _emit(sdelta.text)
+                result = sink[0] if sink else StreamResult(
+                    text="", stop_reason=None,
+                    input_tokens=0, output_tokens=0, latency_ms=0,
+                )
+            else:
+                result = await self._llm.chat(
+                    messages=session.to_openai_messages(),
+                    session_id=session.session_id,
+                    channel=session.channel,
+                    user_id=session.user_id,
+                    tools=tools,
+                )
             if self._context_manager is not None:
                 self._context_manager.record_usage(
                     input_tokens=result.input_tokens,
@@ -450,8 +506,12 @@ class ConversationEngine:
             )
             session.messages.append(asst_with_tools)
             await self._persist_message(session, asst_with_tools)
-            # 工具前的口语 preamble 浮出为独立"状态"消息（拟人化"状态→结果"）
-            if on_user_message is not None and result.text and result.text.strip():
+            # 工具前的口语 preamble：流式通道已逐 token 推出本轮正文，这里只标记轮间边界，让
+            # 下一轮正文开新气泡；非流式通道（wechat 等）仍把整段 preamble 作为独立消息发出。
+            if on_text_delta is not None:
+                if result.text and result.text.strip():
+                    need_round_break = True
+            elif on_user_message is not None and result.text and result.text.strip():
                 await on_user_message(result.text)
             parsed_calls = parse_tool_calls(result.tool_calls)
             hit_tool_call_limit = False

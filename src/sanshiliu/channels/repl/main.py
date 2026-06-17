@@ -439,19 +439,18 @@ async def run_repl() -> int:
 
             print("\n贱笑> ", end="", flush=True)
             sp = StreamingSplitter()
-            first = True
             try:
                 async for delta in engine.stream_turn(session, user_input):
-                    for seg in sp.feed(delta.text):
-                        if not first:
+                    for kind, payload in sp.feed_stream(delta.text):
+                        if kind == "break":
                             print("\n贱笑> ", end="", flush=True)
-                        print(seg, end="", flush=True)
-                        first = False
-                for seg in sp.close():
-                    if not first:
+                        elif payload:
+                            print(payload, end="", flush=True)
+                for kind, payload in sp.close_stream():
+                    if kind == "break":
                         print("\n贱笑> ", end="", flush=True)
-                    print(seg, end="", flush=True)
-                    first = False
+                    elif payload:
+                        print(payload, end="", flush=True)
                 print()
             except LLMError as exc:
                 print(f"\n[LLM 错误] {exc}", file=sys.stderr)

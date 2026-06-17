@@ -217,6 +217,142 @@ class LLMClient:
                 error=final_err,
             )
 
+    async def stream_chat_collect(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str,
+        channel: str,
+        user_id: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        max_retries_on_disconnect: int = 2,
+        result_sink: list[StreamResult],
+    ) -> AsyncIterator[StreamDelta]:
+        """流式 yield 文本增量，同时累积 tool_calls / reasoning / usage；成功收尾时把完整
+        StreamResult 追加进 result_sink（调用方据此拿到本轮 tool_calls 去执行）。
+
+        给 engine 的 tool 循环用：既要逐 token 推前端、又要完整 tool_calls。等于 stream_chat
+        （逐 token + 重试 + 落表）与 chat（累积 tool_calls/reasoning）的并集。重试语义同
+        stream_chat——仅"本次尝试首字前断连"可整次重试，已 yield 文本则不再重试；整次只落 1 行。
+        """
+        attempts_left = max_retries_on_disconnect + 1
+        outer_start = time.monotonic()
+        final_input_tokens = 0
+        final_output_tokens = 0
+        final_stop_reason: str | None = None
+        final_err: str | None = None
+        succeeded = False
+        text_chunks: list[str] = []
+        reasoning_chunks: list[str] = []
+        tc_accum: dict[int, dict[str, Any]] = {}
+
+        try:
+            while attempts_left > 0:
+                attempts_left -= 1
+                # 每次尝试从零累积，避免重试把上次半截结果叠进来
+                text_chunks = []
+                reasoning_chunks = []
+                tc_accum = {}
+                stop_reason: str | None = None
+                input_tokens = 0
+                output_tokens = 0
+                yielded_any = False
+
+                try:
+                    stream = await self._open_stream(
+                        messages,
+                        tools=tools,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    async for chunk in stream:
+                        if chunk.choices:
+                            choice = chunk.choices[0]
+                            content = getattr(choice.delta, "content", None) or ""
+                            if content:
+                                text_chunks.append(content)
+                                yielded_any = True
+                                yield StreamDelta(text=content)
+                            rc = getattr(choice.delta, "reasoning_content", None) or ""
+                            if rc:
+                                reasoning_chunks.append(rc)
+                            delta_tcs = getattr(choice.delta, "tool_calls", None) or []
+                            for dtc in delta_tcs:
+                                idx = getattr(dtc, "index", None)
+                                if idx is None:
+                                    continue
+                                slot = tc_accum.setdefault(
+                                    idx,
+                                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                                )
+                                if getattr(dtc, "id", None):
+                                    slot["id"] = dtc.id
+                                fn = getattr(dtc, "function", None)
+                                if fn is not None:
+                                    if getattr(fn, "name", None):
+                                        slot["function"]["name"] += fn.name
+                                    if getattr(fn, "arguments", None):
+                                        slot["function"]["arguments"] += fn.arguments
+                            if choice.finish_reason:
+                                stop_reason = choice.finish_reason
+                        usage = getattr(chunk, "usage", None)
+                        if usage is not None:
+                            input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                            output_tokens = getattr(usage, "completion_tokens", 0) or 0
+                    final_input_tokens = input_tokens
+                    final_output_tokens = output_tokens
+                    final_stop_reason = stop_reason
+                    final_err = None
+                    succeeded = True
+                    break
+                except _RETRYABLE_HTTPX_EXC as exc:
+                    final_err = f"{type(exc).__name__}: {exc}"
+                    # 已输出过字符就不能重试（避免重复）；首字前断连且还有 attempts 才重试
+                    if yielded_any or attempts_left <= 0:
+                        _logger.error(
+                            "流式中断（无法重试）",
+                            yielded_any=yielded_any,
+                            attempts_left=attempts_left,
+                            error=final_err,
+                        )
+                        raise LLMRetryableError(f"流式中断：{final_err}") from exc
+                    _logger.warning(
+                        "首字前断连，整次重试",
+                        attempts_left=attempts_left,
+                        error=final_err,
+                    )
+                    continue
+                except Exception as exc:
+                    final_err = f"{type(exc).__name__}: {exc}"
+                    raise
+            if succeeded:
+                tool_calls = [tc_accum[i] for i in sorted(tc_accum.keys())]
+                result_sink.append(
+                    StreamResult(
+                        text="".join(text_chunks),
+                        stop_reason=final_stop_reason,
+                        input_tokens=final_input_tokens,
+                        output_tokens=final_output_tokens,
+                        latency_ms=int((time.monotonic() - outer_start) * 1000),
+                        tool_calls=tool_calls,
+                        reasoning_content="".join(reasoning_chunks),
+                    )
+                )
+        finally:
+            # 整个生命周期只落 1 行；error 优先于 success
+            await self._record(
+                session_id=session_id,
+                channel=channel,
+                user_id=user_id,
+                input_tokens=final_input_tokens,
+                output_tokens=final_output_tokens,
+                latency_ms=int((time.monotonic() - outer_start) * 1000),
+                stop_reason=final_stop_reason if succeeded else None,
+                error=final_err,
+            )
+
     async def chat(
         self,
         messages: list[dict[str, Any]],

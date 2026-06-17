@@ -137,6 +137,8 @@ class StreamingSplitter:
         self._paragraph_fallback = paragraph_fallback
         self._saw_sentinel = False
         self._buf: str = ""
+        # feed_stream/close_stream（逐字流式）专用：跨 chunk 记代码块开合状态
+        self._in_code = False
 
     def feed(self, chunk: str) -> list[str]:
         if not chunk:
@@ -169,3 +171,66 @@ class StreamingSplitter:
             self._buf = self._buf[pos + len(self._sentinel):]
             self._saw_sentinel = True
         return out
+
+    # ─────────── 逐字流式 API（与 feed/close 并存，二选一用） ───────────
+    # feed/close 把整段缓冲到 sentinel/close 才出（前端一次性看到整条气泡）；
+    # feed_stream/close_stream 则尽快逐 token 吐文本，只把"可能是半截 <MSG>/```"的极短尾巴
+    # （≤4 字符）留到下次，遇代码块外 sentinel 吐 break。供 web SSE / repl 做真·逐字流式。
+
+    def _is_token_prefix(self, tail: str) -> bool:
+        """tail 是否为 <MSG> 或 ``` 的"严格非空前缀"（即可能是被切到一半的特殊标记）。"""
+        if not tail:
+            return False
+        return any(
+            len(tail) < len(tok) and tok.startswith(tail)
+            for tok in (self._sentinel, _FENCE)
+        )
+
+    def _drain_stream(self, *, closing: bool) -> list[tuple[str, str]]:
+        """扫 buf：尽量吐 ("text", 片段) 与 ("break", "")；非 closing 时末尾保留半截标记。"""
+        out: list[tuple[str, str]] = []
+        buf = self._buf
+        sent = self._sentinel
+        fl = len(_FENCE)
+        sl = len(sent)
+        # closing 时不再有后续 chunk，半截标记按字面文本吐出；故 holdback=0
+        holdback = 0 if closing else max(fl, sl) - 1
+        text: list[str] = []
+        i = 0
+        n = len(buf)
+        while i < n:
+            if buf.startswith(_FENCE, i):
+                text.append(_FENCE)
+                self._in_code = not self._in_code
+                i += fl
+                continue
+            if not self._in_code and buf.startswith(sent, i):
+                if text:
+                    out.append(("text", "".join(text)))
+                    text = []
+                out.append(("break", ""))
+                self._saw_sentinel = True
+                i += sl
+                continue
+            # 末尾 holdback 区内若像半截特殊标记，停下来留到下次 feed_stream（避免吐出半个 <MSG>）
+            if (n - i) <= holdback and self._is_token_prefix(buf[i:]):
+                break
+            text.append(buf[i])
+            i += 1
+        if text:
+            out.append(("text", "".join(text)))
+        self._buf = buf[i:]
+        return out
+
+    def feed_stream(self, chunk: str) -> list[tuple[str, str]]:
+        """增量喂入；返回本次能确定的事件序列：("text", 片段) / ("break", "")。"""
+        if not chunk:
+            return []
+        self._buf += chunk
+        return self._drain_stream(closing=False)
+
+    def close_stream(self) -> list[tuple[str, str]]:
+        """流结束；把保留的尾巴（半截标记此时已确定不再补全）作为纯文本吐出。"""
+        events = self._drain_stream(closing=True)
+        self._buf = ""
+        return events

@@ -373,19 +373,20 @@ def make_chat_handler(
                         sse_q.put(SENTINEL)
                         return
 
-                sp = StreamingSplitter(paragraph_fallback=True)
-                first_segment = True
+                # 逐字流式：每个 text 片段单独发一帧 data:（前端 onDelta 追加进当前气泡），
+                # <MSG> 边界发 msg_break（前端 onMsgBreak 定型当前气泡、开新气泡）。
+                sp = StreamingSplitter()
                 async for delta in engine.stream_turn(session, user_content):
-                    for seg in sp.feed(delta.text):
-                        if not first_segment:
+                    for kind, payload in sp.feed_stream(delta.text):
+                        if kind == "break":
                             sse_q.put(MSG_BREAK)
-                        sse_q.put(seg)
-                        first_segment = False
-                for seg in sp.close():
-                    if not first_segment:
+                        elif payload:
+                            sse_q.put(payload)
+                for kind, payload in sp.close_stream():
+                    if kind == "break":
                         sse_q.put(MSG_BREAK)
-                    sse_q.put(seg)
-                    first_segment = False
+                    elif payload:
+                        sse_q.put(payload)
                 # 落 jsonl 用于回放和 dashboard 历史展示
                 if short_term is not None:
                     try:
