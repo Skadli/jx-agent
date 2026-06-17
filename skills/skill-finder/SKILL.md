@@ -1,5 +1,6 @@
 ---
 name: "Skill Finder (Discover ClawHub + Skills.sh skills)"
+discoverable: false
 slug: skill-finder
 version: "1.1.5"
 homepage: https://clawic.com/skills/skill-finder

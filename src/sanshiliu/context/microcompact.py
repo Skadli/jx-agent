@@ -49,6 +49,8 @@ class MicroCompactor:
                 continue
             if i > last_assistant:
                 continue  # 未消费的最新一批 tool_result，别折
+            if msg.name == "Skill":
+                continue  # S3/C3：skill 正文不折叠——要跨轮保持完整，供模型持续遵循其指令
             if not isinstance(msg.content, str) or len(msg.content) <= self._max_chars:
                 continue
             truncated = msg.content[: self._max_chars]

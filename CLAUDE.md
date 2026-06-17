@@ -55,7 +55,7 @@ L1 Bootstrap (wire.App) — orchestrator
 ├── L4 Context        history + compact + microcompact + budget
 │   ├── L3 Identity   persona loader (core/*.md, 全量常驻) + module loader/activator (modules/*.md, 按需注入) + 5s mtime watcher
 │   ├── L5 Memory     CLAUDE.md (shortterm pin) + memdir/* (longterm, wiki [[link]]) + async extract
-│   ├── L6 Skills     SKILL.md loader + keyword matcher + activator (injects body into system prompt)
+│   ├── L6 Skills     SKILL.md loader + activator（listing 经 <system-reminder> 贴用户消息注入；匹配靠模型读 description，无关键词匹配；正文由 Skill 工具拿）
 │   ├── L7 Tools      registry + dispatcher + builtins (web_search / file_io / bash_exec)
 │   └── L0 Foundation config (pydantic-settings) + logging (structlog) + errors + retry + frontmatter
 └── L0 Storage        sqlite DAO (asyncio.to_thread wrap stdlib sqlite3) + jsonl writer + schema.sql
@@ -120,7 +120,7 @@ Sub-agent audit from 2026-05-23 — relevant when touching these areas:
 
 - `llm/client.py` test coverage is **18%** (retry / stream / error mapping mocks missing)
 - `engine/loop.py` coverage **46%** — tool_call loop, dedupe, budget reverse-lookup untested
-- `skills/matcher.py` semantic match is a **stub** (keyword path only; embedding not wired)
+- skill 触发 = 模型读 description 自行判断（设计如此，对齐 CC；无引擎侧关键词/语义匹配，`skills/matcher.py` 在还原树不存在）；`keywords` 仅作 dashboard/搜索元数据
 - `bash_exec` uses shell concat of LLM strings; the classifier is regex-only and can be obfuscation-bypassed. Anything `critical`-tier should hard-deny, not prompt.
 - `PermissionManager._session_cache` is unlocked — concurrent channels can double-prompt or double-write `settings.json`
 - iLink webhook HMAC has **no timestamp/replay window** — add 5min skew when fixing

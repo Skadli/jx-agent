@@ -1,5 +1,6 @@
 ---
 name: dream
+discoverable: false
 description: 让 Agent 像做梦一样，从最近多个 session 的记忆里找出"非显然"的关联、被遗忘的信号、未被承认的模式，并在发现反复出现的专业知识能力缺口时通过 skill-finder / skill-installer 搜索安装现成 skill。用于反思 / 找盲点 / 消化未结的情绪，**不是**用于总结归档（那是 memory_extract 和 compact 在做的事）。当用户说"做梦 / 做个梦 / 反思一下 / 消化一下 / 想想最近 / /dream"，或者你自己判断累积了多个 session 的未消化素材时使用。
 keywords:
   - 做梦

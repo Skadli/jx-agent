@@ -113,13 +113,25 @@ class SkillLoader:
                     (str(fm["description"]).strip() if has_desc else "") or body_desc or skill_id
                 )
                 kw_raw = fm.get("keywords") or []
-                # 对齐 module loader：strip + 滤掉空项（keywords 不进 listing，仅供 dashboard /
-                # structure / 成长安装搜索消费，但保持干净）
+                # 对齐 module loader：strip + 滤掉空项
                 keywords = (
                     [str(k).strip() for k in kw_raw if str(k).strip()]
                     if isinstance(kw_raw, list)
                     else []
                 )
+                # discoverable：缺省 True；显式 false/no/0/off → 不进常驻 listing（仍可被 Skill
+                # 工具按名直调）。用于把 dream/growth/gacha/skill-* 这类
+                # "非用户日常对话"的元 skill 从每轮 prompt 里摘掉，省 token。
+                disc_raw = fm.get("discoverable", True)
+                discoverable = str(disc_raw).strip().lower() not in ("false", "no", "0", "off")
+                # CC 标准字段（接受连字符/下划线/驼峰几种写法，兼容直接拷过来的 Claude SKILL.md）
+                when_to_use = str(
+                    fm.get("when-to-use") or fm.get("when_to_use") or fm.get("whenToUse") or ""
+                ).strip()
+                dmi_raw = fm.get(
+                    "disable-model-invocation", fm.get("disable_model_invocation", False)
+                )
+                disable_model_invocation = str(dmi_raw).strip().lower() in ("true", "yes", "1", "on")
                 seen[skill_id] = SkillDef(
                     id=skill_id,
                     name=name,
@@ -128,6 +140,9 @@ class SkillLoader:
                     body=parsed.body,
                     source=sf,
                     priority=prio,
+                    discoverable=discoverable,
+                    when_to_use=when_to_use,
+                    disable_model_invocation=disable_model_invocation,
                 )
         self._cache = list(seen.values())
         self._cache_mtimes = mtimes

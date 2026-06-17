@@ -64,6 +64,15 @@ class ContextManager:
         if not self._budget.should_compact():
             return False
 
+        # C2：连续失败熔断后暂停 compact，避免每轮反复失败白烧 token（牺牲后续压缩换不烧钱）
+        if self._budget.compact_circuit_open:
+            _logger.warning(
+                "compact 已熔断（连续失败≥3），本轮跳过压缩",
+                session_id=session.session_id,
+                consecutive_failures=self._budget.consecutive_compact_failures,
+            )
+            return False
+
         _logger.info(
             "命中 compact 阈值，开始压缩",
             session_id=session.session_id,

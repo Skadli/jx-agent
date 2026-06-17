@@ -41,11 +41,14 @@ _logger = get_logger(__name__)
 # fail-fast：相同调用第 3 次直接拒（前 2 次允许，第 3 次返"重复"错误）
 _DEDUPE_THRESHOLD = 2
 
-# tool 循环默认轮数上限；complete_turn 不传 max_turns 时沿用此值（保持所有旧调用点字节不变）。
-_DEFAULT_MAX_TURNS = 6
+# tool 循环默认轮数上限；complete_turn 不传 max_turns 时沿用此值。
+# 对齐 CC：交互式主回合不靠"轮数硬砍"收敛，而靠 compaction + budget；这里保留一个较高的硬上限作
+# runaway 兜底（从 6 提到 25——6 对"调 skill→搜索→装→重试→出结果"这类多步流程太低，会半路截断）。
+_DEFAULT_MAX_TURNS = 25
 
-# 单个用户回合内最多执行/响应多少个 tool_call；超过后补错误 tool message 并停止循环。
-_DEFAULT_MAX_TOOL_CALLS = 8
+# 单个用户回合内最多执行/响应多少个 tool_call；超过后**只拒该 call、不终止整回合**（见循环内）。
+# 从 8 提到 40：CC 无单回合 call 计数硬上限，这里留高位兜底；真正的收敛靠 max_turns + compaction。
+_DEFAULT_MAX_TOOL_CALLS = 40
 
 # 触顶（超过 max_turns）时返回的固定文案；growth_runner 需 import 它把"触顶"识别为硬失败
 # （而非误当正常 LLM 内容喂给 JSON 修复——那是没有真内容可修的）。
@@ -245,23 +248,15 @@ class ConversationEngine:
             _logger.error("persona module 激活失败（保留旧 listing/module）", error=str(exc))
 
     def _refresh_skills(self, session: Session, user_text: str) -> None:
-        """注入 skills listing 到 system prompt：listing 只给 name+description，正文由 LLM 调
-        Skill 工具拿（对齐 Claude Code）。此外按 user_text 关键词预判命中 0-1 个 skill，命中则在
-        listing 顶部追加一条本轮强制指令——与 persona module 的引擎侧自动注入对称，给弱遵从模型补
-        一条不靠"自觉读工具 description"的兜底通路（预判只产提示、不注入正文，保持轻 system prompt）。"""
+        """构造 skills 清单写进 session.active_skills_text；由 to_openai_messages 作为
+        <system-reminder> 贴本轮用户消息注入（高 recency）。不做关键词预判——匹配交给模型读
+        description（跨语言、对新装 skill 零配置即生效，与 CC 一致）。"""
+        del user_text  # 不再按关键词预判；匹配由模型读 description 完成
         if self._skill_activator is None:
             session.active_skills_text = ""
             return
         try:
-            listing = self._skill_activator.list_for_prompt()
-            picked = self._skill_activator.pick(user_text)
-            if picked is not None:
-                directive = self._skill_activator.hit_directive(picked)
-                session.active_skills_text = (
-                    f"{directive}\n\n{listing}" if listing else directive
-                )
-            else:
-                session.active_skills_text = listing
+            session.active_skills_text = self._skill_activator.list_for_prompt()
         except Exception as exc:
             _logger.error("skill listing 构造失败（保留旧 listing）", error=str(exc))
 
@@ -514,14 +509,20 @@ class ConversationEngine:
             elif on_user_message is not None and result.text and result.text.strip():
                 await on_user_message(result.text)
             parsed_calls = parse_tool_calls(result.tool_calls)
-            hit_tool_call_limit = False
             for tc in parsed_calls:
                 tool_started = time.monotonic()
                 permission_decision: str | None = None
                 if not loop_state.consume_tool_call():
+                    # T4：本轮总调用超上限——只拒这一个 call（让模型自纠/收敛），不终止整回合；
+                    # 真正兜底是 max_turns + compaction（对齐 CC，不靠"硬砍回合"）。
                     tool_result_text = _TOOL_CALL_LIMIT_RESULT
                     is_error = True
-                    hit_tool_call_limit = True
+                    _logger.warning(
+                        "tool_call 总数超上限，拒绝本次调用",
+                        session_id=session.session_id,
+                        count=loop_state.tool_call_count,
+                        limit=loop_state.max_tool_calls,
+                    )
                 else:
                     count = loop_state.remember(tc.name, tc.arguments)
                     # PR3：dedupe 路径没走 dispatcher，permission_decision 保持 None（合理）
@@ -536,13 +537,12 @@ class ConversationEngine:
                         tool_result_text = res.content
                         is_error = res.is_error
                         permission_decision = res.permission_decision
-                if hit_tool_call_limit:
-                    _logger.warning(
-                        "tool_call 总数超限",
-                        session_id=session.session_id,
-                        count=loop_state.tool_call_count,
-                        limit=loop_state.max_tool_calls,
-                    )
+                        # S3/C3：记录成功的 Skill 调用正文，供 compact 折掉后由 to_openai_messages 重注入
+                        if tc.name == "Skill" and not res.is_error:
+                            session.remember_invoked_skill(
+                                str(tc.arguments.get("skill") or "").lstrip("/").strip(),
+                                res.content,
+                            )
                 await self._record_tool_call(
                     session_id=session.session_id,
                     tool_name=tc.name,
@@ -556,19 +556,21 @@ class ConversationEngine:
                     "tool 调用完成",
                     tool=tc.name, turn=loop_state.turn, is_error=is_error,
                 )
+                # T8：错误结果包一层 <tool_use_error>，帮通用模型把"工具失败"与"正常内容"区分开
+                # （对齐 CC 的 <tool_use_error> 文本标签；DB 记录里 result_text 保持原始、不包裹）。
+                display_text = (
+                    f"<tool_use_error>{tool_result_text}</tool_use_error>"
+                    if is_error and not tool_result_text.lstrip().startswith("<tool_use_error>")
+                    else tool_result_text
+                )
                 tool_msg = ChatMessage(
                     role="tool",
-                    content=tool_result_text,
+                    content=display_text,
                     tool_call_id=tc.id,
                     name=tc.name,
                 )
                 session.messages.append(tool_msg)
                 await self._persist_message(session, tool_msg)
-
-            if hit_tool_call_limit:
-                limit_msg = session.add_assistant(TOOL_TURN_LIMIT_MESSAGE)
-                await self._persist_message(session, limit_msg)
-                return limit_msg
 
             # 下一轮 LLM 调用前再压一次：折叠超长 tool_result + 超阈值时整段 compact。
             # 与 Claude Code 在 tool 循环内做 microcompact 的策略一致；

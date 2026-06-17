@@ -1,5 +1,6 @@
 ---
 name: skill-installer
+discoverable: false
 description: Install a skill from a GitHub repo path into the user-global skills dir (~/.sanshiliu/skills/<id>/). Use when you have a GitHub owner/repo + subdir for a real skill (e.g. handed over by skill-finder) and want it installed where the loader scans. Supports private repos.
 metadata:
   short-description: Install a skill from a GitHub repo into ~/.sanshiliu/skills

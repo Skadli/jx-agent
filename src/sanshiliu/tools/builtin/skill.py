@@ -46,9 +46,13 @@ class SkillTool:
         if not raw:
             return "参数 skill 不能为空"
         skill_id = raw[1:] if raw.startswith("/") else raw
-        if self._activator.lookup(skill_id) is None:
+        found = self._activator.lookup(skill_id)
+        if found is None:
             available = ", ".join(s.id for s in self._activator.list_all()) or "（无）"
             return f"未知 skill：{skill_id}；可用：{available}"
+        # CC SkillTool.validateInput 同位：disable-model-invocation 的 skill 拒绝模型调用
+        if found.disable_model_invocation:
+            return f"skill {skill_id} 已标记 disable-model-invocation，不可由模型调用"
         return None
 
     async def execute(

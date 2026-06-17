@@ -24,6 +24,17 @@ _REPLY_LENGTH_ANCHOR = (
     "只有用户这轮明确要展开 / 要方案 / 要脚本时才长，否则先短答或追问。"
 )
 
+# C4：compact 后给模型的"续聊"指令，拼在 compact_summary 之后（仅出参拼装、不写回 compact_summary
+# 字段，避免污染下一次 compact 的输入）。对齐 CC getCompactUserSummaryMessage："据摘要继续、别复述"。
+_COMPACT_CONTINUE_NOTE = (
+    "（以上是早前对话的摘要。直接据此继续，就当对话没断过；别向用户复述或确认这段摘要。）"
+)
+
+# T1：半截工具轮里，给"未回应的 tool_call"补的合成占位结果（对齐 CC 的
+# SYNTHETIC_TOOL_RESULT_PLACEHOLDER）——保留 assistant.tool_calls，只补一条 is_error 占位，
+# 既消除"孤儿 tool_call 触发 400"，又不丢 assistant 已有信息。
+_SYNTHETIC_TOOL_RESULT = "<tool_use_error>工具调用未完成（上一轮被中断），本次无结果。</tool_use_error>"
+
 
 def _tool_call_ids(msg: ChatMessage) -> set[str]:
     """assistant 消息里所有带 id 的 tool_call id；无 tool_calls / 无 id 返空集。"""
@@ -59,6 +70,9 @@ class Session:
     active_module_ids: set[str] = field(default_factory=set)
     # 上一轮最后注入的 module id（仅信息用途，给 REPL /stats 看）
     last_active_module_id: str = ""
+    # S3/C3：本会话已调用过的 skill → 正文（按调用顺序，末尾=最近）。用于 compact 折掉 skill body 后
+    # 在出参期重注入 <invoked-skills> 附件，让 skill 指令跨 compact 存活。不进 jsonl（运行期状态）。
+    invoked_skills: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # 占位 system 行；真实内容由 engine 在每轮前调 refresh_system_prompt 注入
@@ -85,10 +99,44 @@ class Session:
         self.messages.append(msg)
         return msg
 
+    def remember_invoked_skill(self, name: str, body: str) -> None:
+        """记录一次成功的 Skill 调用（name→正文）；重复调用则移到末尾标记为最近。"""
+        if not name or not body:
+            return
+        self.invoked_skills.pop(name, None)
+        self.invoked_skills[name] = body
+
+    def _invoked_skills_attachment(self, src: list[ChatMessage]) -> str:
+        """构造 <invoked-skills> 附件：把记录过、但当前 messages 里已不在场（被 compact 折掉）的
+        skill 正文按最近优先重注入；单条 ≤5K、总量 ≤25K、最多 5 个（对齐 CC 的 5K/25K 量级）。
+        仍存活于某条 tool 消息的 skill 不重注入（避免重复）。无可注入则返回空串。
+        """
+        if not self.invoked_skills:
+            return ""
+        live = {m.content for m in src if m.role == "tool" and isinstance(m.content, str)}
+        blocks: list[str] = []
+        total = 0
+        for name, body in reversed(self.invoked_skills.items()):  # 末尾=最近 → 最近优先
+            if body in live:
+                continue
+            piece = body[:5000]
+            if len(blocks) >= 5 or total + len(piece) > 25000:
+                break
+            blocks.append(f"## {name}\n{piece}")
+            total += len(piece)
+        if not blocks:
+            return ""
+        return (
+            "<invoked-skills>\n以下是本会话已调用过的 skill 正文（压缩后重注入，供你继续遵循其指令）：\n\n"
+            + "\n\n".join(blocks)
+            + "\n</invoked-skills>"
+        )
+
     def _effective_system(self) -> str:
         """合并顺序（空段跳过）：静态段在前、易变段在后，让 DeepSeek 自动前缀缓存吃到稳定前缀。
-        core_persona(messages[0]) → persona_modules_listing → active_skills → active_module(正文)
+        core_persona(messages[0]) → persona_modules_listing → active_module(正文)
         → memory_block → compact_summary → reply_length_anchor
+        （active_skills 已移出：作为 <system-reminder> 贴用户消息注入，见 to_openai_messages）
 
         为什么 memory_block 从最前挪到静态段之后：它含 Recent Sessions，每个 session 都变；
         原来排第一会让它后面所有静态人格的前缀缓存整段失效，每轮都得重算。静态大块前置后，
@@ -100,14 +148,19 @@ class Session:
             persona = raw if isinstance(raw, str) else ""
         else:
             persona = ""
+        # 注意：active_skills_text 不在这里——它作为 <system-reminder> 贴本轮用户消息注入
+        # （见 to_openai_messages），吃 recency 而非埋在静态 system 中段。
+        # C4：compact_summary 非空时拼一句"据摘要继续、别复述"的续聊指令（仅出参拼装，不写回字段）。
+        compact_block = (
+            f"{self.compact_summary}\n\n{_COMPACT_CONTINUE_NOTE}" if self.compact_summary else ""
+        )
         parts = [
             p for p in (
                 persona,                       # 静态大块 → 稳定前缀，跨轮/跨 session 命中 DeepSeek 自动前缀缓存
                 self.persona_modules_listing,  # 静态
-                self.active_skills_text,       # 易变（每轮激活）
                 self.active_module_text,       # 易变（每轮激活）
                 self.memory_block_text,        # 易变（Recent Sessions 每 session 变）——必须排在静态段之后
-                self.compact_summary,          # 易变（压缩时变）
+                compact_block,                 # 易变（压缩时变）+ C4 续聊指令
                 _REPLY_LENGTH_ANCHOR,          # 留最后吃 recency
             ) if p
         ]
@@ -119,7 +172,8 @@ class Session:
         安全网：修掉「tool_call 未全部回应」的半截工具轮。web /chat 触达 deadline 或客户端
         断开会 cancel 掉 tool 循环，可能停在「assistant 已挂 tool_calls 但 tool 结果没补齐」
         的状态（in-memory 与 jsonl 都半截）；原样回传会让下一轮 LLM 400（每个 tool_call 必须
-        有对应 tool 响应）。这里在出参前把残缺 assistant 降级为纯文本、并丢掉其孤儿 tool 响应。
+        有对应 tool 响应）。这里在出参前为未回应的 tool_call 补一条 is_error 占位、并保留
+        assistant.tool_calls（对齐 CC ensureToolResultPairing），既消除 400 又不丢信息。
         """
         src = (
             self.messages[1:]
@@ -127,27 +181,46 @@ class Session:
             else self.messages
         )
         answered = {m.tool_call_id for m in src if m.role == "tool" and m.tool_call_id}
-        # 收集「tool_call 未全部被回应」的 assistant 的 call id —— 这些 id 关联的 tool 响应要丢
-        dropped_ids: set[str] = set()
-        for m in src:
-            ids = _tool_call_ids(m)
-            if ids and not ids <= answered:
-                dropped_ids |= ids
 
         out: list[dict[str, Any]] = []
         sys_text = self._effective_system()
         if sys_text:
             out.append({"role": "system", "content": sys_text})
-        for m in src:
+
+        # S3/C3：把 compact 折掉的、已调用 skill 的正文作为 <invoked-skills> 附件重注入（贴在 system
+        # 之后、历史之前；仍存活于某条 tool 消息的不重注入，避免重复）。
+        skill_attach = self._invoked_skills_attachment(src)
+        if skill_attach:
+            out.append({"role": "user", "content": skill_attach})
+
+        # skills 清单 + 触发规则作为 <system-reminder> 贴在本轮最后一条 user 消息前注入——吃 recency
+        # （晚于 system 末尾的长度锚），对齐 CC 的 system-reminder 投递；匹配交给模型读 description
+        # （跨语言、对新装 skill 零配置即生效）。不落 session.messages、不进 jsonl，纯出参期注入。
+        reminder = self.active_skills_text
+        last_user_idx = max(
+            (i for i, m in enumerate(src) if m.role == "user"), default=-1
+        )
+        for i, m in enumerate(src):
             ids = _tool_call_ids(m)
             if ids and not ids <= answered:
-                # 半截工具轮：有正文就降级为纯文本 assistant，没正文就整条丢掉
-                text = m.text_only()
-                if text:
-                    out.append({"role": "assistant", "content": text})
+                # T1 半截工具轮：保留 assistant 原样（含 tool_calls），为每个未回应的 tool_call 补一条
+                # is_error 占位（对齐 CC ensureToolResultPairing 的 SYNTHETIC_TOOL_RESULT_PLACEHOLDER）——
+                # 既消除"孤儿 tool_call 触发 400"，又不丢 assistant 已写的正文/工具意图。
+                out.append(m.to_openai())
+                for missing in sorted(ids - answered):
+                    if not missing:
+                        continue  # 空 id 无法配对，跳过（T7：空/重复 id 防呆）
+                    out.append({
+                        "role": "tool",
+                        "tool_call_id": missing,
+                        "content": _SYNTHETIC_TOOL_RESULT,
+                    })
                 continue
-            if m.role == "tool" and m.tool_call_id in dropped_ids:
-                continue  # 父 assistant 已降级 → 这条 tool 成了孤儿，丢掉
+            if i == last_user_idx and reminder:
+                out.append({
+                    "role": "user",
+                    "content": f"<system-reminder>\n{reminder}\n</system-reminder>",
+                })
             out.append(m.to_openai())
         return out
 

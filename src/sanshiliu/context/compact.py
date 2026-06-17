@@ -36,6 +36,14 @@ def _serialize_history(messages: list[ChatMessage]) -> str:
     return "\n\n".join(lines)
 
 
+def _wrap_content(prior: str, body: str, *, dropped: bool = False) -> str:
+    """拼 compact 的 user 输入：有旧摘要就【已有摘要】+【新增对话】累积，否则只给正文。"""
+    if not prior:
+        return body
+    tag = "新增对话（已丢弃更早部分）" if dropped else "新增对话"
+    return f"【已有摘要】\n{prior}\n\n【{tag}】\n{body}"
+
+
 class Compactor:
     """全量压缩器；持有 LLM 客户端、prompts、budget 引用。"""
 
@@ -51,6 +59,29 @@ class Compactor:
         self._prompts = prompts
         self._budget = budget
         self._tail_pairs = tail_pairs
+
+    async def _compact_once(self, session: Session, user_content: str) -> str | None:
+        """单次 compact LLM 调用；失败（LLMError）或空摘要返回 None，由调用方决定重试/熔断。"""
+        prompt_messages = [
+            {"role": "system", "content": self._prompts.compact_instruction},
+            {"role": "user", "content": user_content},
+        ]
+        try:
+            result = await self._llm.chat(
+                messages=prompt_messages,
+                session_id=session.session_id,
+                channel="compact-internal",
+                user_id=session.user_id,
+                temperature=0.3,
+            )
+        except LLMError as exc:
+            _logger.warning("compact 调 LLM 失败", session_id=session.session_id, error=str(exc))
+            return None
+        summary = result.text.strip()
+        if not summary:
+            _logger.warning("compact 返回空摘要", session_id=session.session_id)
+            return None
+        return summary
 
     async def compact(self, session: Session) -> bool:
         """对 session 执行一次全量压缩；返回 True 表示真的压了，False 表示太短或失败跳过。"""
@@ -83,34 +114,22 @@ class Compactor:
 
         # 把已有摘要折进 LLM 输入，让模型在旧摘要基础上累积合并，避免多轮 compact 渐进性丢史
         prior = session.compact_summary.strip()
-        user_content = (
-            f"【已有摘要】\n{prior}\n\n【新增对话】\n{history_text}" if prior else history_text
-        )
-        prompt_messages = [
-            {"role": "system", "content": self._prompts.compact_instruction},
-            {"role": "user", "content": user_content},
-        ]
-
-        try:
-            result = await self._llm.chat(
-                messages=prompt_messages,
-                session_id=session.session_id,
-                channel="compact-internal",
-                user_id=session.user_id,
-                temperature=0.3,
+        new_summary = await self._compact_once(session, _wrap_content(prior, history_text))
+        if new_summary is None:
+            # C2：重试一次，丢掉最老的一半待压历史（对齐 CC truncateHeadForPTLRetry）——失败常因
+            # 待压历史本身太长撑爆 compact 调用的上下文，砍头再试往往能成。
+            half = history_text[len(history_text) // 2:]
+            new_summary = await self._compact_once(
+                session, _wrap_content(prior, half, dropped=True)
             )
-        except LLMError as exc:
-            # V-5：compact 失败不阻塞主对话
+        if new_summary is None:
+            # 两次都失败：记熔断计数（连续 3 次后 manager 暂停 compact），不阻塞主对话
+            self._budget.note_compact_failure()
             _logger.warning(
-                "compact 调 LLM 失败，跳过本次压缩",
+                "compact 两次均失败，记熔断计数并跳过本次压缩",
                 session_id=session.session_id,
-                error=str(exc),
+                consecutive_failures=self._budget.consecutive_compact_failures,
             )
-            return False
-
-        new_summary = result.text.strip()
-        if not new_summary:
-            _logger.warning("compact 返回空摘要，跳过", session_id=session.session_id)
             return False
 
         # 写回 session：替换历史为 system + 尾巴；摘要存到 compact_summary 字段

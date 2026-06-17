@@ -194,7 +194,7 @@ defaultMode：`allow` / `deny` / `ask`（ask 在 REPL 弹确认；wechat/web 通
 
 ### `skills/<skill-id>/SKILL.md`
 
-frontmatter 含 `name` / `description` / `keywords`。3 个目录扫描：项目级 `./.sanshiliu/skills/` > 仓库内 `./skills/` > 全局 `~/.sanshiliu/skills/`。用户消息命中 `keywords` 时，SKILL body 注入 system prompt 末尾 `<active_skills>` 段。
+frontmatter 含 `name` / `description`（可选 `when-to-use` / `disable-model-invocation` / `discoverable`，与 Claude Code 对齐）。3 个目录扫描：项目级 `./.sanshiliu/skills/` > 仓库内 `./skills/` > 全局 `~/.sanshiliu/skills/`。skill 清单（name+description[+when-to-use]）每轮作为 `<system-reminder>` 贴用户消息注入；模型读 description 判断该调哪个，再用 `Skill` 工具拿正文（无关键词匹配；`keywords` 仅元数据）。
 
 ---
 
@@ -339,7 +339,7 @@ jx-agent/
 │   ├── identity/              # L3：persona loader + 5s watcher（mtime 轮询）
 │   ├── context/               # L4：history + compact + microcompact + budget
 │   ├── memory/                # L5：CLAUDE.md + memdir + wiki-link + 异步 extract
-│   ├── skills/                # L6：SKILL.md 加载 + matcher + activator
+│   ├── skills/                # L6：SKILL.md 加载 + activator（无 matcher；匹配靠模型读 description）
 │   ├── tools/                 # L7：dispatcher + registry + builtin（web_search/file_io/bash）
 │   ├── security/              # L8：settings.json + permission 状态机 + bash classifier + path guard + ReplConfirmer
 │   │
@@ -400,7 +400,7 @@ python -m sanshiliu doctor
 1. `llm/client.py` 覆盖率 **18%**（要求 ≥75%）——需补 mock httpx 的重试 / stream / 错误映射单测
 2. `llm/cost.py` 22%、`foundation/retry.py` 47%——同上
 3. `engine/loop.py` 覆盖率 **46%**——tool_call 循环 + dedupe + budget 反查路径缺单测
-4. `skills/matcher.py` 的**语义匹配是 stub**（仅 keyword 路径，embedding 未接）——6-V3 未达
+4. skill 触发靠模型读 description（设计如此，对齐 CC；无引擎关键词/语义匹配，`skills/matcher.py` 不存在）；`keywords` 仅 dashboard/搜索元数据
 5. `tests/smoke/smoke_phase1.py` **缺失**
 6. **9 个 Phase tag 全部未打**，更没 `v1.0.0`
 
