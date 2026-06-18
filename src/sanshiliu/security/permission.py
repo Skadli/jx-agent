@@ -123,8 +123,11 @@ class PermissionManager:
         self._path_guard = path_guard
         self._confirmer = confirmer
         self._db = db
-        # 会话级缓存：(session_id, tool_alias, args_fingerprint) → "allow"/"deny"
-        self._session_cache: dict[tuple[str, str, str], str] = {}
+        # 会话级模式决策：session_id → [(反推 pattern, "allow"/"deny")]。
+        # 用户在 ask 卡片点"本会话"/"始终"时，把这次调用反推成一条 pattern（如 Bash(npm:*)）
+        # 存进来，后续同类调用按 pattern 匹配直接放行/拒绝，无需再问。
+        # （旧实现按精确 args 指纹缓存，换个参数就又问，"本会话/始终允许"形同虚设。）
+        self._session_rules: dict[str, list[tuple[str, str]]] = {}
 
     # ────────── 主接口 ──────────
 
@@ -210,22 +213,15 @@ class PermissionManager:
             )
             return decision
 
-        # 3) 会话缓存
-        fp = _args_fingerprint(arguments)
-        cache_key = (session_id, alias, fp)
-        cached = self._session_cache.get(cache_key)
-        if cached == "allow":
+        # 3) 会话级模式决策：用户此前对"本会话/始终"选过 allow/deny，按反推 pattern 命中即复用。
+        #    按 pattern（如 Bash(npm:*)）匹配而非精确 args，换个参数也不再追问。
+        sess_rule = self._match_session_rule(session_id, tool_name, alias, arguments)
+        if sess_rule is not None:
+            raw, dec = sess_rule
+            sess_kind: Literal["allow", "deny"] = "allow" if dec == "allow" else "deny"
             decision = PermissionDecision(
-                kind="allow", rule="session-cache", danger=danger, source="session-cache",
-            )
-            await self._persist_decision(
-                session_id=session_id, alias=alias, decision=decision, arguments=arguments,
-            )
-            return decision
-        if cached == "deny":
-            decision = PermissionDecision(
-                kind="deny", rule="session-cache", danger=danger,
-                reason="本会话此前已拒绝同款调用",
+                kind=sess_kind, rule=f"session:{raw}", danger=danger,
+                reason="" if sess_kind == "allow" else "本会话此前已拒绝同类调用",
                 source="session-cache",
             )
             await self._persist_decision(
@@ -233,9 +229,9 @@ class PermissionManager:
             )
             return decision
 
-        # 3.5) 安全工具自动放行；deny / 显式 allow / 会话缓存仍优先，
+        # 3.5) 安全工具自动放行；deny / 显式 allow / 会话规则仍优先，
         # 用户撤销也可以经 settings.deny 收回。覆盖范围：
-        #   - bash_exec：classifier 判定 safe（只读/查询类如 ls/git status/cat）
+        #   - bash_exec：classifier 判定 safe 或 moderate（中风险，可逆/访问外网）
         #   - web_search：纯查询公开 API，无副作用
         #   - file_read：path_guard 完全 clean（在 cwd 且不命中系统黑名单）
         if _is_auto_allowable(tool_name, danger, path_guard_hit):
@@ -305,8 +301,7 @@ class PermissionManager:
         # ask 路径：_apply_response 已写库（scope=session 时），不在此重复 _persist_decision
         await self._apply_response(
             response=response,
-            tool_name=tool_name, alias=alias, fingerprint=fp,
-            session_id=session_id, arguments=arguments,
+            alias=alias, session_id=session_id, arguments=arguments,
         )
         kind: Literal["allow", "deny"] = "allow" if response.decision == "allow" else "deny"
         return PermissionDecision(
@@ -362,24 +357,39 @@ class PermissionManager:
                 return raw
         return None
 
+    def _match_session_rule(
+        self,
+        session_id: str,
+        tool_name: str,
+        alias: str,
+        arguments: dict[str, Any],
+    ) -> tuple[str, str] | None:
+        """命中本会话内"本会话/始终"留下的反推 pattern，返回 (pattern, decision)；无则 None。"""
+        for raw, dec in self._session_rules.get(session_id, ()):
+            if self._first_match([raw], tool_name, alias, arguments) is not None:
+                return raw, dec
+        return None
+
     async def _apply_response(
         self,
         *,
         response: ConfirmResponse,
-        tool_name: str,
         alias: str,
-        fingerprint: str,
         session_id: str,
         arguments: dict[str, Any],
     ) -> None:
-        """根据 response.scope 落地：once 不存；session 存内存+DB；permanent 写盘。"""
+        """根据 response.scope 落地：once 不存；session 记内存 pattern + DB；permanent 另写盘。
+
+        关键修复：session/permanent 都存"反推 pattern"（如 Bash(npm:*)）而非精确 args 指纹，
+        后续同类调用经 _match_session_rule / settings.allow 命中，不再重复追问。
+        """
         scope: DecisionScope = response.scope
         if scope == "once":
             return
 
-        cache_value = response.decision
+        pattern = _pattern_for_decision(alias, arguments)
         if scope in ("session", "permanent"):
-            self._session_cache[(session_id, alias, fingerprint)] = cache_value
+            self._session_rules.setdefault(session_id, []).append((pattern, response.decision))
 
         if scope == "session" and self._db is not None:
             try:
@@ -388,14 +398,13 @@ class PermissionManager:
                     tool_name=alias,
                     decision=response.decision,
                     scope="session",
-                    pattern=_pattern_for_decision(alias, arguments),
+                    pattern=pattern,
                     source="user-confirmed",
                 )
             except Exception as exc:
                 _logger.warning("permission_decisions 写库失败", error=str(exc))
 
         if scope == "permanent":
-            pattern = _pattern_for_decision(alias, arguments)
             try:
                 append_allow_pattern(self._settings_loader.project_path, pattern)
                 self._settings_loader.invalidate()
@@ -412,18 +421,17 @@ def _is_auto_allowable(
     # 1. web_search 永远安全（纯查询）
     if tool_name in ("web_search", "WebSearch"):
         return True
-    # 2. bash_classifier 判 safe 的 bash
-    if tool_name in ("bash_exec", "Bash") and danger == "safe":
+    # 2. bash_classifier 判 safe / moderate 的 bash 自动放行。
+    #    中风险（moderate：npm install / git fetch / cp / mkdir 等可逆写入或访问外网）
+    #    不再要用户授权——只有高风险（dangerous：rm / mv / git push 等）才走 ask、
+    #    critical 在 check() 上游已硬拒，到不了这里。
+    if tool_name in ("bash_exec", "Bash") and danger in ("safe", "moderate"):
         return True
     # 3. file_read 在 cwd 内、没命中任何路径黑名单
     if tool_name in ("file_read", "Read") and path_guard_hit is None:
         return True
     # 4. memory 工具（LoadMemory 只读；SaveMemory 是 agent 自治写入，ADR 决定默认 allow）
     return tool_name in ("LoadMemory", "SaveMemory")
-
-
-def _args_fingerprint(args: dict[str, Any]) -> str:
-    return json.dumps(args, sort_keys=True, ensure_ascii=False)
 
 
 def _args_preview(args: dict[str, Any]) -> str:

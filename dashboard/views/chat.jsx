@@ -614,13 +614,13 @@ function SessionListItem({ s, active, onClick, onDelete }) {
 function ApprovalCard({ approval, onResolve, resolved }) {
   const toolName = approval.canonical_name || approval.tool_name || "工具";
   const danger = approval.danger;
-  const dangerColor = danger === "critical" ? "var(--danger)"
-                    : danger === "high"     ? "#c4660a"
-                    : danger === "moderate" ? "#9c7700"
+  const dangerColor = danger === "critical"  ? "var(--danger)"
+                    : danger === "dangerous" ? "#c4660a"
+                    : danger === "moderate"  ? "#9c7700"
                     : "var(--ink-60)";
   const headerBg = resolved
     ? "var(--pearl)"
-    : danger === "critical" || danger === "high"
+    : danger === "critical" || danger === "dangerous"
       ? "rgba(193,60,60,0.06)"
       : "var(--primary-soft)";
 
